@@ -1154,3 +1154,82 @@ func TestACLEnforce_WithoutAdminRightNeitherReadNorWrite(t *testing.T) {
 		t.Error("SETACL answered a peer without the admin right")
 	}
 }
+
+// The sequence from #1111, end to end: an administrator who holds rights only
+// through the namespace root grants a peer on a mailbox, and must still hold
+// them afterwards.
+//
+// Under first-hit-wins the per-mailbox file replaced the root grant for every
+// identifier, so the grant revoked the granter: the mailbox was left with one
+// principal holding 'l', and a shared namespace has no owner underneath to
+// restore anybody. The symptom was NONEXISTENT rather than NOPERM, which is
+// #1085 working exactly as designed -- the granter had lost 'l' too.
+func TestACLEnforce_GrantingOnAMailboxDoesNotRevokeTheGranter(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	// bob administers the namespace, and holds it only at the root.
+	seedRootACL(t, aliceHome, "user=bob lrskxa\n")
+
+	b := dial("bob")
+	if err := b.Create("Shared/Matrix", nil).Wait(); err != nil {
+		t.Fatalf("bob CREATE with 'k' on the root: %v", err)
+	}
+	carol, err := imaplib.NewRightsIdentifierUsername("carol")
+	if err != nil {
+		t.Fatalf("NewRightsIdentifierUsername: %v", err)
+	}
+	if err := b.SetACL("Shared/Matrix", carol, imaplib.RightModificationReplace, imaplib.RightSet("l")).Wait(); err != nil {
+		t.Fatalf("bob SETACL: %v", err)
+	}
+
+	// Everything bob could do a moment ago, he can still do.
+	for _, tc := range []struct {
+		name string
+		run  func() error
+	}{
+		{"SELECT", func() error { _, err := b.Select("Shared/Matrix", nil).Wait(); return err }},
+		{"GETACL", func() error { _, err := b.GetACL("Shared/Matrix").Wait(); return err }},
+		{"SETACL again", func() error {
+			return b.SetACL("Shared/Matrix", carol, imaplib.RightModificationReplace, imaplib.RightSet("lr")).Wait()
+		}},
+		{"DELETE", func() error { return b.Delete("Shared/Matrix").Wait() }},
+	} {
+		if err := tc.run(); err != nil {
+			t.Errorf("after granting a peer, %s fails for the granter: %v", tc.name, err)
+		}
+	}
+}
+
+// The retroactive half: a mailbox already in the broken state -- a per-mailbox
+// ACL naming only the peer, an administrator named only at the root -- becomes
+// administrable again with no repair step. That is what makes the fix a way out
+// of the state it fixes, rather than only a way of not entering it.
+func TestACLEnforce_AMailboxLeftUnadministrableBecomesReachableAgain(t *testing.T) {
+	aliceHome, dial := enforceServerWithShared(t)
+
+	a := dial("alice")
+	if _, err := a.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatalf("alice SELECT INBOX: %v", err)
+	}
+	// A shared namespace has no owner, so even the account the storage belongs
+	// to needs the create right here.
+	seedRootACL(t, aliceHome, "user=alice lrskxa\nuser=bob lrskxa\n")
+	if err := a.Create("Shared/Matrix", nil).Wait(); err != nil {
+		t.Fatalf("CREATE: %v", err)
+	}
+	// Exactly the two files #1111 found on disk: the administrator named only
+	// at the root, the mailbox naming only the peer.
+	seedACL(t, aliceHome, "Matrix", "user=carol l\n")
+
+	b := dial("bob")
+	if _, err := b.Select("Shared/Matrix", nil).Wait(); err != nil {
+		t.Errorf("the administrator still cannot open the mailbox: %v", err)
+	}
+	if err := b.Delete("Shared/Matrix").Wait(); err != nil {
+		t.Errorf("the administrator still cannot remove the mailbox: %v", err)
+	}
+}

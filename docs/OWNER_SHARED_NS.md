@@ -466,6 +466,51 @@ of quietly leaving another probe mailbox behind.
 
 Tracked as #1104.
 
+### 7.3 The namespace root is a base layer, not a fallback
+
+Rights resolution walks a mailbox and its ancestors and takes the first ACL it
+finds. The namespace-root ACL is **not** the last step of that walk: it is a
+base layer merged underneath whatever the walk found.
+
+It used to be the fallback, consulted only when no mailbox in the chain had an
+ACL of its own. That rule is harmless in a personal namespace, where the owner
+bypasses ACLs and cannot be locked out. In a shared namespace there is nobody
+underneath it, and the consequence was that a grant revoked the granter:
+
+```
+u2 (lrskxa at the root): CREATE "Public/Matrix"            OK
+u2:                      SETACL "Public/Matrix" u3 l       OK
+u2:                      SELECT "Public/Matrix"            NO [NONEXISTENT]
+```
+
+The mailbox's own file named only `u3`, so the root stopped applying to it
+entirely and `u2` -- named only at the root -- held nothing. The mailbox was
+left with one principal holding `l`: not enough to read it, administer it or
+remove it, and no owner to repair it.
+
+Two things worth stating beside it:
+
+- **The grant was self-revoking**, not unlucky. `SETACL` is issued by whoever
+  holds `a`, and issuing it took `a` away. The peer's identity was irrelevant;
+  any first grant on a fresh mailbox did it.
+- **`NONEXISTENT` was §7.1 working exactly as designed.** The granter lost `l`
+  along with everything else, so the refusal was equalised with the
+  absent-mailbox one, correctly. It is not evidence against that rule and should
+  not later be read as such.
+
+Merging is the same shape the global ACL already had one layer up: within a tier
+the base and the mailbox's entries add, a higher tier still replaces a lower
+one. Expressiveness is not lost — cutting below the base is what negative
+entries are for (RFC 4314 §3.1), which is the mechanism rather than the side
+effect that first-hit-wins was being used for.
+
+The base applies even when inheritance is switched off (`sep == 0`): that
+switch turns off inheritance *between mailboxes*, and the namespace root is not
+one of them. A namespace with no separator configured would otherwise lose the
+administrators it names.
+
+Tracked as #1111.
+
 ---
 
 ## 8. Testing plan

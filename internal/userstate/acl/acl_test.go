@@ -541,9 +541,14 @@ func TestStore_EffectiveForFallsThroughToRootFromDeep(t *testing.T) {
 	}
 }
 
-func TestStore_EffectiveForLeafBeatsRoot(t *testing.T) {
-	// Same first-hit-wins rule: an explicit ACL on the leaf fully
-	// overrides the root's ACL, no merge.
+func TestStore_EffectiveForLeafDoesNotWipeTheRootBase(t *testing.T) {
+	// The root ACL is a base layer, not an alternative. A mailbox with an ACL
+	// of its own used to replace it outright for every identifier, so the
+	// first grant on a fresh mailbox revoked the granter's own rights -- they
+	// held them through the root and appear nowhere in the new file (#1111).
+	//
+	// Cutting below the base is still expressible, by the mechanism RFC 4314
+	// provides for it: a negative entry.
 	home := t.TempDir()
 	s := New(home, "", "mdbox", "/", "", "alice", "test", Policy{}, nil)
 	if err := s.Set("", mailbox.ACL{
@@ -551,7 +556,8 @@ func TestStore_EffectiveForLeafBeatsRoot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set root: %v", err)
 	}
-	// Leaf grants nothing to bob.
+	// The leaf names somebody else entirely -- the shape of "admin grants a
+	// peer the lookup right on a mailbox they just created".
 	if err := s.Set("Leaf", mailbox.ACL{
 		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "alice"}, Rights: mailbox.FullRights},
 	}); err != nil {
@@ -561,15 +567,36 @@ func TestStore_EffectiveForLeafBeatsRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
+	if got != "lr" {
+		t.Errorf("got %q, want lr — the leaf ACL wiped the root grant", got)
+	}
+
+	// And the leaf can still take it away on purpose.
+	if err := s.Set("Leaf", mailbox.ACL{
+		{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "alice"}, Rights: mailbox.FullRights},
+		{Identifier: mailbox.Identifier{Type: mailbox.IDAnyone}, Rights: "lr", Negative: true},
+	}); err != nil {
+		t.Fatalf("Set leaf negative: %v", err)
+	}
+	got, err = s.EffectiveFor("Leaf", "bob", nil, false, '/')
+	if err != nil {
+		t.Fatalf("EffectiveFor: %v", err)
+	}
 	if got != "" {
-		t.Errorf("got %q, want empty (leaf overrides root)", got)
+		t.Errorf("got %q, want empty — a negative entry must still cut below the base", got)
 	}
 }
 
-func TestStore_EffectiveForZeroSepStillTriesRoot(t *testing.T) {
-	// With sep=0 the walk is disabled, so the namespace-root fall-
-	// through must NOT fire either — only the explicit folder is
-	// consulted. Mirrors the "no inheritance" opt-out.
+func TestStore_EffectiveForZeroSepStillAppliesTheRootBase(t *testing.T) {
+	// sep=0 turns off inheritance between mailboxes. The namespace-root ACL is
+	// not one of them: it is the base layer every mailbox in the namespace
+	// resolves on top of, and it is where a shared namespace's administrators
+	// are named. It used to be the last step of the disabled walk, so a
+	// namespace with no separator set lost them (#1111).
+	//
+	// This reverses what this test asserted before, deliberately: the old
+	// contract made the root grant conditional on a flag set for an unrelated
+	// reason.
 	home := t.TempDir()
 	s := New(home, "", "mdbox", "/", "", "alice", "test", Policy{}, nil)
 	if err := s.Set("", mailbox.ACL{
@@ -581,8 +608,8 @@ func TestStore_EffectiveForZeroSepStillTriesRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EffectiveFor: %v", err)
 	}
-	if got != "" {
-		t.Errorf("got %q, want empty (sep=0 disables root fall-through too)", got)
+	if got != "l" {
+		t.Errorf("got %q, want \"l\" (the root base applies with the walk disabled)", got)
 	}
 }
 

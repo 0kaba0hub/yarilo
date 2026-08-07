@@ -453,6 +453,35 @@ func (acl ACL) effectiveMasks(user string, groups []string, isOwner bool) (pos, 
 	return myPos, myNeg, true
 }
 
+// EffectiveWithBase resolves rights with the namespace-root ACL as a base layer
+// underneath the per-mailbox one, rather than as a fallback consulted only when
+// no mailbox in the chain has an ACL of its own.
+//
+// The difference is not academic. Under first-hit-wins, the first per-mailbox
+// grant on a fresh mailbox replaced the root grant outright, for every
+// identifier -- so the administrator who issued it, and who held 'a' only
+// through the root, lost every right on the mailbox by exercising one. In a
+// shared namespace there is no owner underneath to restore them, and the
+// mailbox ended up with exactly one principal holding one right (#1111).
+//
+// The base is merged the way the entries of one ACL already merge: within a
+// tier the two add, and a higher tier still replaces a lower one. So a mailbox
+// entry does not have to repeat the root's grants to keep them, and a negative
+// entry -- the mechanism RFC 4314 provides for exactly this -- still cuts
+// below them.
+//
+// The same shape as the global ACL one layer up, which has always merged
+// rather than been shadowed.
+func EffectiveWithBase(base, local, global ACL, user string, groups []string, isOwner bool) Rights {
+	if len(base) == 0 {
+		return EffectiveWithGlobal(local, global, user, groups, isOwner)
+	}
+	layered := make(ACL, 0, len(base)+len(local))
+	layered = append(layered, base...)
+	layered = append(layered, local...)
+	return EffectiveWithGlobal(layered, global, user, groups, isOwner)
+}
+
 // EffectiveWithGlobal resolves rights from a local ACL and a global ACL with
 // the global taking precedence: global positives add on top of the local
 // result and global negatives revoke even locally-granted rights. When any

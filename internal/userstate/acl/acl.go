@@ -259,38 +259,59 @@ func (s *Store) Set(folder string, acl mailbox.ACL) error {
 	return s.ListUpdate(folder, acl)
 }
 
-// EffectiveFor resolves the user's effective rights on folder, walking
-// ancestors until an explicit yarilo-acl file is found (first-hit wins). An
-// owner gets FullRights immediately without I/O; otherwise folder's ACL is
-// read, and on absence the last path segment is stripped and retried, ending
-// with one pass at the namespace-root ACL (folder = ""). No ACL found returns
-// the empty rights set.
+// EffectiveFor resolves the user's effective rights on folder. An owner gets
+// FullRights immediately without I/O; otherwise folder's ACL is read, and on
+// absence the last path segment is stripped and retried -- first hit among the
+// mailbox and its ancestors wins.
 //
-// sep == 0 disables the walk (only folder itself is consulted). Inheritance
-// never merges deeper ancestors: the first ACL found fully determines the
-// rights, so a shared-mailbox admin's single ACL overrides the inherited one.
+// The namespace-root default is not part of that walk. It is a base layer
+// merged underneath whatever the walk found, because as a fallback it made the
+// first per-mailbox grant revoke the granter's own rights (#1111): the root is
+// where a shared namespace's administrators are named, and a shared namespace
+// has no owner underneath to restore them.
+//
+// sep == 0 disables the walk (only folder itself is consulted); the base still
+// applies.
 func (s *Store) EffectiveFor(folder, user string, groups []string, isOwner bool, sep byte) (mailbox.Rights, error) {
-	var localACL mailbox.ACL
+	var localACL, baseACL mailbox.ACL
 	if !s.globalsOnly {
 		a, err := s.localACLFor(folder, sep)
 		if err != nil {
 			return "", err
 		}
 		localACL = a
+		b, err := s.rootDefaultACL()
+		if err != nil {
+			return "", err
+		}
+		// Asking about the root itself: the root ACL is the answer, not a
+		// layer under one. CREATE of a top-level name reaches here, since the
+		// parent of a top-level mailbox is the namespace root (#1091).
+		if folder == "" {
+			localACL = b
+		}
+		// The root is its own base layer, not a layer under itself. It applies
+		// whatever sep says: sep == 0 turns off inheritance *between
+		// mailboxes*, and the namespace root is not one of them -- a namespace
+		// whose separator is unset would otherwise lose the administrators it
+		// names, which is the defect this fixes (#1111).
+		if folder != "" && !s.rootIsFolder(folder) {
+			baseACL = b
+		}
 	}
 	globalACL := s.global.For(folder)
 	// A non-owner with no ACL at all has no rights. The owner still gets the
 	// owner-default rights via the tier ladder, so it must fall through.
-	if localACL == nil && globalACL == nil && !isOwner {
+	if localACL == nil && baseACL == nil && globalACL == nil && !isOwner {
 		return "", nil
 	}
-	return mailbox.EffectiveWithGlobal(localACL, globalACL, user, groups, isOwner), nil
+	return mailbox.EffectiveWithBase(baseACL, localACL, globalACL, user, groups, isOwner), nil
 }
 
-// localACLFor resolves the local per-mailbox ACL that applies to folder: the
-// first ancestor with an explicit ACL (first-hit wins), else the
-// namespace-root default (INBOX with acl_defaults_from_inbox, else the local
-// folder-"" default which is disabled for maildir). Returns nil when none.
+// localACLFor resolves the per-mailbox ACL that applies to folder: the first
+// ancestor with an explicit ACL (first-hit wins). Returns nil when none has
+// one; the namespace-root default is applied by the caller as a base layer
+// rather than as the last step of this walk (#1111).
 // sep == 0 disables inheritance: only folder itself is consulted.
 func (s *Store) localACLFor(folder string, sep byte) (mailbox.ACL, error) {
 	for cur := folder; cur != ""; {
@@ -310,7 +331,16 @@ func (s *Store) localACLFor(folder string, sep byte) (mailbox.ACL, error) {
 		}
 		cur = cur[:idx]
 	}
-	return s.rootDefaultACL()
+	return nil, nil
+}
+
+// rootIsFolder reports whether folder is the mailbox the namespace-root default
+// is read from, so it is not layered underneath itself. With
+// acl_defaults_from_inbox that is INBOX; otherwise the root has a file of its
+// own and no folder shares it (#1091).
+
+func (s *Store) rootIsFolder(folder string) bool {
+	return s.defaultsFromInbox && folder == "INBOX"
 }
 
 // rootDefaultACL loads the namespace-root default ACL: INBOX's ACL with
