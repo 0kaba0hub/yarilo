@@ -1704,6 +1704,19 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	return d, nil
 }
 
+// countingReader tallies the octets read through it, so APPEND can compare what
+// the literal delivered against the declared size.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
 func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.AppendOptions) (*imaplib.AppendData, error) {
 	slog.Debug("imap: command", "sid", s.sid, "cmd", "Append")
 	tAppend := time.Now()
@@ -1741,9 +1754,26 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 	}
 
 	tSave := time.Now()
-	filename, vsize, guid, err := h.box.Save(rel, r, 0, size, flagList, [16]byte{})
+	// Count the octets the literal actually delivers. box.Save copies to EOF and
+	// does not check the count against size, so an under-delivered literal (a
+	// mid-body EOF) would be stored truncated and, being errorless, answered OK
+	// (#1129). This is the invariant #1137's "stored -> OK" rests on, made
+	// explicit: OK only for a fully delivered literal.
+	counted := &countingReader{r: r}
+	filename, vsize, guid, err := h.box.Save(rel, counted, 0, size, flagList, [16]byte{})
 	if err != nil {
 		return nil, err
+	}
+	if counted.n != size {
+		// A short literal is not the malformed-tail case (#1137, a complete
+		// literal with garbage after it) -- it is an incomplete message. Remove
+		// it rather than keep mangled mail, and refuse.
+		_ = h.box.Remove(rel, filename)
+		return nil, &imaplib.Error{
+			Type: imaplib.StatusResponseTypeBad,
+			Code: imaplib.ResponseCodeClientBug,
+			Text: fmt.Sprintf("APPEND literal under-delivered: %d of %d octets", counted.n, size),
+		}
 	}
 	tIndex := time.Now()
 	internalDate := time.Now()

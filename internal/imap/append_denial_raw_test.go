@@ -168,3 +168,52 @@ func countFiles(t *testing.T, dir string) int {
 	}
 	return n
 }
+
+// An APPEND whose literal is under-delivered -- fewer octets than declared, a
+// mid-body EOF -- must not be stored and must not answer OK. This is the branch
+// #1137's "stored -> OK" rested on implicitly: box.Save copies to EOF without
+// checking the count, so a truncated literal used to be stored and confirmed.
+// The client half-closes after a short body so the server reads EOF and can
+// still send the tagged response (#1129).
+func TestAppendUnderDeliveredLiteralIsRefusedAndNotStored(t *testing.T) {
+	aliceHome, addr := rawSharedServer(t)
+	a := dialRaw(t, addr)
+	if !strings.Contains(a.cmd("LOGIN alice pw"), "OK") {
+		t.Fatal("login")
+	}
+
+	// Declare 100 octets, deliver 15, then half-close: the server reads EOF at 15.
+	fmt.Fprintf(a.conn, "z1 APPEND INBOX {100}\r\n")
+	if cont := a.readLine(); !strings.HasPrefix(cont, "+") {
+		t.Fatalf("expected continuation, got %q", cont)
+	}
+	a.conn.Write([]byte("short body only")) //nolint:errcheck
+	tcp, ok := a.conn.(*net.TCPConn)
+	if !ok {
+		t.Fatalf("expected *net.TCPConn, got %T", a.conn)
+	}
+	tcp.CloseWrite() //nolint:errcheck
+
+	a.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var got string
+	for {
+		line, err := a.r.ReadString('\n')
+		if err != nil && line == "" {
+			break
+		}
+		if strings.HasPrefix(line, "z1 ") {
+			got = strings.TrimRight(line, "\r\n")
+			break
+		}
+	}
+	if strings.Contains(got, "OK") {
+		t.Errorf("under-delivered APPEND answered %q, want a refusal (not OK)", got)
+	}
+
+	// Nothing stored: the truncated file was removed.
+	n := countFiles(t, filepath.Join(aliceHome, "Maildir", "cur")) +
+		countFiles(t, filepath.Join(aliceHome, "Maildir", "new"))
+	if n != 0 {
+		t.Errorf("truncated message left on disk: %d files, want 0", n)
+	}
+}
