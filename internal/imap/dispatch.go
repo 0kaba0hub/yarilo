@@ -144,12 +144,11 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 	return out, primary, nil
 }
 
-// openHandle wires one namespace's box + idx + subs. The mailbox backend
-// comes from NamespaceMailboxes[spec.Prefix] when an override is present
-// (per-namespace driver mixing), otherwise from global Options.Mailbox.
+// openHandle wires one namespace's box + idx + subs. The mailbox backend is
+// selected by the resolved user's driver (see mailboxBackendFor).
 func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserInfo, owner, subsFile string) (*nsHandle, error) {
 	ui.Separator = string(spec.Separator)
-	mb := s.mailboxBackendFor(spec)
+	mb := s.mailboxBackendFor(spec, ui)
 	box := mb.OpenUser(ui)
 	if err := box.Init(); err != nil {
 		return nil, fmt.Errorf("mailbox init: %w", err)
@@ -194,15 +193,24 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 	}, nil
 }
 
-// mailboxBackendFor returns the per-namespace MailboxBackend, in priority
-// order: NamespaceMailboxes override for the prefix, per-user
-// personalMailbox, then global Options.Mailbox.
-func (s *session) mailboxBackendFor(spec NamespaceSpec) mailbox.MailboxBackend {
+// mailboxBackendFor returns the MailboxBackend for a namespace, selected by the
+// resolved user's driver -- ui is the owner's userdb identity for an
+// owner-templated namespace, the session user's for the personal one, so a
+// per-user driver (mdbox/maildir/sdbox) opens the right store. Selecting by
+// spec.Prefix instead left the driver keyed on a value one prefix serves for
+// every owner, so an owner-templated namespace opened the global backend on a
+// foreign-driver root -- the phantom store (#1144). Same selection the admin
+// path already uses (backendapi/userctx.go).
+//
+// A NamespaceMailboxes override still wins where set, but on an owner-templated
+// namespace it applies to every owner alike (one backend, one prefix) -- correct
+// only when all owners share a format.
+func (s *session) mailboxBackendFor(spec NamespaceSpec, ui *mailbox.UserInfo) mailbox.MailboxBackend {
 	if override, ok := s.srv.opts.NamespaceMailboxes[spec.Prefix]; ok && override != nil {
 		return override
 	}
-	if spec.Type == NamespacePersonal && s.personalMailbox != nil {
-		return s.personalMailbox
+	if ui != nil && ui.Driver != "" {
+		return mailbox.SelectPersonalBackend(s.srv.opts.Mailbox, s.srv.opts.MailboxByDriver, ui.Driver)
 	}
 	return s.srv.opts.Mailbox
 }
@@ -332,6 +340,26 @@ func (s *session) orderedHandles() []*nsHandle {
 // costs one userdb lookup, logged at debug.
 const maxOwnerHandles = 64
 
+// deploymentBase carries only the deployment-wide storage-name form
+// (StorageEscapeChar, SkipNFCNormalize) a namespace producer stamps, so a
+// mailbox is spelled the same on disk whoever opens it (#1078, #1092). It comes
+// from the resolver's deployment defaults, not the session user: passing the
+// accessor's identity was the same "admin right, IMAP wrong" divergence as the
+// driver (#1144) -- once userdb answers these per user, an owner's tree would be
+// spelled by whoever opened it. Only the two fields StampOwnerLocation reads are
+// set, so a later reader cannot pick up a Home resolved for the empty name.
+func (s *session) deploymentBase() *mailbox.UserInfo {
+	r := s.srv.opts.Resolver
+	if r == nil {
+		return nil
+	}
+	full := r.UserInfo("", "")
+	return &mailbox.UserInfo{
+		StorageEscapeChar: full.StorageEscapeChar,
+		SkipNFCNormalize:  full.SkipNFCNormalize,
+	}
+}
+
 // ownerHandle returns the handle for one owner of an owner-templated namespace,
 // building it on first reference and caching it for the session. The owner is
 // resolved through the userdb (resolveOwnerUserInfo), so the handle carries the
@@ -344,7 +372,7 @@ func (s *session) ownerHandle(spec NamespaceSpec, owner string) (*nsHandle, erro
 			return h, nil
 		}
 	}
-	ownerUI, err := resolveOwnerUserInfo(context.Background(), s.srv.opts.UserdbLookup, s.userInfo, spec, owner)
+	ownerUI, err := resolveOwnerUserInfo(context.Background(), s.srv.opts.UserdbLookup, s.deploymentBase(), spec, owner)
 	if err != nil {
 		return nil, err
 	}
