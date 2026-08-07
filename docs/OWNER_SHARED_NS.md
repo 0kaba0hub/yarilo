@@ -134,23 +134,27 @@ session user goes through — one implementation, so an owner resolves exactly a
 a logged-in user does.
 
 **Precedence, decided before the code: the owner's userdb `mail_location`
-decides the driver and the root; the namespace `location:` fills only what the
-userdb did not.** This matters because the driver is per-user here — the
-deployment runs mdbox, maildir and sdbox for different accounts — and it arrives
-through the owner's `mail_location`, which is the whole reason the lookup is a
-full userdb lookup rather than a template expansion (§7.6). If the namespace
-`location:` named a driver (`maildir:%h/Maildir`) and the owner's userdb said
-`mdbox:~/mdbox`, expanding the namespace template would open the wrong backend —
-the exact failure the full lookup was chosen to avoid, paid for with a
-round-trip and then thrown away. So `StampLocation(ownerUI, <owner mail_location>)`
-is authoritative for driver and root, and the namespace template supplies only
-fields the userdb left unset (a namespace-specific `INDEX=`, or the root itself
-for an owner with no explicit `mail_location`).
+decides the driver; the root comes from expanding a template against the owner.**
+This is what `StampLocation` already does for the session user (resolve.go):
+it sets `ui.Driver` from `mail_location` and fills the `INDEX=` / `CONTROL=` /
+`ALT=` / `VOLATILEDIR=` modifiers the userdb set — and it does *not* touch
+`MailPath` or `Home`. The root is `DefaultMailPath` expanded against the user;
+for an owner-templated namespace it is the namespace `location:` expanded
+against the owner, exactly as the reference expands its own location template.
 
-The namespace `location:` must still carry a per-owner variable (config
-validation enforces it, since 2.3.84): in the one case where it wins — an owner
-whose userdb gives no `mail_location` — a fixed location would resolve every
-such owner to one shared path, the parallel tree this design exists to prevent.
+The driver is the field that mattered: it is per-user here — the deployment runs
+mdbox, maildir and sdbox for different accounts — and it arrives only through the
+owner's `mail_location`, which is the whole reason the lookup is a full userdb
+lookup rather than a template expansion (§7.6). A namespace `location:` written
+`maildir:%h` while the owner's userdb says `mdbox:~/mdbox` resolves to the
+`mdbox` driver over the namespace template's `%h` root — `StampLocation` wins the
+driver, the namespace template wins the root, and the two do not fight because
+they decide different fields.
+
+The namespace `location:` must carry a per-owner variable (config validation
+enforces it, since 2.3.84) because it always supplies the root, per owner: a
+fixed location would resolve every owner to one shared path, the parallel tree
+this design exists to prevent.
 
 ### 3.4 On-demand handle construction + caching
 
@@ -642,11 +646,12 @@ per-user storage the reference's shared-namespace model does not express.
   here would import a limitation the deployment already violates, so the owner is
   looked up in full and the result cached to pay the round-trip once (§3.4).
 
-- **The owner's `mail_location` wins over the namespace `location:`.** The same
-  fact drives §3.3's precedence: the driver and root come from the owner's
-  userdb, not from expanding the namespace template. A namespace whose template
-  named a different driver than the owner's userdb would open the wrong backend,
-  which is what the full lookup exists to prevent.
+- **The driver comes from the owner's `mail_location`, not the namespace
+  `location:`.** The same fact drives §3.3's precedence: `StampLocation` takes
+  the driver from the owner's userdb, while the root is the namespace template
+  expanded against the owner. They decide different fields, so a namespace whose
+  template happened to name a different driver does not open the wrong backend —
+  the userdb driver wins, which is what the full lookup exists to guarantee.
 
 Both are the shape of §7.5's escape-order note: the reference is self-consistent,
 and yarilo diverges on purpose where the deployment's shape demands it. Written
