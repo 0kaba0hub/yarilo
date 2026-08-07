@@ -433,16 +433,16 @@ func aclTier(t IdentifierType) int {
 // are returned separately so a global ACL can be merged at the right precedence
 // (see EffectiveWithGlobal); Effective itself is pos.Remove(neg).
 func (acl ACL) effectiveMasks(user string, groups []string, isOwner bool) (pos, neg Rights, matched bool) {
-	pos, neg, matched, _, _ = acl.effectiveMasksSigned(user, groups, isOwner)
+	pos, neg, matched, _ = acl.effectiveMasksSigned(user, groups, isOwner)
 	return pos, neg, matched
 }
 
-// effectiveMasksSigned is effectiveMasks with the two matches reported
-// separately. A caller layering one ACL over another needs to know which mask
-// the upper layer actually spoke about: a global entry that only revokes must
-// not blank the positive rights the local ACL granted, and one that only grants
-// must still replace them (#1117).
-func (acl ACL) effectiveMasksSigned(user string, groups []string, isOwner bool) (pos, neg Rights, matched, posMatched, negMatched bool) {
+// effectiveMasksSigned is effectiveMasks plus whether a positive entry matched.
+// A caller layering one ACL over another needs to know whether the upper layer
+// spoke about the positive mask: a global entry that only revokes must not
+// blank the positive rights the local ACL granted, while one that grants must
+// replace them (#1117).
+func (acl ACL) effectiveMasksSigned(user string, groups []string, isOwner bool) (pos, neg Rights, matched, posMatched bool) {
 	groupSet := makeGroupSet(groups)
 
 	type match struct {
@@ -498,7 +498,7 @@ func (acl ACL) effectiveMasksSigned(user string, groups []string, isOwner bool) 
 		}
 	}
 	if len(matches) == 0 {
-		return "", "", false, false, false
+		return "", "", false, false
 	}
 	sort.SliceStable(matches, func(i, j int) bool { return matches[i].tier < matches[j].tier })
 
@@ -526,7 +526,7 @@ func (acl ACL) effectiveMasksSigned(user string, groups []string, isOwner bool) 
 			prevPosTier = m.tier
 		}
 	}
-	return myPos, myNeg, true, prevPosTier >= 0, prevNegTier >= 0
+	return myPos, myNeg, true, prevPosTier >= 0
 }
 
 // EffectiveWithGlobal resolves rights from a local ACL and a global ACL, with
@@ -541,7 +541,7 @@ func (acl ACL) effectiveMasksSigned(user string, groups []string, isOwner bool) 
 // unrelated global "anyone l" re-granted alice the administer right (#1117).
 func EffectiveWithGlobal(local, global ACL, user string, groups []string, isOwner bool) Rights {
 	lpos, lneg, _ := local.effectiveMasks(user, groups, isOwner)
-	gpos, gneg, gmatched, gposMatched, _ := global.effectiveMasksSigned(user, groups, false)
+	gpos, gneg, gmatched, gposMatched := global.effectiveMasksSigned(user, groups, false)
 	if !gmatched {
 		return lpos.Remove(lneg)
 	}
