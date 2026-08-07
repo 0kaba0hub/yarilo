@@ -3,6 +3,7 @@ package imap
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -271,13 +272,27 @@ func (s *session) dispatch(name string) (*nsHandle, string, error) {
 		if !ok {
 			continue
 		}
+		// An owner that does not resolve and an owner whose space the caller
+		// cannot see must be indistinguishable. Here the probed segment IS a
+		// username, so a NOPERM/NONEXISTENT split over user/<name>/ is a
+		// directory of the deployment's accounts to anyone who can log in
+		// (#1138). One error value serves both, so the two answers cannot drift
+		// apart later.
+		hidden := &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeNonExistent,
+			Text: "No such mailbox",
+		}
 		h, err := s.ownerHandle(spec, owner)
 		if err != nil {
-			return nil, "", &imaplib.Error{
-				Type: imaplib.StatusResponseTypeNo,
-				Code: imaplib.ResponseCodeNonExistent,
-				Text: "No such mailbox",
-			}
+			return nil, "", hidden
+		}
+		// Decided here rather than per verb: CREATE deliberately does not hide
+		// (#1068, and rightly so where the namespace is public), and SUBSCRIBE
+		// checks no rights at all -- so both leaked. At the resolve layer every
+		// verb inherits the answer, including ones added later.
+		if !s.ownerSpaceVisible(h, rel) {
+			return nil, "", hidden
 		}
 		return h, rel, nil
 	}
@@ -339,6 +354,27 @@ func (s *session) orderedHandles() []*nsHandle {
 // order -- which is enough to cap memory; a hot owner re-resolved after eviction
 // costs one userdb lookup, logged at debug.
 const maxOwnerHandles = 64
+
+// ownerSpaceVisible reports whether the caller may learn that this owner's space
+// exists. The owner always may; a peer may once they hold any right on the name
+// (they already know it is there, so the precise refusal is not a disclosure).
+// A peer holding nothing is told exactly what an unknown owner is told.
+//
+// An ACL that cannot be read hides too: the failure is only reachable for an
+// owner that resolved, so surfacing it would answer the very question the hiding
+// exists to refuse. It is logged instead of reported.
+func (s *session) ownerSpaceVisible(h *nsHandle, rel string) bool {
+	if !s.aclEnforced(h) || s.isOwner(h) {
+		return true
+	}
+	rights, err := s.effectiveRights(h, rel)
+	if err != nil {
+		slog.Error("imap: owner-templated ACL read failed; hiding the space",
+			"user", s.userInfo.Username, "owner", h.owner, "folder", rel, "err", err)
+		return false
+	}
+	return rights != ""
+}
 
 // deploymentBase carries only the deployment-wide storage-name form
 // (StorageEscapeChar, SkipNFCNormalize) a namespace producer stamps, so a
