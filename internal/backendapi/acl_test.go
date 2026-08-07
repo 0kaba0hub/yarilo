@@ -397,3 +397,76 @@ func TestACL_MissingFolderIsRefusedAndCreatesNothing(t *testing.T) {
 		t.Errorf("root grant: status=%d, want 200: %s", status, body)
 	}
 }
+
+// rebuild stays permissive about a name that is not there -- it reseeds from
+// files on disk, creates nothing, and is the tool an operator reaches for when
+// the state is already inconsistent, so refusing the batch would fail on the
+// state it repairs. What it must not do is claim the work: the count was
+// len(folders), so three names of which two do not exist answered
+// {"folders":3,"status":"ok"} and a typo looked like a successful reseed.
+func TestACL_RebuildReportsWhatItSkipped(t *testing.T) {
+	ts, _ := storageTestServer(t)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+
+	// INBOX carries an ACL; Sent exists with none; the other two are typos.
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/create", "", map[string]any{
+		"user": user, "folder": "Sent",
+	})
+	if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+		"user": user, "folder": "INBOX",
+		"acl": []map[string]any{{"identifier": "bob@example.com", "rights": "lr"}},
+	}); status != 200 {
+		t.Fatalf("seed set: status=%d %s", status, body)
+	}
+
+	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/rebuild", "", map[string]any{
+		"user":    user,
+		"folders": []string{"INBOX", "Sent", "Slaes", "AlsoNotThere"},
+	})
+	if status != 200 {
+		t.Fatalf("rebuild status=%d %s", status, body)
+	}
+	var resp struct {
+		Folders int      `json:"folders"`
+		Rebuilt []string `json:"rebuilt"`
+		Skipped []struct {
+			Folder string `json:"folder"`
+			Reason string `json:"reason"`
+		} `json:"skipped"`
+	}
+	decodeJSONBody(t, body, &resp)
+
+	if resp.Folders != 1 || len(resp.Rebuilt) != 1 || resp.Rebuilt[0] != "INBOX" {
+		t.Errorf("rebuilt = %d %v, want 1 [INBOX] — the count must be the work done, not the work asked for", resp.Folders, resp.Rebuilt)
+	}
+	want := map[string]string{
+		"Sent":         "no ACL",
+		"Slaes":        "folder not found",
+		"AlsoNotThere": "folder not found",
+	}
+	got := map[string]string{}
+	for _, s := range resp.Skipped {
+		got[s.Folder] = s.Reason
+	}
+	for folder, reason := range want {
+		if got[folder] != reason {
+			t.Errorf("skipped[%q] = %q, want %q", folder, got[folder], reason)
+		}
+	}
+	if len(resp.Skipped) != len(want) {
+		t.Errorf("skipped = %v, want %d entries", resp.Skipped, len(want))
+	}
+
+	// The index itself still holds only the real entry.
+	_, body = doJSON(t, ts, http.MethodPost, "/api/backend/acl/list", "", map[string]any{"user": user})
+	var listResp struct {
+		Entries []struct {
+			Mailbox string `json:"mailbox"`
+		} `json:"entries"`
+	}
+	decodeJSONBody(t, body, &listResp)
+	if len(listResp.Entries) != 1 || listResp.Entries[0].Mailbox != "INBOX" {
+		t.Errorf("index after rebuild = %+v, want the INBOX entry alone", listResp.Entries)
+	}
+}

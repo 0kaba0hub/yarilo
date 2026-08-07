@@ -243,6 +243,14 @@ CLI: `yarctl backend folder list <user> [--namespace NS]`
 > as given, and the store created the directory on the way — a typo became a
 > mailbox with permissions and no messages. `--root` names no folder, so it is
 > not affected.
+>
+> **`rebuild` is the exception, deliberately.** It reseeds the index from files
+> already on disk, creates nothing, and is run precisely when the state is
+> already inconsistent — refusing the whole batch over one stale name would
+> fail on the state it repairs. It reports instead: `folders` counts the
+> mailboxes actually reseeded, and `skipped` lists the rest with a reason
+> (`folder not found` or `no ACL`). A batch whose names are all typos answers
+> `200` with an empty `rebuilt`, which is the honest answer to "reseed nothing".
 
 ### `POST /api/backend/folder/info`
 
