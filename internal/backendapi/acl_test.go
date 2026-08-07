@@ -857,6 +857,40 @@ func TestACL_RebuildSubsetMerges_AllReplaces(t *testing.T) {
 		}
 	})
 
+	t.Run("all preserves the namespace-root grant", func(t *testing.T) {
+		ts := setup(t)
+		// The bootstrap grant lives on the namespace root, which is not a folder
+		// and never appears in ListFolders. A replace built from folders alone
+		// would delete it -- the one grant a shared namespace cannot work
+		// without (#1091/#1096, #1151 inside the fix for #1151).
+		if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/set", "", map[string]any{
+			"user": user, "root": true,
+			"acl": []map[string]any{{"identifier": "bob@example.com", "rights": "lr"}},
+		}); status != 200 {
+			t.Fatalf("seed root ACL status=%d body=%s", status, body)
+		}
+		if !indexFolders(t, ts)[""] {
+			t.Fatal("precondition: the root grant should hold index rows under the empty name")
+		}
+
+		status, body := doJSON(t, ts, http.MethodPost, "/api/backend/acl/rebuild", "", map[string]any{
+			"user": user, "all": true,
+		})
+		if status != 200 {
+			t.Fatalf("rebuild --all status=%d body=%s", status, body)
+		}
+		if !indexFolders(t, ts)[""] {
+			t.Error("--all deleted the namespace-root rows: the bootstrap grant is gone from the index")
+		}
+		var resp struct {
+			Root bool `json:"root"`
+		}
+		decodeJSONBody(t, body, &resp)
+		if !resp.Root {
+			t.Error(`reply should report "root": true when the root was reseeded`)
+		}
+	})
+
 	t.Run("all and folders together are refused", func(t *testing.T) {
 		ts := setup(t)
 		if status, _ := doJSON(t, ts, http.MethodPost, "/api/backend/acl/rebuild", "", map[string]any{

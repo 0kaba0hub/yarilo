@@ -285,6 +285,19 @@ CLI: `yarctl backend folder list <user> [--namespace NS]`
 > reply echoes `"all"` so the mode that ran is visible. `--all` is also the answer
 > to drift the operator cannot enumerate — the drifted index was what would have
 > told them which folders to name.
+>
+> **`--all` includes the namespace root, and reports it separately.** The root
+> carries its own ACL (`yarilo-acl-root`) and its own index rows, and it is not a
+> folder — no folder listing contains it. A replace built from folders alone would
+> delete the bootstrap grant a shared namespace cannot work without, so `--all`
+> addresses the root explicitly. In the reply, `rebuilt` lists **folders** (and
+> `folders` counts them) while the index was replaced from *all of them plus the
+> root*; the root's own outcome is the `root` boolean — `false` there means the
+> root simply holds no ACL, never "not found", since it has no name to look up.
+> A namespace with no folders is not a special case: `--all` then hands the
+> replace a genuinely complete set (the root alone) and every other row is
+> cleared, which is the maximal orphan case and precisely the repair. Blanking on
+> a *failed* enumeration would be the hazard, and that answers `500` first.
 
 ### `POST /api/backend/folder/info`
 

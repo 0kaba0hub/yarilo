@@ -248,13 +248,13 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	// In --all mode the set always carries at least the root, so an empty list
+	// here means no "all" and no "folders". A namespace with no folders is not a
+	// special case: --all hands the replace a genuinely complete set (the root
+	// alone), and clearing every other row is the point -- that is the maximal
+	// orphan case, not a hazard. Blanking on a FAILED enumeration would be the
+	// hazard, and that answers 500 before reaching here.
 	if len(req.Folders) == 0 {
-		if req.All {
-			// --all on a namespace with no folders: nothing to reseed, and
-			// replacing with an empty set would blank the index.
-			apiJSON(w, map[string]any{"status": "ok", "all": true, "folders": 0, "rebuilt": []string{}, "skipped": []map[string]string{}})
-			return
-		}
 		apiError(w, `folders required (or "all": true for the whole namespace)`, http.StatusBadRequest)
 		return
 	}
@@ -270,6 +270,7 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 	// with the number they expected and went away believing the index reseeded.
 	rebuilt := make([]string, 0, len(req.Folders))
 	skipped := make([]map[string]string, 0)
+	rootRebuilt := false
 	// Merge for a named subset, replace for --all. A subset must not delete the
 	// rows of folders it was not asked about (#1151); --all carries the complete
 	// set, so replacing is what clears rows for folders that are gone.
@@ -287,10 +288,16 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		if len(acl) == 0 {
-			skipped = append(skipped, map[string]string{"folder": folder, "reason": "no ACL"})
+			if folder != "" { // the root is reported by "root", not as a folder
+				skipped = append(skipped, map[string]string{"folder": folder, "reason": "no ACL"})
+			}
 			return nil, nil
 		}
-		rebuilt = append(rebuilt, folder)
+		if folder == "" {
+			rootRebuilt = true
+		} else {
+			rebuilt = append(rebuilt, folder)
+		}
 		return acl, nil
 	})
 	if err != nil {
@@ -304,6 +311,10 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 		"all":     req.All,
 		"folders": len(rebuilt),
 		"rebuilt": rebuilt,
+		// The namespace-root ACL is not a folder, so it is reported on its own
+		// rather than as an empty name in "rebuilt". False means the root simply
+		// holds no ACL (it cannot be "not found" -- see the existence exemption).
+		"root":    rootRebuilt,
 		"skipped": skipped,
 	})
 }
@@ -413,12 +424,28 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 			apiError(w, "list folders: "+lerr.Error(), http.StatusInternalServerError)
 			return nil, nil, nil, "", lerr
 		}
-		req.Folders = mailbox.SelectableNames(entries)
+		// The namespace root carries its own ACL (yarilo-acl-root) and its own
+		// index rows, under the empty mailbox name -- and ListFolders never
+		// reports it, being not a folder. A replace built from selectable folders
+		// alone would therefore delete the bootstrap grant, the one grant without
+		// which a shared namespace cannot be used at all (#1091, #1096): #1151
+		// again, inside the verb written to fix it. "Every folder that exists" is
+		// not the same set as "everything the index may hold"; the difference is
+		// exactly the root.
+		req.Folders = append([]string{""}, mailbox.SelectableNames(entries)...)
 	}
 	var present map[string]bool
 	if len(req.Folders) > 0 {
 		present = make(map[string]bool, len(req.Folders))
 		for _, f := range req.Folders {
+			if f == "" {
+				// The root is exempt by construction -- it carries no folder name
+				// to check, the same exemption the single-folder path states
+				// (#1096). Without this it would fail FolderExists, be skipped,
+				// and a replace would drop its rows anyway.
+				present[f] = true
+				continue
+			}
 			exists, ferr := bundle.box.FolderExists(f)
 			if ferr != nil {
 				apiError(w, "folder exists: "+ferr.Error(), http.StatusInternalServerError)
