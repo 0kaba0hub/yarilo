@@ -273,11 +273,12 @@ func checkIndexRoot(tmpl string) error {
 // invisible from anywhere except the two paths side by side (#1053).
 func userRefFor(info *mailbox.UserInfo, indexRoot string) fts.UserRef {
 	return fts.UserRef{
-		Username:   info.Username,
-		IndexRoot:  indexRoot,
-		Driver:     info.Driver,
-		Separator:  info.Separator,
-		EscapeChar: info.StorageEscapeChar,
+		Username:         info.Username,
+		IndexRoot:        indexRoot,
+		Driver:           info.Driver,
+		Separator:        info.Separator,
+		EscapeChar:       info.StorageEscapeChar,
+		SkipNFCNormalize: info.SkipNFCNormalize,
 	}
 }
 

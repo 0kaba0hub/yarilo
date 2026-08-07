@@ -553,6 +553,7 @@ func (s *session) postAllowed(ui *mailbox.UserInfo, ns *config.NamespaceConfig, 
 		GlobalsOnly:       s.opts.ACLGlobalsOnly,
 		Global:            s.opts.ACLGlobal,
 		CacheTTL:          s.opts.ACLCacheTTL,
+		SkipNFCNormalize:  ui.SkipNFCNormalize,
 	}, s.opts.Locker)
 	var sep byte = '/'
 	if ns.Separator != "" {

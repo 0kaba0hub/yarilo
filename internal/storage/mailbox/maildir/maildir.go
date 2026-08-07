@@ -1112,7 +1112,7 @@ func (u *userMailbox) folderPath(folder string) string {
 		}
 		return filepath.Join(u.home, "INBOX")
 	}
-	return filepath.Join(u.mailPath, mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator))
+	return filepath.Join(u.mailPath, mailbox.FolderSubpathForm("maildir", folder, u.folderDiskName(folder), u.separator, "", !u.normalizeNFC))
 }
 
 // controlFolderPath returns the directory for per-folder control files
@@ -1129,7 +1129,7 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 			return filepath.Join(u.mailPath, invalidFolderMarker)
 		}
 	}
-	sub := mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator)
+	sub := mailbox.FolderSubpathForm("maildir", folder, u.folderDiskName(folder), u.separator, "", !u.normalizeNFC)
 	if u.controlDir != "" {
 		if folder == "INBOX" {
 			return filepath.Join(u.controlDir, "INBOX")

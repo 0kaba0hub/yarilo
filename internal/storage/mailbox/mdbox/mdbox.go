@@ -251,7 +251,7 @@ func (u *userMailbox) folderDiskName(folder string) string {
 }
 
 func (u *userMailbox) folderPath(folder string) string {
-	return filepath.Join(u.mdboxRoot(), mailbox.FolderSubpath("mdbox", folder, u.folderDiskName(folder), u.separator))
+	return filepath.Join(u.mdboxRoot(), mailbox.FolderSubpathForm("mdbox", folder, u.folderDiskName(folder), u.separator, "", !u.normalizeNFC))
 }
 
 // folderDir is the mailbox directory itself (mailboxes/<name>), folderPath

@@ -752,3 +752,39 @@ func TestApplyLogRecountsAfterCorruptedHeaderUpdate(t *testing.T) {
 	}
 	b3.Close() //nolint:errcheck
 }
+
+// The index tree names a folder in the same Unicode form the mail tree does.
+// It did not: the drivers normalised before building their path and this tree
+// passed the logical name through, so one mailbox addressed in two forms got
+// two index directories -- two UID spaces, and a UIDVALIDITY change telling the
+// client to discard what it knew (#1092).
+//
+// Asserted on the computed path rather than by creating directories: macOS
+// normalises names on creation, so a filesystem probe agrees while the paths
+// differ.
+func TestIndexDirIsOneNameInEveryUnicodeForm(t *testing.T) {
+	const (
+		composed   = "Caf\u00e9"  // é as one rune
+		decomposed = "Cafe\u0301" // e + combining acute
+	)
+	if composed == decomposed {
+		t.Fatal("the two spellings are the same string; the fixture proves nothing")
+	}
+
+	ui := New().OpenUser(&mailbox.UserInfo{
+		Username: "u@test", Home: "/srv/u", Driver: "maildir", Separator: "/",
+	}).(*userHandle).ui
+	if got, want := ui.indexDir(decomposed), ui.indexDir(composed); got != want {
+		t.Errorf("index dir for NFD = %q, for NFC = %q; one mailbox, two index trees", got, want)
+	}
+
+	// And with normalisation turned off the two stay apart, so the knob still
+	// decides rather than the tree.
+	off := New().OpenUser(&mailbox.UserInfo{
+		Username: "u@test", Home: "/srv/u", Driver: "maildir", Separator: "/",
+		SkipNFCNormalize: true,
+	}).(*userHandle).ui
+	if off.indexDir(decomposed) == off.indexDir(composed) {
+		t.Error("normalisation is disabled and both forms still gave one index dir")
+	}
+}
