@@ -87,6 +87,10 @@ func TestCacheOpenRejections(t *testing.T) {
 		{"wrong major", func(b []byte) { b[0] = 9 }, 42, 1000},
 		{"wrong sizeof(uoff_t)", func(b []byte) { b[1] = 4 }, 42, 1000},
 		{"producer generation moved", func(b []byte) { b[3] = CacheProducerGen + 1 }, 42, 1000},
+		// Byte 0 is what every reference-written file carries. The header
+		// comment forbids relaxing the check to accept it "for migration";
+		// this row is what makes that sentence load-bearing.
+		{"reference producer (byte 0) rejected", func(b []byte) { b[3] = 0 }, 42, 1000},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
