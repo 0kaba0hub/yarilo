@@ -1,12 +1,11 @@
 name: Update Docker Hub description
 
-# Source of truth is docs/DOCKERHUB.md in the documentation repo
-# (rendered at https://doc.yarilomail.org/DOCKERHUB). Runs daily and
-# on demand; site-relative links are rewritten to absolute URLs so the
-# markdown renders correctly on Docker Hub.
 on:
-  schedule:
-    - cron: "20 4 * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - "docker/DOCKERHUB.md"
   workflow_dispatch:
 
 env:
@@ -19,14 +18,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Fetch description from the documentation repo
-        run: |
-          curl -fsSL -o /tmp/dockerhub-src.md \
-            https://raw.githubusercontent.com/yarilomail/documentation/main/docs/DOCKERHUB.md
-          sed -E \
-            -e 's#\]\(\./([A-Za-z0-9_-]+)\)#](https://doc.yarilomail.org/\1)#g' \
-            -e 's#src="/([^"]+)"#src="https://doc.yarilomail.org/\1"#g' \
-            /tmp/dockerhub-src.md > /tmp/dockerhub-readme.md
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
 
       - name: Update Docker Hub description
         uses: peter-evans/dockerhub-description@v5
@@ -34,5 +27,5 @@ jobs:
           username: 0kaba0
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: 0kaba0/yarilo
-          readme-filepath: /tmp/dockerhub-readme.md
+          readme-filepath: docker/DOCKERHUB.md
           short-description: "IMAP/POP3/LMTP/ManageSieve/Submission mail server with full-text search, in Go. Kubernetes-native."
