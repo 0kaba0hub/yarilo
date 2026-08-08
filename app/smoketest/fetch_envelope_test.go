@@ -14,10 +14,10 @@ import (
 type fetchServer struct {
 	mu      sync.Mutex
 	fetches int
-	// reply is the untagged FETCH line; empty sends none. tear drops the
+	// reply holds the untagged FETCH lines; empty sends none. tear drops the
 	// connection mid-command, which is what a panicking server looks like
 	// from a client (#1184).
-	reply string
+	reply []string
 	tear  bool
 }
 
@@ -47,8 +47,8 @@ func newFetchClient(t *testing.T, exists int, srv *fetchServer) *imapClient {
 					serverSide.Close()
 					return
 				}
-				if reply != "" {
-					fmt.Fprintf(serverSide, "%s\r\n", reply) //nolint:errcheck
+				for _, l := range reply {
+					fmt.Fprintf(serverSide, "%s\r\n", l) //nolint:errcheck
 				}
 			}
 			fmt.Fprintf(serverSide, "%s OK done\r\n", tag) //nolint:errcheck
@@ -57,27 +57,36 @@ func newFetchClient(t *testing.T, exists int, srv *fetchServer) *imapClient {
 	return &imapClient{conn: clientSide, r: bufio.NewReader(clientSide)}
 }
 
+// row renders one untagged FETCH line carrying both items.
+func row(seq int) string {
+	return fmt.Sprintf(`* %d FETCH (ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL NIL) `+
+		`BODYSTRUCTURE ("text" "plain" NIL NIL NIL "7bit" 4 1))`, seq)
+}
+
 func TestFetchEnvelopeProbe(t *testing.T) {
-	const good = `* 3 FETCH (ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL NIL) BODYSTRUCTURE ("text" "plain" NIL NIL NIL "7bit" 4 1))`
+	full := []string{row(1), row(2), row(3)}
 	cases := []struct {
 		name    string
-		reply   string
+		reply   []string
 		tear    bool
 		wantErr string
 	}{
-		{name: "both items answered", reply: good},
+		{name: "every row answered", reply: full},
+		// A tagged OK with rows missing: the shape a check that greps for
+		// BAD/NO calls healthy.
+		{name: "partial answer", reply: full[:2], wantErr: "untagged rows, want 3"},
 		// The shipped crash: the command is never answered and the
 		// connection goes away.
 		{name: "connection torn mid-command", tear: true, wantErr: "FETCH"},
-		{name: "no untagged data", wantErr: "no untagged data"},
+		{name: "no untagged data at all", wantErr: "0 untagged rows"},
 		{
-			name:    "envelope without body structure",
-			reply:   `* 3 FETCH (ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL NIL))`,
+			name:    "a row without body structure",
+			reply:   []string{row(1), `* 2 FETCH (ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL NIL))`, row(3)},
 			wantErr: "BODYSTRUCTURE",
 		},
 		{
-			name:    "body structure without envelope",
-			reply:   `* 3 FETCH (BODYSTRUCTURE ("text" "plain" NIL NIL NIL "7bit" 4 1))`,
+			name:    "a row without envelope",
+			reply:   []string{row(1), `* 2 FETCH (BODYSTRUCTURE ("text" "plain" NIL NIL NIL "7bit" 4 1))`, row(3)},
 			wantErr: "ENVELOPE",
 		},
 	}
@@ -102,7 +111,7 @@ func TestFetchEnvelopeProbe(t *testing.T) {
 // probe that fetches once would have passed on a build whose cached path
 // answers wrongly, which is the half this gate exists for.
 func TestFetchEnvelopeProbeReadsTwice(t *testing.T) {
-	srv := fetchServer{reply: `* 3 FETCH (ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL NIL) BODYSTRUCTURE ("text" "plain" NIL NIL NIL "7bit" 4 1))`}
+	srv := fetchServer{reply: []string{row(1), row(2), row(3)}}
 	c := newFetchClient(t, 3, &srv)
 	if err := fetchEnvelopeProbe(c); err != nil {
 		t.Fatal(err)
