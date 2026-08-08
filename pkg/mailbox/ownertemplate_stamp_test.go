@@ -139,3 +139,19 @@ func TestNamespaceListMode(t *testing.T) {
 		}
 	}
 }
+
+func TestAdvertisedPrefix(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"Public/", "Public/"},
+		{"user/%u/", "user/"},
+		{"user/%u", "user/"},
+		{"people/%n@%d/", "people/"},
+		{"%u/", ""},
+	}
+	for _, c := range cases {
+		if got := AdvertisedPrefix(c.in); got != c.want {
+			t.Errorf("AdvertisedPrefix(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

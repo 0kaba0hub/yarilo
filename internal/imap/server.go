@@ -1491,12 +1491,23 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 	// \HasChildren) so a top-level LIST shows the namespace even before
 	// any sub-folder exists.
 	for _, spec := range s.namespaceSpecsForList() {
-		if spec.Type == NamespacePersonal || !spec.List.listsSelf() {
+		if spec.Type == NamespacePersonal || !spec.List.listed() {
+			continue
+		}
+		// The node under the ADVERTISED prefix: for an owner-templated
+		// namespace that is the literal head (user), never the template --
+		// present even in children mode, as the reference presents its
+		// truncated node, so a client walking down from the NAMESPACE answer
+		// finds a container, not a hole. \HasChildren is truthful: the
+		// caller's own space (user/<self>) always exists. A fixed namespace
+		// in children mode keeps its node suppressed -- that is what the
+		// mode is for.
+		if !isOwnerTemplated(spec) && !spec.List.listsSelf() {
 			continue
 		}
 		// declared-only namespaces get a \Noselect entry; SELECT under
 		// them returns NO.
-		rootName := strings.TrimSuffix(spec.Prefix, string(spec.Separator))
+		rootName := strings.TrimSuffix(mailbox.AdvertisedPrefix(spec.Prefix), string(spec.Separator))
 		if rootName == "" {
 			continue
 		}
@@ -3281,7 +3292,10 @@ func (s *session) Namespace() (*imaplib.NamespaceData, error) {
 		if !ns.List.listed() {
 			continue
 		}
-		desc := imaplib.NamespaceDescriptor{Prefix: ns.Prefix, Delim: ns.Separator}
+		// An owner-templated prefix is advertised truncated at the variable
+		// (user/%u/ -> user/): the prefix is what a client prepends to a
+		// name, and the template prepends to nothing (#1171).
+		desc := imaplib.NamespaceDescriptor{Prefix: mailbox.AdvertisedPrefix(ns.Prefix), Delim: ns.Separator}
 		switch ns.Type {
 		case NamespacePersonal:
 			data.Personal = append(data.Personal, desc)

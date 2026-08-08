@@ -293,16 +293,24 @@ refusal.
 Recorded once so #1138 and #1139 stop deciding it separately: `user/%u` (and
 the bare `user/`) name no mailbox. Three consequences, one answer each:
 
-- **LIST/LSUB** never emit the template as a row. This is not a
-  template-specific rule: the namespace's `list` mode defaults to `children`
-  for an owner-templated prefix, so the node disappears because the namespace
-  is declared children-only -- the same mechanism an operator can set on any
-  namespace. The reference implements the identical split (its prefix node
-  vs children iteration flags), with its shared namespace documented as
-  `list = children`.
-- **NAMESPACE** advertises the prefix verbatim, template included. Per
-  RFC 2342 a prefix is what the client prepends to a name; the reference
-  prints its namespace prefixes unexpanded the same way. Parity, not a lie.
+- **LIST/LSUB** never emit the template as a row. The `list` mode defaults to
+  `children` for an owner-templated prefix, so the node disappears because the
+  namespace is declared children-only. The mechanism deliberately differs from
+  the reference's: there the template never appears because the namespace
+  prefix itself is truncated at the variable for the process's whole life
+  (shared-storage.c) -- its `list = children` still shows a prefix node that
+  has children (mailbox-list-iter.c) and hides it only when it has none. Our
+  `children` never lists the node. Same wire result for the templated
+  namespace, honest to record that it is not the same rule. The literal head
+  of the prefix (`user`) IS presented, as `\Noselect \HasChildren` -- a
+  client walking down from the advertised prefix finds a container, not a
+  hole, and `\HasChildren` is truthful: the caller's own space always exists.
+- **NAMESPACE** advertises the prefix truncated at the variable: `user/`, not
+  `user/%u/` -- the same truncation the reference applies (#1171). RFC 2342
+  defines the prefix as what the client prepends to a mailbox name; a client
+  prepending `user/%u/` builds `user/%u/INBOX`, which resolves to nothing --
+  the lie #1139 removed from LIST, sitting in the one response whose only job
+  is to say what to prepend.
 - **A pattern with the owner written out** (`user/alice/*`) materialises that
   owner's namespace and lists it like any other, ACL filtering included; a
   wildcard in the owner segment enumerates nobody, because there is no
@@ -845,6 +853,31 @@ reference's own quoted encoding (`"user=John Smith" lrw`, backslash-escaped,
 the negative sign inside the quotes) — so a file migrated in either direction
 round-trips byte-compatibly, and an operator can no longer legally write a
 line the parser then refuses to read back.
+
+### 7.9 Smaller recorded divergences, validated against the sources
+
+- **`subscriptions` startup refusal.** The reference defaults `subscriptions`
+  to yes for every namespace type and checks only a lower bound (at least one
+  subscriptions=yes namespace) at startup. We refuse explicit
+  `subscriptions: true` on an owner-templated namespace. Consequence worth
+  stating: a working reference config with that setting does not start here --
+  by design, since the setting configures a file that names no owner.
+- **Auto-subscribe on first SELECT.** The reference has no such behaviour at
+  all (only `autocreate`'s subscribe-on-create). Ours subscribes on the first
+  SELECT so LSUB shows the folder without a client round-trip. Long-standing,
+  now recorded.
+- **The owner in a shared namespace.** The reference unconditionally clears
+  ownership for any non-private namespace (acl-backend.c) -- nobody owns
+  `shared/alice/*` there, alice included; her implicit rights come back only
+  through the ACL default. Ours resolves the owner of an owner-templated
+  instance and gives them the owner tier. Interaction with `acl_ignore`
+  (IgnoreACL) is the open edge to watch: those are exactly the lines the
+  reference's clearing disables.
+- **CREATE under a namespace the caller may not see.** The reference answers
+  Permission denied -- with its own comment conceding the existence
+  disclosure -- and an internal error for a nonexistent owner, so CREATE is an
+  account oracle there. #1158 equalised both answers here. Stricter than the
+  reference, deliberately, not parity.
 
 ## 8. Testing plan
 
