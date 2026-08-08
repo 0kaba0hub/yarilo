@@ -195,6 +195,7 @@ func decodeEnvelope(b []byte) (*imaplib.Envelope, bool) {
 type folderCache struct {
 	file   *mailindex.CacheFile
 	envID  uint32
+	bsID   uint32
 	stamps map[uint32]uint32 // uid -> new head offset, flushed on close
 	idx    indexCacher
 	fid    uint64
@@ -267,35 +268,82 @@ func (s *session) openFolderCache(idx mailbox.UserIndex, folderID uint64) *folde
 		fc.release()
 		return nil
 	}
-	id, ok := fc.file.FieldID(cacheFieldEnvelope)
-	if !ok {
-		first, aerr := fc.file.AddFields([]mailindex.CacheField{{
-			Name: cacheFieldEnvelope, Type: mailindex.CacheFieldVariableSize, Decision: mailindex.CacheDecisionYes,
-		}})
-		if aerr != nil {
-			fc.file.Close()
-			fc.release()
-			return nil
+	// Both fields are registered up front: AddFields is a read-modify-write
+	// of the in-file table, so doing it once per window beats doing it per
+	// field, and a file that carries only one of them is a file two producer
+	// versions wrote.
+	for _, want := range []struct {
+		name string
+		dst  *uint32
+	}{
+		{cacheFieldEnvelope, &fc.envID},
+		{cacheFieldBodyStructure, &fc.bsID},
+	} {
+		id, ok := fc.file.FieldID(want.name)
+		if !ok {
+			first, aerr := fc.file.AddFields([]mailindex.CacheField{{
+				Name: want.name, Type: mailindex.CacheFieldVariableSize, Decision: mailindex.CacheDecisionYes,
+			}})
+			if aerr != nil {
+				fc.file.Close()
+				fc.release()
+				return nil
+			}
+			id = first
 		}
-		id = first
+		*want.dst = id
 	}
-	fc.envID = id
 	return fc
+}
+
+// head is the message's current chain head: the offset stamped earlier in
+// THIS window when there is one, else what the index carries. Without it a
+// second append for the same message in one FETCH (envelope, then body
+// structure) would chain from the stale head and orphan the first value.
+func (fc *folderCache) head(m *mailbox.MessageMeta) uint32 {
+	if off, ok := fc.stamps[m.UID]; ok {
+		return off
+	}
+	return m.CacheOffset
+}
+
+// read returns the merged field values for a message, or nil on a miss.
+func (fc *folderCache) read(m *mailbox.MessageMeta) map[uint32][]byte {
+	if fc == nil {
+		return nil
+	}
+	off := fc.head(m)
+	if off == 0 {
+		return nil // nothing cached for this message
+	}
+	vals, err := fc.file.ReadRecord(off)
+	if err != nil {
+		return nil // a bad chain is a miss; the re-parse overwrites the head
+	}
+	return vals
+}
+
+// storeField appends one field value for a message and moves the chain head.
+func (fc *folderCache) storeField(m *mailbox.MessageMeta, fieldID uint32, data []byte) {
+	if fc == nil {
+		return
+	}
+	off, err := fc.file.AppendRecord(fc.head(m), []mailindex.CacheFieldValue{
+		{FieldID: fieldID, Data: data},
+	})
+	if err != nil {
+		slog.Debug("imap: cache append failed", "uid", m.UID, "err", err)
+		return
+	}
+	fc.stamps[m.UID] = off
 }
 
 // envelope returns the cached envelope for a message, or nil on any of the
 // three misses.
 func (fc *folderCache) envelope(m *mailbox.MessageMeta) *imaplib.Envelope {
-	if fc == nil || m.CacheOffset == 0 {
-		return nil
-	}
-	vals, err := fc.file.ReadRecord(m.CacheOffset)
-	if err != nil {
-		return nil // a bad chain is a miss; the re-parse overwrites the head
-	}
-	data, ok := vals[fc.envID]
+	data, ok := fc.read(m)[fc.envID]
 	if !ok {
-		return nil // record hit, field missing: another producer's record
+		return nil // no record, or a record without this field
 	}
 	env, ok := decodeEnvelope(data)
 	if !ok {
@@ -304,20 +352,41 @@ func (fc *folderCache) envelope(m *mailbox.MessageMeta) *imaplib.Envelope {
 	return env
 }
 
-// store appends the freshly-parsed envelope for a message and remembers the
-// new chain head for the batched stamp.
+// store appends the freshly-parsed envelope for a message.
 func (fc *folderCache) store(m *mailbox.MessageMeta, env *imaplib.Envelope) {
 	if fc == nil || env == nil {
 		return
 	}
-	off, err := fc.file.AppendRecord(m.CacheOffset, []mailindex.CacheFieldValue{
-		{FieldID: fc.envID, Data: encodeEnvelope(env)},
-	})
-	if err != nil {
-		slog.Debug("imap: cache append failed", "uid", m.UID, "err", err)
+	fc.storeField(m, fc.envID, encodeEnvelope(env))
+}
+
+// bodyStructure returns the cached body structure, or nil on any miss.
+func (fc *folderCache) bodyStructure(m *mailbox.MessageMeta) imaplib.BodyStructure {
+	data, ok := fc.read(m)[fc.bsID]
+	if !ok {
+		return nil
+	}
+	bs, ok := decodeBodyStructure(data)
+	if !ok {
+		return nil
+	}
+	return bs
+}
+
+// storeBodyStructure appends the freshly-parsed body structure. A structure
+// that does not survive its own codec is not stored: serving a value the
+// reader would reject is worse than a miss, and this is where an unknown
+// node kind is caught.
+func (fc *folderCache) storeBodyStructure(m *mailbox.MessageMeta, bs imaplib.BodyStructure) {
+	if fc == nil || bs == nil {
 		return
 	}
-	fc.stamps[m.UID] = off
+	enc := encodeBodyStructure(bs)
+	if _, ok := decodeBodyStructure(enc); !ok {
+		slog.Debug("imap: body structure not representable; leaving uncached", "uid", m.UID)
+		return
+	}
+	fc.storeField(m, fc.bsID, enc)
 }
 
 // close flushes the batched offset stamps -- one index write per FETCH, not

@@ -113,11 +113,15 @@ type UserIndex interface {
 	// documents whose UID is absent and reports which present UIDs are
 	// missing from the index so the caller can reindex exactly those.
 	Rescan(mbox MailboxRef, present []uint32) (missing []uint32, err error)
-	// Optimize compacts every mailbox owned by the user (whole-user semantics).
-	Optimize() error
-	// OptimizeMailbox compacts sealed shards for one mailbox — used by the
-	// background auto-optimize queue so one large mailbox's compaction doesn't
-	// block indexing of the user's other mailboxes.
+	// Mailboxes lists the user's mailboxes this handle has open. Whole-user
+	// optimize is expressed as a loop over these under each mailbox's OWN
+	// lock, rather than as a second optimize entry point: a user-keyed lock
+	// excludes none of the per-mailbox writers, so the two ways to compact
+	// would not exclude each other across processes (#1176).
+	Mailboxes() []MailboxRef
+	// OptimizeMailbox compacts sealed shards for one mailbox — the single
+	// compaction entry point, used by the background auto-optimize queue and
+	// by whole-user optimize alike.
 	OptimizeMailbox(mbox MailboxRef) error
 	// Refresh makes writes committed by earlier updates visible to Lookup.
 	Refresh() error

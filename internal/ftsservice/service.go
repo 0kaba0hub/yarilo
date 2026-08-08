@@ -443,9 +443,19 @@ func (s *Service) Optimize(user string) error {
 	if err != nil {
 		return err
 	}
-	return s.opts.LockMailbox(user, "", func() error {
-		return h.ui.Optimize()
-	})
+	// Per mailbox, under that mailbox's own lock. A single user-keyed lock
+	// would exclude nobody: every writer -- index jobs, rescan, auto-optimize
+	// -- keys on (user, folder), so a whole-user compaction holding
+	// FTSKey(user, "") ran concurrently with them across processes, deleting
+	// shards another pod was reading or extending (#1176).
+	for _, mbox := range h.ui.Mailboxes() {
+		if err := s.opts.LockMailbox(user, mbox.Name, func() error {
+			return h.ui.OptimizeMailbox(mbox)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // enqueueOptimize implements fts.OptimizeNotifier — the engine's write path
