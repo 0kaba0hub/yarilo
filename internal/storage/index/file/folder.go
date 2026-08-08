@@ -2029,3 +2029,76 @@ func (u *userIndex) CachePath(folderID uint64) (string, error) {
 	})
 	return path, err
 }
+
+// PurgeCache rewrites the folder's cache as a new generation holding only
+// what live messages point at (#1030). Returns records carried and bytes
+// reclaimed.
+//
+// Write the new file, rename it over, then move the extension's reset_id --
+// in that order, so a crash between steps leaves a file_seq mismatch, which
+// readers already treat as "no cache, rebuild". No directory fsync: unlike an
+// FTS shard, a cache generation back from the dead carries the old file_seq
+// and invalidates itself.
+func (u *userIndex) PurgeCache(folderID uint64) (carried int, reclaimed int64, err error) {
+	err = u.withFolder(folderID, func(fs *folderState) error {
+		ext := findExt(fs.file.Extensions, extNameCache)
+		if ext == nil {
+			return nil // nothing was ever cached
+		}
+		path := filepath.Join(fs.indexDir, mailindex.CacheFileName)
+		before, serr := os.Stat(path)
+		if serr != nil {
+			return nil // no cache file
+		}
+		old, oerr := mailindex.OpenCache(path, fs.file.Header.IndexID, ext.ResetID)
+		if oerr != nil {
+			// Already invalid: readers would ignore it, so drop it.
+			if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
+				return fmt.Errorf("fileindex: purge cache remove: %w", rerr)
+			}
+			reclaimed = before.Size()
+			return nil
+		}
+
+		live := make(map[uint32]uint32, len(fs.file.Records))
+		for _, rec := range fs.file.Records {
+			if off := decodeCacheRec(rec.Ext[extNameCache]); off != 0 {
+				live[rec.UID] = off
+			}
+		}
+		newSeq := ext.ResetID + 1
+		tmp := path + ".purge"
+		_ = os.Remove(tmp)
+		moved, perr := old.PurgeInto(tmp, newSeq, live)
+		old.Close()
+		if perr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("fileindex: purge cache: %w", perr)
+		}
+		after, aerr := os.Stat(tmp)
+		if aerr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("fileindex: purge cache stat: %w", aerr)
+		}
+		if rerr := os.Rename(tmp, path); rerr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("fileindex: purge cache rename: %w", rerr)
+		}
+		for _, rec := range fs.file.Records {
+			off, ok := moved[rec.UID]
+			if !ok {
+				delete(rec.Ext, extNameCache)
+				continue
+			}
+			if rec.Ext == nil {
+				rec.Ext = make(map[string][]byte, 1)
+			}
+			rec.Ext[extNameCache] = encodeCacheRec(off)
+		}
+		ext.ResetID = newSeq
+		carried = len(moved)
+		reclaimed = before.Size() - after.Size()
+		return fs.flush(true)
+	})
+	return carried, reclaimed, err
+}

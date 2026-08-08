@@ -65,3 +65,46 @@ func TestCacheOffsetRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// The append path never persists a cache offset, whatever the meta carries:
+// an offset is valid only inside its own (indexid, file_seq) pair, and every
+// folder has its own (#1178). Call sites guard this too, but each new one has
+// to re-earn it; this holds for all of them. SetCacheOffsets stays the only
+// writer, so a rebuild that wants to keep offsets asks by name.
+func TestAppendNeverPersistsACacheOffset(t *testing.T) {
+	ui := New().OpenUser(&mailbox.UserInfo{Username: testUser, Home: t.TempDir()}).(*userHandle).ui
+	f, err := ui.OpenFolder("INBOX", 7, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As a naive copy of the source meta would carry it.
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, CacheOffset: 4096}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ui.AllocateAndAppend(f.ID, &mailbox.MessageMeta{CacheOffset: 8192}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := ui.GetMessages(f.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("%d messages, want 2", len(msgs))
+	}
+	for _, m := range msgs {
+		if m.CacheOffset != 0 {
+			t.Errorf("uid %d persisted cache offset %d from the meta; an offset from another "+
+				"pair resolves to a valid-looking record for a different message", m.UID, m.CacheOffset)
+		}
+	}
+	// Stamping still works: the guard is not "offsets are never stored".
+	if err := ui.SetCacheOffsets(f.ID, map[uint32]uint32{1: 512}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ = ui.GetMessages(f.ID, nil)
+	for _, m := range msgs {
+		if m.UID == 1 && m.CacheOffset != 512 {
+			t.Errorf("explicit stamp lost: uid 1 offset = %d, want 512", m.CacheOffset)
+		}
+	}
+}

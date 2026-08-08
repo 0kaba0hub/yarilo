@@ -1081,3 +1081,9 @@ func (h *userHandle) SetCacheOffsets(folderID uint64, offsets map[uint32]uint32)
 	h.stampTrace(folderID)
 	return h.ui.SetCacheOffsets(folderID, offsets)
 }
+
+// PurgeCache forwards the cache purge (#1030) like every other folder verb.
+func (h *userHandle) PurgeCache(folderID uint64) (int, int64, error) {
+	h.stampTrace(folderID)
+	return h.ui.PurgeCache(folderID)
+}
