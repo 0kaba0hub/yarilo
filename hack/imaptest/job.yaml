@@ -29,7 +29,7 @@ spec:
         ##
         ## Raise them only against a stand with headroom to spare, and check
         ## container_cpu_cfs_throttled_periods_total afterwards either way; see
-        ## docs/TESTING.md.
+        ## https://doc.yarilomail.org/TESTING.
         args:
         - host=yarilo-imap-login.yarilo-sb.svc.cluster.local
         - port=143

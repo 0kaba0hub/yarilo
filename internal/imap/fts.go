@@ -50,7 +50,7 @@ type FTSOptions struct {
 	// together, since a query doesn't know which single language a given
 	// message was auto-detected as.
 	Chain *language.MultiChain
-	// AddMissing / ReadFallback / Timeout / Strict — see docs/FTS.md §11.
+	// AddMissing / ReadFallback / Timeout / Strict — see https://doc.yarilomail.org/FTS §11.
 	AddMissing   string
 	ReadFallback bool
 	Timeout      time.Duration

@@ -3,7 +3,7 @@
 # ============================================================================
 #
 # A "tag" = one NFS shard = one co-located backend StatefulSet with its OWN
-# yarilo-locks and PV (docs/DEPLOYMENT.md "backend deployment — one per tag").
+# yarilo-locks and PV (https://doc.yarilomail.org/DEPLOYMENT "backend deployment — one per tag").
 # The director ring is SHARED; each backend tag self-registers into it and the
 # director routes a user to a pod WITHIN that user's tag (LookupBackendByTag).
 #

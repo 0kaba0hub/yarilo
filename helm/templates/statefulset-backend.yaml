@@ -4,7 +4,7 @@
   container + yarilo-fts (localhost) + yarilo-backend-api + the
   yarilo-backend-reg registration sidecar, sharing one pod IP and the tag's NFS
   PV. One user hashes to one pod IP that serves every protocol, so the director
-  needs only one ring + one userDir. See docs/DEPLOYMENT.md.
+  needs only one ring + one userDir. See https://doc.yarilomail.org/DEPLOYMENT.
 */ -}}
 {{- $root := . }}
 {{- $reg := .Values.backend_register }}

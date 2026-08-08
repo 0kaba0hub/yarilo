@@ -827,7 +827,7 @@ components:
     ## validator before SQL ever sees the bearer token as a
     ## plaintext password). Empty list disables OAUTHBEARER.
     ##
-    ## See docs/AUTH_OAUTH2.md for the wire spec, configuration
+    ## See https://doc.yarilomail.org/AUTH_OAUTH2 for the wire spec, configuration
     ## reference, and worked examples for Google Workspace,
     ## Microsoft 365, and Keycloak / Authelia.
     ##
@@ -859,7 +859,7 @@ components:
     ## policy — wforce-compatible HTTP policy-server hook. URL=""
     ## disables. When set, every login attempt POSTs JSON to the
     ## policy server which can allow / reject / tarpit the request.
-    ## See docs/AUTH_POLICY.md for the wire format and a wforce
+    ## See https://doc.yarilomail.org/AUTH_POLICY for the wire format and a wforce
     ## configuration example.
     ##
     ## hashNonce is REQUIRED when url is set — it salts the pwhash
@@ -2341,7 +2341,7 @@ extraVolumeMounts: []
 
 # Named dicts (pkg/dict). Yarilo features (metadata, quota counters, ACL state)
 # look these up by name. Each entry picks a driver (file|redis|sql|memory|fail)
-# and configures it via driver-specific `settings`. See docs/DICT.md for the
+# and configures it via driver-specific `settings`. See https://doc.yarilomail.org/DICT for the
 # full reference per driver. The same template renders into yarilo.yaml.
 #
 # Standalone single-pod default uses file driver on the local PVC.
@@ -2365,7 +2365,7 @@ extraVolumeMounts: []
 # maildir tree on the first CREATE / APPEND. Do NOT point shared
 # locations at per-user storage paths.
 #
-# See docs/NAMESPACE.md for full schema, separator semantics,
+# See https://doc.yarilomail.org/NAMESPACE for full schema, separator semantics,
 # METADATA priv/ per-accessing-user behaviour and the post-NS-1b
 # roadmap (ACL-1, NS-3 cross-pod routing, QUOTA-1 owner-paid).
 ## RFC 4314 server-side ACL — GETACL / SETACL / DELETEACL / MYRIGHTS
@@ -2383,7 +2383,7 @@ extraVolumeMounts: []
 ## delivery, quota-status policy service), summed from the index count backend.
 ## Limits come from the userdb quota_rule field / quota_status.default_quota_rules.
 ## Independent of the IMAP QUOTA extension (protocol.imap.imap_quota).
-## Full-text search (docs/FTS.md). fts_engine is REQUIRED when enabled —
+## Full-text search (https://doc.yarilomail.org/FTS). fts_engine is REQUIRED when enabled —
 ## startup fails fast on a missing or unknown engine name.
 fts:
   enabled: false
@@ -2531,7 +2531,7 @@ fts:
   ## that does the extra work — mis-declaring costs a wasted syscall one way
   ## and a rebuilt index after a crash the other. Every k8s backend runs on
   ## the tag's RWX NFS PV and should say so; standalone on a local PV should
-  ## not. NOTE: an NFS export must be `sync` either way (docs/DEPLOYMENT.md).
+  ## not. NOTE: an NFS export must be `sync` either way (https://doc.yarilomail.org/DEPLOYMENT).
   fts_storage_type: "local"
   ## Mailboxes autoindexing skips: special-use flags written with their
   ## backslash, or names with * and ? wildcards. Empty excludes nothing.

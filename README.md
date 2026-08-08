@@ -61,7 +61,7 @@ Yarilo is a **multi-binary** server. Each protocol and infrastructure role is a 
 
 All index mutations go through the cross-process mailbox lock (`yarilo-locks`). Sessions sharing a pod serialise on an in-process `sync.RWMutex` — the Redis lock is only ever contested across pods, not within a single pod.
 
-Self-healing (Maildir sync-on-open, dbox/mdbox reactive heal), the operator rebuild path, and mdbox rotation/tuning knobs: see **[docs/STORAGE.md](docs/STORAGE.md)**.
+Self-healing (Maildir sync-on-open, dbox/mdbox reactive heal), the operator rebuild path, and mdbox rotation/tuning knobs: see **[STORAGE](https://doc.yarilomail.org/STORAGE)**.
 
 ---
 
@@ -74,7 +74,7 @@ Self-healing (Maildir sync-on-open, dbox/mdbox reactive heal), the operator rebu
 | Engine | flatcurve (Xapian, on-disk glass shards) via [`go-xapian`](https://github.com/0kaba0hub/go-xapian) | ✅ |
 | Indexer / lookup service | `yarilo-fts` (sole writer; sessions dial it) | ✅ |
 
-The `yarilo-fts` service owns the index end-to-end (indexing *and* lookups) and is the only process linking libxapian (cgo); session binaries stay pure-Go and send `LOOKUP` over the internal TAB protocol. Enable it with `fts.enabled` + `fts_engine: flatcurve`. Multi-language indexing/search, attachment decoders, and the full config surface are documented in **[docs/FTS.md](docs/FTS.md)**.
+The `yarilo-fts` service owns the index end-to-end (indexing *and* lookups) and is the only process linking libxapian (cgo); session binaries stay pure-Go and send `LOOKUP` over the internal TAB protocol. Enable it with `fts.enabled` + `fts_engine: flatcurve`. Multi-language indexing/search, attachment decoders, and the full config surface are documented in **[FTS](https://doc.yarilomail.org/FTS)**.
 
 **Acceptance benchmark** (`app/fts-bench`, synthetic corpus, local Xapian glass shards):
 
@@ -84,7 +84,7 @@ The `yarilo-fts` service owns the index end-to-end (indexing *and* lookups) and 
 | 10,000 | 2 | 1.62× corpus | 9,764 msg/s | 0.14 ms vs 149 ms (**1,090×**) |
 | 20,000 | 4 | 1.63× corpus | 10,027 msg/s | 0.23 ms vs 322 ms (**1,410×**) |
 
-Search stays sub-millisecond as the mailbox grows; the linear scan it replaces grows with message count. See `docs/FTS.md` for the full design and the phased roadmap (relevancy / strict-substring / multi-language, then attachment decoders).
+Search stays sub-millisecond as the mailbox grows; the linear scan it replaces grows with message count. See `https://doc.yarilomail.org/FTS` for the full design and the phased roadmap (relevancy / strict-substring / multi-language, then attachment decoders).
 
 ---
 
@@ -119,7 +119,7 @@ Search stays sub-millisecond as the mailbox grows; the linear scan it replaces g
 
 All intra-cluster protocols are TAB-delimited text with LF termination and a version handshake.
 
-Session routing (`backend_addr` / `director_addr` precedence), sticky assignments, username-hash templates (`username_hash`), backend evacuation, the per-user flush hook, tag sharding models, and the self-organizing ring formation (with its design history) are all documented in **[docs/DIRECTOR.md](docs/DIRECTOR.md)**.
+Session routing (`backend_addr` / `director_addr` precedence), sticky assignments, username-hash templates (`username_hash`), backend evacuation, the per-user flush hook, tag sharding models, and the self-organizing ring formation (with its design history) are all documented in **[DIRECTOR](https://doc.yarilomail.org/DIRECTOR)**.
 
 ---
 
@@ -132,7 +132,7 @@ helm upgrade --install yarilo ./helm \
   -n yarilo --create-namespace
 ```
 
-See [INSTALL.md](INSTALL.md) for a full Kubernetes walkthrough with cert-manager, Let's Encrypt, and an external MySQL passdb.
+See [the installation guide](https://doc.yarilomail.org/INSTALL) for a full Kubernetes walkthrough with cert-manager, Let's Encrypt, and an external MySQL passdb.
 
 Minimal `yarilo.yaml` for bare-metal single-node:
 
@@ -176,7 +176,7 @@ docker compose up -d
 ```
 
 Full walkthrough — creating users, TLS, MTA (Postfix) integration, verifying,
-backups — in [docs/DOCKER-COMPOSE.md](docs/DOCKER-COMPOSE.md).
+backups — in [DOCKER-COMPOSE](https://doc.yarilomail.org/DOCKER-COMPOSE).
 
 ---
 
@@ -246,29 +246,31 @@ assigned GUID is never rewritten.
 
 ## Documentation
 
+Full documentation lives at **[doc.yarilomail.org](https://doc.yarilomail.org/)** (source: [yarilomail/documentation](https://github.com/yarilomail/documentation)).
+
 | Document | Contents |
 |:---|:---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Code-level architecture, process model, storage contract, deployment diagrams |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | K8s topology, sizing, HA strategy, sharding via tags |
-| [docs/GENERAL.md](docs/GENERAL.md) | `general`: SSL, HAProxy, XCLIENT, connection limits |
-| [docs/SERVICES.md](docs/SERVICES.md) | `services`: per-listener config |
-| [docs/IMAP.md](docs/IMAP.md) | `protocol.imap`: IDLE, line length, ACL, NAMESPACE, NOTIFY, METADATA, OBJECTID |
-| [docs/NAMESPACE.md](docs/NAMESPACE.md) | IMAP namespaces (RFC 2342 / 9051): personal / shared / other_users |
-| [docs/SUBMISSION.md](docs/SUBMISSION.md) | `protocol.submission`: hostname, size, relay |
-| [docs/LMTP.md](docs/LMTP.md) | `protocol.lmtp`: delivery, HAProxy, XCLIENT, TLS, headers |
-| [docs/POP3.md](docs/POP3.md) | `protocol.pop3`: UIDL, soft-delete, migration |
-| [docs/SIEVE.md](docs/SIEVE.md) | `sieve`: filtering, ManageSieve, imapsieve, vacation, extensions |
-| [docs/AUTH.md](docs/AUTH.md) | `auth.passdb`: SQL / passwd-file / static backends, password schemes, userdb extra fields |
-| [docs/QUOTA.md](docs/QUOTA.md) | `quota`: count-authoritative engine, grace, warnings, mail_size, clone mirror, over-status |
-| [docs/STORAGE.md](docs/STORAGE.md) | Mailbox self-healing, operator rebuild, mdbox rotation/tuning knobs |
-| [docs/FTS.md](docs/FTS.md) | Full-text search: engine, multi-language, decoders, config, phases |
-| [docs/SMOKE.md](docs/SMOKE.md) | End-to-end smoke test |
-| [docs/DIRECTOR.md](docs/DIRECTOR.md) | `director_service`: ring, peers, mTLS, session routing, sticky assignments, username-hash, evacuation, flush hook, ring formation history |
-| [docs/MONITOR.md](docs/MONITOR.md) | `yarilo-monitor`: health probes, Prometheus metrics |
-| [docs/DIRECTOR-API.md](docs/DIRECTOR-API.md) | Director HTTP admin API |
-| [docs/BACKEND-API.md](docs/BACKEND-API.md) | Backend HTTP admin API |
-| [docs/YARILO-ADMIN.md](docs/YARILO-ADMIN.md) | `yarctl` CLI reference |
-| [docs/DICT.md](docs/DICT.md) | `pkg/dict` KV-store abstraction: drivers, YAML schema |
+| [ARCHITECTURE](https://doc.yarilomail.org/ARCHITECTURE) | Code-level architecture, process model, storage contract, deployment diagrams |
+| [DEPLOYMENT](https://doc.yarilomail.org/DEPLOYMENT) | K8s topology, sizing, HA strategy, sharding via tags |
+| [GENERAL](https://doc.yarilomail.org/GENERAL) | `general`: SSL, HAProxy, XCLIENT, connection limits |
+| [SERVICES](https://doc.yarilomail.org/SERVICES) | `services`: per-listener config |
+| [IMAP](https://doc.yarilomail.org/IMAP) | `protocol.imap`: IDLE, line length, ACL, NAMESPACE, NOTIFY, METADATA, OBJECTID |
+| [NAMESPACE](https://doc.yarilomail.org/NAMESPACE) | IMAP namespaces (RFC 2342 / 9051): personal / shared / other_users |
+| [SUBMISSION](https://doc.yarilomail.org/SUBMISSION) | `protocol.submission`: hostname, size, relay |
+| [LMTP](https://doc.yarilomail.org/LMTP) | `protocol.lmtp`: delivery, HAProxy, XCLIENT, TLS, headers |
+| [POP3](https://doc.yarilomail.org/POP3) | `protocol.pop3`: UIDL, soft-delete, migration |
+| [SIEVE](https://doc.yarilomail.org/SIEVE) | `sieve`: filtering, ManageSieve, imapsieve, vacation, extensions |
+| [AUTH](https://doc.yarilomail.org/AUTH) | `auth.passdb`: SQL / passwd-file / static backends, password schemes, userdb extra fields |
+| [QUOTA](https://doc.yarilomail.org/QUOTA) | `quota`: count-authoritative engine, grace, warnings, mail_size, clone mirror, over-status |
+| [STORAGE](https://doc.yarilomail.org/STORAGE) | Mailbox self-healing, operator rebuild, mdbox rotation/tuning knobs |
+| [FTS](https://doc.yarilomail.org/FTS) | Full-text search: engine, multi-language, decoders, config, phases |
+| [SMOKE](https://doc.yarilomail.org/SMOKE) | End-to-end smoke test |
+| [DIRECTOR](https://doc.yarilomail.org/DIRECTOR) | `director_service`: ring, peers, mTLS, session routing, sticky assignments, username-hash, evacuation, flush hook, ring formation history |
+| [MONITOR](https://doc.yarilomail.org/MONITOR) | `yarilo-monitor`: health probes, Prometheus metrics |
+| [DIRECTOR-API](https://doc.yarilomail.org/DIRECTOR-API) | Director HTTP admin API |
+| [BACKEND-API](https://doc.yarilomail.org/BACKEND-API) | Backend HTTP admin API |
+| [YARILO-ADMIN](https://doc.yarilomail.org/YARILO-ADMIN) | `yarctl` CLI reference |
+| [DICT](https://doc.yarilomail.org/DICT) | `pkg/dict` KV-store abstraction: drivers, YAML schema |
 
 ---
 

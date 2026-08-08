@@ -10,7 +10,7 @@ import (
 )
 
 // Wire protocol — TAB-delimited, LF-terminated. Same bytes for embedded
-// (Unix socket) and remote (mTLS TCP). See docs/DEPLOYMENT.md §Wire protocol.
+// (Unix socket) and remote (mTLS TCP). See https://doc.yarilomail.org/DEPLOYMENT §Wire protocol.
 //
 //	> VERSION\t1\n                                       — handshake
 //	< VERSION\t1\tOK\n

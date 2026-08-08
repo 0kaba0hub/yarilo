@@ -7,7 +7,7 @@ import (
 
 // OwnerVar is the owner variable a namespace prefix carries to become
 // owner-templated: the segment filling its slot names the owner of the instance
-// (docs/OWNER_SHARED_NS.md 3.1). v1 supports %u (the full username); %n / %d
+// (https://doc.yarilomail.org/OWNER_SHARED_NS 3.1). v1 supports %u (the full username); %n / %d
 // split-slot forms are a documented follow-up.
 const OwnerVar = "%u"
 
@@ -70,7 +70,7 @@ func validOwnerSegment(seg string) bool {
 // on-demand cache, the admin AuthClient) -- one producer here, not a lookup
 // parameter each caller fills differently.
 //
-// Precedence (docs/OWNER_SHARED_NS.md 3.3): the owner's userdb decides the
+// Precedence (https://doc.yarilomail.org/OWNER_SHARED_NS 3.3): the owner's userdb decides the
 // driver and the root (Home/MailPath); the namespace location fills only fields
 // the userdb left empty. Overwriting the root with the template would point a
 // per-user driver at a path it does not match -- the parallel-tree bug. base,

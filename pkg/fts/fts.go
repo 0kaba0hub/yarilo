@@ -1,6 +1,6 @@
 // Package fts defines the full-text-search engine contract: the build-key model
 // an indexer feeds documents through, the query/result shapes a lookup speaks,
-// and the per-user index handle engines implement. See docs/FTS.md.
+// and the per-user index handle engines implement. See https://doc.yarilomail.org/FTS.
 package fts
 
 import "context"

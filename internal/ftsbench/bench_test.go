@@ -7,11 +7,11 @@ import (
 )
 
 // indexRatioCap bounds on-disk index size as a multiple of the corpus
-// (docs/FTS.md §12); catches e.g. accidental substring indexing.
+// (https://doc.yarilomail.org/FTS §12); catches e.g. accidental substring indexing.
 const indexRatioCap = 3.0
 
 // TestAcceptance fails when indexed SEARCH is slower than a brute-force
-// scan or the index grows past indexRatioCap (docs/FTS.md §12).
+// scan or the index grows past indexRatioCap (https://doc.yarilomail.org/FTS §12).
 func TestAcceptance(t *testing.T) {
 	rep, err := Run(Config{
 		Root:       t.TempDir(),

@@ -21,7 +21,7 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// On-disk format constants (see docs/FTS.md for the format specification).
+// On-disk format constants (see https://doc.yarilomail.org/FTS for the format specification).
 const (
 	Label         = "fts-flatcurve"
 	dbPrefix      = "index."
@@ -203,7 +203,7 @@ func (e *Engine) OpenUser(_ context.Context, user fts.UserRef) (fts.UserIndex, e
 }
 
 // mboxState holds the open write shard for one mailbox. The service is the
-// sole writer (docs/FTS.md §4), so a plain mutex per user index suffices.
+// sole writer (https://doc.yarilomail.org/FTS §4), so a plain mutex per user index suffices.
 type mboxState struct {
 	dir     string
 	eng     *Engine        // gives commitCurrent access to opts.RotateTime without threading it through every call site
@@ -924,7 +924,7 @@ func optimizeDir(st *mboxState) error {
 	// operations before the reply) and there is no commit-a-directory call
 	// regardless, so the fsync is skipped rather than issued as a no-op. An
 	// async export breaks that guarantee and no client-side call repairs it:
-	// a server setting, not a code path (docs/DEPLOYMENT.md, #1176).
+	// a server setting, not a code path (https://doc.yarilomail.org/DEPLOYMENT, #1176).
 	//
 	// Best-effort: a failure costs a rebuild through Rescan, never
 	// correctness.

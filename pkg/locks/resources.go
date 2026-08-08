@@ -3,7 +3,7 @@ package locks
 // Resource-key constructors. Storage code MUST use these instead of building
 // strings inline, so a future prefix change can be tracked through the
 // compiler instead of grep. Naming follows the convention in
-// docs/DEPLOYMENT.md §Deadlock prevention:
+// https://doc.yarilomail.org/DEPLOYMENT §Deadlock prevention:
 //
 //	idx:<user>                  — per-user index lock (taken first)
 //	mbox:<user>:<folder>        — per-mailbox lock (taken second)

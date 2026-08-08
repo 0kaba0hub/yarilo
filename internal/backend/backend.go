@@ -1357,7 +1357,7 @@ func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 	}
 }
 
-// buildFTS wires the session-side FTS client (docs/FTS.md §11). Sessions
+// buildFTS wires the session-side FTS client (https://doc.yarilomail.org/FTS §11). Sessions
 // only ever talk to the yarilo-fts service over the wire — remote mode; the
 // embedded mode is for the service's own tests/CLI.
 func buildFTS(cfg *config.Config) (ftsproto.Client, *language.MultiChain, error) {

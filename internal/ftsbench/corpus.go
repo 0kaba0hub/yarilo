@@ -1,7 +1,7 @@
 // Package ftsbench is the FTS acceptance benchmark: it builds a synthetic
 // mail corpus, indexes it through the yarilo-fts service (embedded, flatcurve
 // engine), and compares an index-backed SEARCH against the brute-force scan
-// on the two axes the design commits to (docs/FTS.md §12): search latency and
+// on the two axes the design commits to (https://doc.yarilomail.org/FTS §12): search latency and
 // index size. Shared by the CI acceptance test and the app/fts-bench binary.
 //
 // The corpus generator is pure Go (no build tag) so tooling can size a run

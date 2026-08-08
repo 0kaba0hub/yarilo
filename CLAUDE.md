@@ -35,7 +35,7 @@ docker/          — Dockerfile
 
 **yarilo's infrastructure architecture is defined by these documents and diagrams in `docs/`. They are the source of truth for every decision about deployment, scaling, HA, and cross-component coordination:**
 
-- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — deployment topology, sizing (per pod, per tag), HA strategy, sharding via tags, and the rationale behind each decision
+- **[DEPLOYMENT](https://doc.yarilomail.org/DEPLOYMENT)** — deployment topology, sizing (per pod, per tag), HA strategy, sharding via tags, and the rationale behind each decision
 - **[docs/yarilo_director.svg](docs/yarilo_director.svg)** — director deployment: login proxies, a 3-pod director StatefulSet with peer-sync, backend-lease (self-registration + heartbeat #776, replacing the monitor sidecars), ring routing to backend tags
 - **[docs/yarilo_backend.svg](docs/yarilo_backend.svg)** — backend deployment (per tag): ONE co-located StatefulSet whose pod carries every protocol container (imap/pop3/submission/lmtp/managesieve) plus `yarilo-fts` and the `yarilo-backend-reg` sidecar on a shared IP; `yarilo-locks`, `backend-api` and `quota-status` are separate deployments; one shared NFS PV (RWX)
 - **[docs/yarilo_standalone.svg](docs/yarilo_standalone.svg)** — standalone deployment: the full stack (login + sessions + auth + warden + embedded `yarilo-locks` + storage) for self-contained installations without a director
@@ -62,7 +62,7 @@ docker/          — Dockerfile
 Every decision about processes, UIDs, IPC, storage is defined there.
 Code that contradicts ARCHITECTURE.md is wrong — fix the code, not the document.
 
-**For the infrastructure and deployment layer, see `docs/DEPLOYMENT.md` and the SVG diagrams above.**
+**For the infrastructure and deployment layer, see `https://doc.yarilomail.org/DEPLOYMENT` and the SVG diagrams above.**
 
 Key rules derived from ARCHITECTURE.md:
 
