@@ -61,25 +61,30 @@ func TestFetchEnvelopeProbe(t *testing.T) {
 	const good = `* 3 FETCH (ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL NIL) BODYSTRUCTURE ("text" "plain" NIL NIL NIL "7bit" 4 1))`
 	cases := []struct {
 		name    string
-		srv     fetchServer
+		reply   string
+		tear    bool
 		wantErr string
 	}{
-		{"both items answered", fetchServer{reply: good}, ""},
+		{name: "both items answered", reply: good},
 		// The shipped crash: the command is never answered and the
 		// connection goes away.
-		{"connection torn mid-command", fetchServer{tear: true}, "FETCH"},
-		{"no untagged data", fetchServer{}, "no untagged data"},
-		{"envelope without body structure", fetchServer{
-			reply: `* 3 FETCH (ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL NIL))`,
-		}, "BODYSTRUCTURE"},
-		{"body structure without envelope", fetchServer{
-			reply: `* 3 FETCH (BODYSTRUCTURE ("text" "plain" NIL NIL NIL "7bit" 4 1))`,
-		}, "ENVELOPE"},
+		{name: "connection torn mid-command", tear: true, wantErr: "FETCH"},
+		{name: "no untagged data", wantErr: "no untagged data"},
+		{
+			name:    "envelope without body structure",
+			reply:   `* 3 FETCH (ENVELOPE (NIL "s" NIL NIL NIL NIL NIL NIL NIL NIL))`,
+			wantErr: "BODYSTRUCTURE",
+		},
+		{
+			name:    "body structure without envelope",
+			reply:   `* 3 FETCH (BODYSTRUCTURE ("text" "plain" NIL NIL NIL "7bit" 4 1))`,
+			wantErr: "ENVELOPE",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := tc.srv
-			c := newFetchClient(t, 3, &srv)
+			srv := &fetchServer{reply: tc.reply, tear: tc.tear}
+			c := newFetchClient(t, 3, srv)
 			err := fetchEnvelopeProbe(c)
 			switch {
 			case tc.wantErr == "" && err != nil:
