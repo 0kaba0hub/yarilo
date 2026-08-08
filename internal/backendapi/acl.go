@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/yarilomail/yarilo/internal/userstate/acl"
 	"github.com/yarilomail/yarilo/pkg/config"
@@ -588,6 +589,35 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 		}
 	}
 	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, bundle.info.Separator, bundle.info.StorageEscapeChar, uc.info.Username, uc.lockOwner(), acl.Policy{}, s.opts.Locker)
+	// Admin grants feed owner discovery like IMAP ones: the registry hangs off
+	// the index write, so both surfaces sync it through the one chain (#1168).
+	// The personal store gets it too when it backs an owner-templated space
+	// for this account (one yarilo-acl tree, the §7.6 fact) -- a grant made
+	// on the user's own mailbox is the ordinary way sharing happens, and
+	// discovery must not miss it. Mirrors openHandles on the IMAP side.
+	if mailbox.PrefixIsOwnerTemplated(spec.Prefix) {
+		store.SetRegistry(acl.NewRegistry(s.opts.SharedDict, account))
+	} else if strings.EqualFold(strings.TrimSpace(spec.Type), "personal") && s.opts.SharedDict != nil {
+		for _, ns := range s.opts.Namespaces {
+			if !mailbox.PrefixIsOwnerTemplated(ns.Prefix) {
+				continue
+			}
+			sep := byte('/')
+			if ns.Separator != "" {
+				sep = ns.Separator[0]
+			}
+			ownerUI, serr := mailbox.StampOwnerLocation(uc.info, uc.info, ns.Location, sep)
+			if serr != nil {
+				continue
+			}
+			cand := acl.New(ownerUI.Home, ownerUI.MailPath, ownerUI.Driver, ownerUI.Separator,
+				ownerUI.StorageEscapeChar, uc.info.Username, uc.lockOwner(), acl.Policy{}, nil)
+			if cand.ListPath() == store.ListPath() {
+				store.SetRegistry(acl.NewRegistry(s.opts.SharedDict, uc.info.Username))
+				break
+			}
+		}
+	}
 	return store, &req, present, adminNamespaceOwner(bundle.spec, account), nil
 }
 

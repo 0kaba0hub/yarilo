@@ -78,6 +78,9 @@ type Options struct {
 	SpecialUseDefaults map[string]string
 	MetadataDict       dict.Dict
 	QuotaDict          dict.Dict
+	// SharedDict is the owner-discovery registry (#1168), same handle the IMAP
+	// side writes through; nil disables discovery.
+	SharedDict dict.Dict
 	// QuotaCloneDicts names the dicts (subset of Dicts) that quota_clone mirrors
 	// usage into. Exposed read-only via /api/backend/quota/clone/* for operators
 	// to inspect the fan-out. From cfg.Quota.CloneDicts.
@@ -160,6 +163,7 @@ func New(opts Options) *Server {
 	s.registerSpecialUseRoutes()
 	s.registerMetadataRoutes()
 	s.registerACLRoutes()
+	s.registerACLRegistryRoutes()
 	s.registerQuotaRoutes()
 	s.registerWhoRoutes()
 	s.registerSessionRoutes()

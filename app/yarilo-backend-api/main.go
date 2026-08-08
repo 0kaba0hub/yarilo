@@ -177,6 +177,7 @@ func main() {
 		SpecialUseDefaults: cfg.Protocol.IMAP.SpecialUseDefaults,
 		MetadataDict:       dicts["metadata"],
 		QuotaDict:          dicts["quota"],
+		SharedDict:         dicts[cfg.ACL.SharedDict],
 		QuotaCloneDicts:    cfg.Quota.CloneDicts,
 		WardenAddr:         cfg.WardenService.ClientAddr(),
 		WardenTLS:          wardenTLS,

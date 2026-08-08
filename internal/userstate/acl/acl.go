@@ -63,7 +63,16 @@ type Store struct {
 	clock   func() time.Time
 	cacheMu sync.Mutex
 	cache   map[string]cacheEntry
+
+	// registry, when set, projects this store's grants into the shared dict
+	// for owner discovery (#1168). Set only on owner-templated namespace
+	// stores -- fixed namespaces are discovered by their prefix already.
+	registry *Registry
 }
+
+// SetRegistry attaches the owner-discovery registry. Call before the first
+// write; nil detaches.
+func (s *Store) SetRegistry(r *Registry) { s.registry = r }
 
 // cacheEntry is one folder's cached ACL plus the file identity it was parsed
 // from. at is the last time the entry was validated (read or stat-confirmed).

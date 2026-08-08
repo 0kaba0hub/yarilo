@@ -318,6 +318,20 @@ CLI: `yarctl backend folder list <user> [--namespace NS]`
 > definition (#1163). The root's rows are the ones that inherit to every
 > mailbox under them.
 
+### `POST /api/backend/acl/registry/list` / `.../registry/rebuild`
+
+The owner-discovery registry (#1168): a dict in the reference's shared-boxes
+key space, synced wherever the `yarilo-acl-list` index is written. `list`
+answers "which owners may this caller discover" for the bare user plus
+`anyone` grants (group grants resolve against the session identity, which the
+admin plane does not have — the reply says so). `rebuild` reprojects one
+owner's rows from their namespace index; `acl rebuild --all` does the same as
+a side effect, since the registry hangs off the index write. Both answer 400
+when `acl_shared_dict` is not configured.
+
+CLI: `yarctl backend acl registry list <user>`,
+`yarctl backend acl registry rebuild <owner> --namespace NS`.
+
 ### `POST /api/backend/subscriptions/migrate`
 
 Folds a namespace's old per-namespace subscription file into the subscriber's

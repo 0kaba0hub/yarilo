@@ -154,6 +154,10 @@ type Options struct {
 	// yarilo-acl files.
 	ACLGlobalsOnly bool
 
+	// SharedDict is the owner-discovery registry (#1168): who granted what to
+	// whom in owner-templated namespaces, in the reference's shared-boxes key
+	// space. Nil disables discovery -- LIST user/* then enumerates nobody.
+	SharedDict dict.Dict
 	// ACLCacheTTL is how long a parsed per-mailbox ACL is trusted before its
 	// file's mtime+size are re-validated. Zero disables caching.
 	ACLCacheTTL time.Duration
@@ -1736,21 +1740,45 @@ func (s *session) listNamespaceOrphans(w *imapserver.ListWriter, h *nsHandle, ex
 	return nil
 }
 
-// listMaterialisedOwners opens the owner namespaces that patterns name with an
-// explicit owner and lists each through the regular per-namespace path, ACL
-// filtering included. Returns the visible prefixes it listed so the
-// subscription pass does not emit their rows twice.
+// listMaterialisedOwners opens the owner namespaces the patterns can reach --
+// named outright (user/alice/*) or discovered through the registry when the
+// owner segment is wildcarded (#1168) -- and lists each through the regular
+// per-namespace path, ACL filtering included. Returns the visible prefixes it
+// listed so the subscription pass does not emit their rows twice.
 func (s *session) listMaterialisedOwners(w *imapserver.ListWriter, ref string, patterns []string, opts *imaplib.ListOptions) (map[string]bool, error) {
 	done := make(map[string]bool)
 	for _, spec := range s.namespaceSpecsForList() {
 		if !isOwnerTemplated(spec) || !spec.List.listed() {
 			continue
 		}
+		owners := make([]string, 0)
+		enumerate := false
 		for _, p := range refPatterns(ref, patterns) {
-			owner, _, ok := extractOwner(spec, p)
-			if !ok || strings.ContainsAny(owner, "*%") {
+			if owner, _, ok := extractOwner(spec, p); ok && !strings.ContainsAny(owner, "*%") {
+				owners = append(owners, owner)
 				continue
 			}
+			if patternTouchesHead(p, mailbox.AdvertisedPrefix(spec.Prefix)) {
+				enumerate = true
+			}
+		}
+		// A wildcarded owner segment enumerates the registry: the owners who
+		// granted this caller something (their user, their groups, anyone).
+		// Rows may be stale -- a revoked grant not yet reconciled -- and each
+		// owner still resolves through the same gate as any verb, so a stale
+		// row and an invented owner produce the same silence (#1138).
+		if enumerate && s.srv.opts.SharedDict != nil && s.userInfo != nil {
+			aclUser, aclGroups := s.userInfo.ACLIdentity()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			found, err := acl.OwnersFor(ctx, s.srv.opts.SharedDict, aclUser, aclGroups)
+			cancel()
+			if err != nil {
+				slog.Warn("imap: owner registry scan failed; discovery degraded", "sid", s.sid, "err", err)
+			} else {
+				owners = append(owners, found...)
+			}
+		}
+		for _, owner := range owners {
 			prefix := strings.Replace(spec.Prefix, mailbox.OwnerVar, owner, 1)
 			if done[prefix] {
 				continue
@@ -1768,6 +1796,20 @@ func (s *session) listMaterialisedOwners(w *imapserver.ListWriter, ref string, p
 		}
 	}
 	return done, nil
+}
+
+// patternTouchesHead reports whether a LIST pattern can match names under the
+// advertised head of a templated namespace: either the pattern descends into
+// it literally, or a wildcard opens before the head ends ("*", "us*").
+func patternTouchesHead(p, head string) bool {
+	if head == "" {
+		return false
+	}
+	if strings.HasPrefix(p, head) {
+		return true
+	}
+	i := strings.IndexAny(p, "*%")
+	return i >= 0 && strings.HasPrefix(head, p[:i])
 }
 
 // listTemplatedSubscriptions emits rows for subscriptions naming an

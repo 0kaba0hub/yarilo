@@ -26,8 +26,10 @@ func dispatchACL(args []string) error {
 		return aclRebuild(args[1:])
 	case "materialise", "materialize":
 		return aclMaterialise(args[1:])
+	case "registry":
+		return aclRegistry(args[1:])
 	default:
-		return fmt.Errorf("unknown acl command %q — available: list, get, set, delete, rebuild, materialise", args[0])
+		return fmt.Errorf("unknown acl command %q — available: list, get, set, delete, rebuild, materialise, registry", args[0])
 	}
 }
 
@@ -54,6 +56,11 @@ Commands:
   rebuild ... --dry-run                       — report the drift the rebuild would
                                                 repair (missing / stale / mismatched
                                                 rows), without writing
+  registry list <user>                        — owners this user may discover through
+                                                the shared dict (user + anyone grants;
+                                                group grants resolve per session)
+  registry rebuild <user> --namespace NS      — reproject the owner's registry rows
+                                                from the namespace acl index
   materialise <user> <folder> [<folder> ...]  — write what each mailbox inherits into
                                                 its own ACL; repairs mailboxes created
                                                 before inheritance was materialised at
@@ -292,4 +299,38 @@ func aclMaterialise(args []string) error {
 		"folders":   folders,
 		"apply":     *apply,
 	}))
+}
+
+// aclRegistry routes the owner-discovery registry verbs (#1168).
+func aclRegistry(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: yarctl backend acl registry <list|rebuild> ...")
+	}
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("acl registry list", flag.ContinueOnError)
+		if err := parseFlags(fs, args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 1 {
+			return fmt.Errorf("usage: yarctl backend acl registry list <user>")
+		}
+		return printJSON(backendAPIPost("/api/backend/acl/registry/list", map[string]any{
+			"user": fs.Arg(0),
+		}))
+	case "rebuild":
+		fs := flag.NewFlagSet("acl registry rebuild", flag.ContinueOnError)
+		ns := fs.String("namespace", "", "owner-templated namespace slug")
+		if err := parseFlags(fs, args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 1 || *ns == "" {
+			return fmt.Errorf("usage: yarctl backend acl registry rebuild <owner> --namespace NS")
+		}
+		return printJSON(backendAPIPost("/api/backend/acl/registry/rebuild", map[string]any{
+			"user":      fs.Arg(0),
+			"namespace": *ns,
+		}))
+	}
+	return fmt.Errorf("unknown acl registry command %q — available: list, rebuild", args[0])
 }

@@ -419,6 +419,9 @@ data:
       acl_cache_ttl: {{ .acl_cache_ttl | default 30 | int64 }}
       defaults_from_inbox: {{ .defaults_from_inbox | default false }}
       globals_only: {{ .globals_only | default false }}
+      {{- if hasKey . "acl_shared_dict" }}
+      acl_shared_dict: {{ .acl_shared_dict | quote }}
+      {{- end }}
       {{- with .global }}
       global:
         {{- range . }}

@@ -459,6 +459,12 @@ type ACLConfig struct {
 	// CacheTTL is how long (seconds) a parsed per-mailbox ACL is trusted
 	// before mtime+size re-validation. Default 30; 0 disables caching.
 	CacheTTL int `koanf:"acl_cache_ttl"`
+	// SharedDict names the dict (from the dicts section) that keeps the
+	// owner registry: who granted what to whom in owner-templated
+	// namespaces, which is what lets LIST user/* enumerate the owners the
+	// caller may see. Empty disables the registry -- user/* then lists
+	// nobody, and grants are discoverable only by naming the owner.
+	SharedDict string `koanf:"acl_shared_dict"`
 }
 
 // GlobalACLRule is one global ACL entry-set scoped to a mailbox name (or the
@@ -2289,6 +2295,12 @@ func (cfg *Config) validate() error {
 	}
 	if err := ValidateFTSIndexRoot(cfg.FTS.IndexRoot); err != nil {
 		return err
+	}
+	if name := cfg.ACL.SharedDict; name != "" {
+		if _, ok := cfg.Dicts[name]; !ok {
+			return fmt.Errorf("config: acl_shared_dict names dict %q, which is not in the dicts section; "+
+				"a misspelt name would silently disable owner discovery", name)
+		}
 	}
 	if cfg.InternalTLS.Enabled {
 		if cfg.InternalTLS.Cert == "" || cfg.InternalTLS.Key == "" || cfg.InternalTLS.CA == "" {
