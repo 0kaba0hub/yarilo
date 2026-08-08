@@ -13,16 +13,6 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// boxesEngine hands out an index that reports two open mailboxes.
-type boxesEngine struct{ boxes []fts.MailboxRef }
-
-func (boxesEngine) Name() string   { return "boxes" }
-func (boxesEngine) Caps() fts.Caps { return fts.Caps{} }
-func (e boxesEngine) OpenUser(context.Context, fts.UserRef) (fts.UserIndex, error) {
-	return &boxesIndex{boxes: e.boxes}, nil
-}
-func (boxesEngine) Close() error { return nil }
-
 type boxesIndex struct {
 	stubUserIndex
 	boxes      []fts.MailboxRef
