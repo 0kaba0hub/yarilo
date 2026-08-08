@@ -134,3 +134,57 @@ func TestFetchEnvelope_CorruptCacheDegradesToParse(t *testing.T) {
 		t.Fatalf("corrupt cache became a client error:\n%s", out)
 	}
 }
+
+// A FETCH (ENVELOPE BODYSTRUCTURE) used to open the message file TWICE --
+// once per item. Both are served from the cache after the first pass, which
+// the deleted message file proves: neither answer has any other source.
+func TestFetchBodyStructure_ServedFromCacheWithoutTheMessage(t *testing.T) {
+	root, addr := startEnvelopeCacheServer(t)
+	c := dialRaw(t, addr)
+	c.login()
+
+	// multipart/mixed { text/plain, application/pdf } -- a shape a
+	// flattening or a dropped part would visibly change on the wire.
+	c.seq++
+	body := "From: Alice <alice@example.com>\r\n" +
+		"Subject: multipart-probe\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"bnd42\"\r\n\r\n" +
+		"--bnd42\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nтіло\r\n" +
+		"--bnd42\r\nContent-Type: application/pdf; name=\"r.pdf\"\r\n" +
+		"Content-Disposition: attachment; filename=\"r.pdf\"\r\n" +
+		"Content-Transfer-Encoding: base64\r\n\r\nQUJD\r\n" +
+		"--bnd42--\r\n"
+	tag := "b001"
+	c.conn.Write([]byte(tag + " APPEND INBOX {" + itoa(len(body)) + "}\r\n"))
+	c.readLine()
+	c.conn.Write([]byte(body + "\r\n"))
+	for !strings.HasPrefix(c.readLine(), tag+" ") {
+	}
+
+	c.cmd(`SELECT INBOX`)
+	first := c.cmd(`FETCH 1 (ENVELOPE BODYSTRUCTURE)`)
+	if !strings.Contains(first, "multipart-probe") || !strings.Contains(first, `"mixed"`) {
+		t.Fatalf("first fetch did not parse both items:\n%s", first)
+	}
+
+	_ = filepath.Walk(root, func(p string, info os.FileInfo, _ error) error {
+		if info != nil && !info.IsDir() &&
+			(strings.Contains(p, "/cur/") || strings.Contains(p, "/new/")) {
+			os.Remove(p)
+		}
+		return nil
+	})
+
+	second := c.cmd(`FETCH 1 (ENVELOPE BODYSTRUCTURE)`)
+	if !strings.Contains(second, "multipart-probe") {
+		t.Errorf("envelope not served from the cache:\n%s", second)
+	}
+	// The whole tree must come back, not just the outer node: both leaves
+	// and the attachment's disposition.
+	for _, want := range []string{"MIXED", "PLAIN", "PDF", "attachment"} {
+		if !strings.Contains(strings.ToUpper(second), strings.ToUpper(want)) {
+			t.Errorf("body structure lost %q in the cache round-trip:\n%s", want, second)
+		}
+	}
+}

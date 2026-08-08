@@ -296,8 +296,12 @@ func TestRotationAndOptimize(t *testing.T) {
 	if len(res.Definite) != 5 {
 		t.Fatalf("lookup across shards = %v", res.Definite)
 	}
-	if err := ui.Optimize(); err != nil {
-		t.Fatal(err)
+	// Whole-user optimize is a loop over Mailboxes() under each mailbox's
+	// own lock now (#1176); the service does exactly this.
+	for _, mbox := range ui.Mailboxes() {
+		if err := ui.OptimizeMailbox(mbox); err != nil {
+			t.Fatal(err)
+		}
 	}
 	sealed, current = countShards(t, dir)
 	if sealed != 1 || current != 0 {

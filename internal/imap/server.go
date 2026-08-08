@@ -2896,12 +2896,14 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			break
 		}
 	}
-	// The envelope cache serves the listing's hot path without opening
-	// message files (#1030). Opened once per FETCH, misses parsed and
-	// written back, offsets stamped in one batch on close. nil-safe: any
-	// cache trouble degrades to parsing, never to a client error.
+	// The index cache serves the listing's hot path without opening message
+	// files (#1030): ENVELOPE and BODYSTRUCTURE alike, which is also what
+	// removes the SECOND open a FETCH (ENVELOPE BODYSTRUCTURE) used to pay.
+	// Opened once per FETCH, misses parsed and written back, offsets stamped
+	// in one batch on close. nil-safe: any cache trouble degrades to
+	// parsing, never to a client error.
 	var envCache *folderCache
-	if opts.Envelope {
+	if opts.Envelope || opts.BodyStructure != nil {
 		envCache = s.openFolderCache(s.folderIdx(), s.folder.ID)
 		defer envCache.close()
 	}
@@ -2979,10 +2981,13 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			}
 		}
 		if opts.BodyStructure != nil && m.Filename != "" {
-			if rc, ferr := s.fetchSelected(m); ferr == nil {
+			if bs := envCache.bodyStructure(m); bs != nil {
+				mw.WriteBodyStructure(bs)
+			} else if rc, ferr := s.fetchSelected(m); ferr == nil {
 				bs := imapserver.ExtractBodyStructure(rc)
 				rc.Close()
 				mw.WriteBodyStructure(bs)
+				envCache.storeBodyStructure(m, bs)
 			}
 		}
 		for _, section := range opts.BodySection {

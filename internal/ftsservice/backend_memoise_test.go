@@ -87,7 +87,7 @@ func (stubUserIndex) SetCheckpoint(fts.MailboxRef, uint32, uint32, uint32) error
 func (stubUserIndex) BeginUpdate(fts.MailboxRef) (fts.Update, error)             { return nil, nil }
 func (stubUserIndex) Expunge(fts.MailboxRef, uint32) error                       { return nil }
 func (stubUserIndex) Rescan(fts.MailboxRef, []uint32) ([]uint32, error)          { return nil, nil }
-func (stubUserIndex) Optimize() error                                            { return nil }
+func (stubUserIndex) Mailboxes() []fts.MailboxRef                                { return nil }
 func (stubUserIndex) OptimizeMailbox(fts.MailboxRef) error                       { return nil }
 func (stubUserIndex) Refresh() error                                             { return nil }
 func (stubUserIndex) Lookup(fts.MailboxRef, fts.Query) (fts.Result, error)       { return fts.Result{}, nil }

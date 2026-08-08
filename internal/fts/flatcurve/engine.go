@@ -65,7 +65,22 @@ type Options struct {
 	// wires this to the real index-path resolver; nil uses
 	// <IndexRoot>/<folder name>/fts-flatcurve.
 	MailboxDir func(user fts.UserRef, mbox fts.MailboxRef) string
+
+	// StorageType is what the shards sit on: "local" (default) or "nfs",
+	// declared by the operator through fts_storage_type. The engine decides
+	// what it means -- today, whether a directory fsync is worth issuing
+	// (#1176). The TYPE is plumbed rather than a derived boolean, so the next
+	// filesystem-dependent decision reads the same setting instead of adding
+	// a second one.
+	StorageType string
 }
+
+// dirSyncUseful reports whether fsyncing a shard directory buys anything.
+// Local filesystems: yes, it is what makes the rename and the removals
+// survive a crash. NFS: no -- the protocol commits metadata operations
+// before the reply, and there is no commit-a-directory call to make, so the
+// fsync is a no-op the kernel answers 0 to.
+func (o Options) dirSyncUseful() bool { return o.StorageType != "nfs" }
 
 func (o Options) withDefaults() Options {
 	if o.CommitLimit <= 0 {
@@ -824,15 +839,17 @@ func (u *userIndex) Rescan(mbox fts.MailboxRef, present []uint32) ([]uint32, err
 	return missing, nil
 }
 
-func (u *userIndex) Optimize() error {
+// Mailboxes lists the mailboxes this handle has open. Compaction is driven
+// mailbox by mailbox so each run holds that mailbox's own lock (#1176); the
+// list is what this process has touched, since there is no upfront sweep.
+func (u *userIndex) Mailboxes() []fts.MailboxRef {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	out := make([]fts.MailboxRef, 0, len(u.boxes))
 	for _, st := range u.boxes {
-		if err := optimizeDir(st); err != nil {
-			return err
-		}
+		out = append(out, st.mbox)
 	}
-	return nil
+	return out
 }
 
 // OptimizeMailbox compacts sealed shards for one mailbox. It takes the same
@@ -846,6 +863,20 @@ func (u *userIndex) OptimizeMailbox(mbox fts.MailboxRef) error {
 	return optimizeDir(u.state(mbox))
 }
 
+// optimizeDir merges a mailbox's sealed shards into one and deletes the
+// originals.
+//
+// NFS INVARIANT -- do not break it for a reader cache. This deletes files
+// other code may want to read, and it is safe only because NO shard is held
+// open across calls: Lookup, Expunge and Rescan open and close within the
+// call, the one long-lived handle (the current write shard) is closed on the
+// line below, and every one of those paths takes the same u.mu this runs
+// under. Pool open Xapian readers to speed up search and the deletions below
+// become unlink-under-open: on NFS that is a client-side silly-rename
+// (.nfsXXXX), a directory that will not rmdir, and ESTALE for the reader --
+// the reference implementation's failure mode, which we do not have (#1176).
+// The cross-process half is the caller's: every compaction runs under that
+// mailbox's own FTS lock, never a user-wide one.
 func optimizeDir(st *mboxState) error {
 	slog.Debug("fts/flatcurve: optimizeDir start", "dir", st.dir, "cur_path_before_close", st.curPath)
 	if err := st.closeCurrent(); err != nil {
@@ -881,6 +912,29 @@ func optimizeDir(st *mboxState) error {
 	slog.Debug("fts/flatcurve: optimizeDir sealing", "dir", st.dir, "from", tmp, "to", sealed)
 	if err := os.Rename(tmp, sealed); err != nil {
 		return fmt.Errorf("fts/flatcurve: optimize rename: %w", err)
+	}
+	// Durability of the directory entries themselves: without this a crash
+	// can leave the merged shard renamed but unrecorded, or a deleted one
+	// back from the dead -- both reconcile through Rescan, at the cost of a
+	// rebuild.
+	//
+	// Issued only where it buys something -- the operator declares that
+	// through fts_storage_type. Over NFS the rename and the removals above
+	// are already durable when they return (the protocol commits metadata
+	// operations before the reply) and there is no commit-a-directory call
+	// regardless, so the fsync is skipped rather than issued as a no-op. An
+	// async export breaks that guarantee and no client-side call repairs it:
+	// a server setting, not a code path (docs/DEPLOYMENT.md, #1176).
+	//
+	// Best-effort: a failure costs a rebuild through Rescan, never
+	// correctness.
+	if st.eng.opts.dirSyncUseful() {
+		if d, derr := os.Open(st.dir); derr == nil {
+			if serr := d.Sync(); serr != nil {
+				slog.Debug("fts/flatcurve: optimize dir sync failed", "dir", st.dir, "err", serr)
+			}
+			d.Close()
+		}
 	}
 	metricOptimizeRuns.Inc()
 	metricOptimizeShardsMerged.Add(float64(len(paths)))

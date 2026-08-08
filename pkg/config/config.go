@@ -836,6 +836,19 @@ type FTSConfig struct {
 	// AuthMasterAddr is the yarilo-auth master listener for userdb lookups
 	// (storage identity of the user being indexed). Empty = resolver defaults.
 	AuthMasterAddr string `koanf:"fts_auth_master_addr"`
+	// StorageType declares what the index shards sit on: "local" (default) or
+	// "nfs". Not detected -- declared, as the reference declares mail_nfs_index
+	// rather than probing: an approach that changes with the filesystem must be
+	// a setting, not an inference, and not a comment (#1176).
+	//
+	// It decides where a durability call is real. Directory entries are the
+	// case in hand: a local filesystem needs the fsync after a compaction's
+	// rename and removals, while NFS commits metadata operations before the
+	// reply by protocol and offers no commit-a-directory call at all, so the
+	// same fsync is a no-op there. Wrong either way costs little (a wasted
+	// syscall, or a rebuild through Rescan after a crash), which is why the
+	// default is the one that does MORE work.
+	StorageType string `koanf:"fts_storage_type"`
 	// MaxConns is how many connections a session process keeps to yarilo-fts.
 	// One connection serialises request/response pairs, so this is what decides
 	// how many lookups actually run at once — a search fan-out over several
@@ -2296,6 +2309,10 @@ func (cfg *Config) validate() error {
 	if err := ValidateFTSIndexRoot(cfg.FTS.IndexRoot); err != nil {
 		return err
 	}
+	if _, ok := NormalizeFTSStorageType(cfg.FTS.StorageType); !ok {
+		return fmt.Errorf("config: fts_storage_type %q is not a storage type; valid values are local and nfs",
+			cfg.FTS.StorageType)
+	}
 	if name := cfg.ACL.SharedDict; name != "" {
 		if _, ok := cfg.Dicts[name]; !ok {
 			return fmt.Errorf("config: acl_shared_dict names dict %q, which is not in the dicts section; "+
@@ -2656,6 +2673,29 @@ func containsOwnerLocationVar(loc string) bool {
 		}
 	}
 	return false
+}
+
+// FTS storage types. The vocabulary is closed: an unknown value fails
+// startup rather than falling back, so a typo cannot silently pick a
+// durability policy (the list-mode precedent).
+const (
+	FTSStorageLocal = "local"
+	FTSStorageNFS   = "nfs"
+)
+
+// NormalizeFTSStorageType resolves the operator's fts_storage_type. Unset
+// means local: of the two, it is the one that performs the extra durability
+// work, so an unconfigured deployment is the safe one.
+func NormalizeFTSStorageType(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return FTSStorageLocal, true
+	case FTSStorageLocal:
+		return FTSStorageLocal, true
+	case FTSStorageNFS:
+		return FTSStorageNFS, true
+	}
+	return "", false
 }
 
 // ValidateFTSIndexRoot refuses a storage driver the FTS engine cannot use.
