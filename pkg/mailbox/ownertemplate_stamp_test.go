@@ -122,11 +122,14 @@ func TestNamespaceListMode(t *testing.T) {
 		{"", "", "yes", true},
 		{"Public/", "", "yes", true},
 		{"user/%u/", "", "children", true},
-		// Bool spellings stay accepted; the key used to be a boolean.
-		{"Public/", "true", "yes", true},
-		{"Public/", "1", "yes", true},
-		{"Public/", "false", "no", true},
-		{"Public/", "0", "no", true},
+		// One vocabulary: bool spellings are rejected, or "true" would mean
+		// yes forever against three states. YAML true/false arrive here as
+		// the weakly-typed "1"/"0", so those four are the exact inputs a
+		// list: true config produces.
+		{"Public/", "true", "", false},
+		{"Public/", "1", "", false},
+		{"Public/", "false", "", false},
+		{"Public/", "0", "", false},
 		{"user/%u/", "yes", "yes", true},
 		{"Public/", "children", "children", true},
 		{"Public/", "CHILDREN", "children", true},

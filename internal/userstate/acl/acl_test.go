@@ -740,13 +740,10 @@ func TestStore_RootACLOnDisk(t *testing.T) {
 	}
 }
 
-// A namespace-root ACL written before RootFileName existed must keep working.
-//
-// On the dbox layouts the old path was real and enabled — mailboxes/dbox-Mails/
-// yarilo-acl — so a deployment can have grants there today. Reading only the
-// new name would drop them, and the symptom (everyone in a shared namespace
-// loses access after an upgrade) points nowhere near the cause (#1091).
-func TestStore_ReadsALegacyRootACL(t *testing.T) {
+// The pre-RootFileName fallback is gone: a file at the old dbox path is not
+// read as the root default. All deployed stores were verified to hold no such
+// file before the removal; a stray one appearing later must stay inert.
+func TestStore_IgnoresTheRetiredLegacyRootPath(t *testing.T) {
 	for _, driver := range []string{"mdbox", "sdbox"} {
 		t.Run(driver, func(t *testing.T) {
 			home := t.TempDir()
@@ -764,19 +761,8 @@ func TestStore_ReadsALegacyRootACL(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Get root: %v", err)
 			}
-			if len(got) != 1 || got[0].Identifier.Name != "bob" {
-				t.Errorf("legacy root ACL not read: %+v", got)
-			}
-
-			// And a grant written now goes to the new file, so the fallback is
-			// a read path and not a second home.
-			if err := s.Set("", mailbox.ACL{
-				{Identifier: mailbox.Identifier{Type: mailbox.IDUser, Name: "carol"}, Rights: "lr"},
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Stat(filepath.Join(home, "mailboxes", RootFileName)); err != nil {
-				t.Errorf("a new grant did not go to the root file: %v", err)
+			if len(got) != 0 {
+				t.Errorf("retired legacy path still read: %+v", got)
 			}
 		})
 	}

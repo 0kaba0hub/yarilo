@@ -25,7 +25,7 @@ func TestValidateOwnerTemplatedNamespace(t *testing.T) {
 		// exact #1139 defect, reachable by configuration. Same shape as the
 		// subscriptions: true refusal: the two keys answer alike.
 		{"templated, list yes", NamespaceConfig{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:%h", List: "yes"}, "not a mailbox"},
-		{"templated, list true", NamespaceConfig{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:%h", List: "true"}, "not a mailbox"},
+		{"templated, list true (bool spelling)", NamespaceConfig{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:%h", List: "true"}, "unknown list mode"},
 		{"templated, list children accepted", NamespaceConfig{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:%h", List: "children"}, ""},
 		{"templated, list no accepted", NamespaceConfig{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:%h", List: "no"}, ""},
 		{"fixed, list yes accepted", NamespaceConfig{Type: "shared", Prefix: "Public/", Separator: "/", Location: "maildir:/srv/public", List: "yes"}, ""},

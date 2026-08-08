@@ -2698,7 +2698,7 @@ namespaces: []
 #     list: "yes"                 # LIST exposure: yes (node + children),
 #                                 # children (only the children -- the node is
 #                                 # not a mailbox), no (addressable, not
-#                                 # advertised). Bool spellings accepted. Unset
+#                                 # advertised). Values are yes/children/no only. Unset
 #                                 # defaults to children for an owner-templated
 #                                 # prefix (user/%u names nothing until an owner
 #                                 # is filled in), yes otherwise.
@@ -2719,7 +2719,7 @@ namespaces: []
 #   - type: shared
 #     prefix: "Shared/"
 #     separator: "."
-#     list: true
+#     list: "yes"
 #     acl_ignore: false           # true = bypass ACL enforcement for this ns
 #                                 # (rights not checked, no lookup-right hiding)
 #     # Absolute path; mount a PV here in multi-pod deployments.
@@ -2727,7 +2727,7 @@ namespaces: []
 #   - type: other                 # Other Users — declared-only until ACL-1 + NS-3
 #     prefix: "user/"
 #     separator: "/"
-#     list: true
+#     list: "yes"
 
 dicts:
   # IMAP METADATA (RFC 5464) state. When omitted, GETMETADATA /
