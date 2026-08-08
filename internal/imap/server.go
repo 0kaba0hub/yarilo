@@ -3281,7 +3281,10 @@ func (s *session) Namespace() (*imaplib.NamespaceData, error) {
 		if !ns.List.listed() {
 			continue
 		}
-		desc := imaplib.NamespaceDescriptor{Prefix: ns.Prefix, Delim: ns.Separator}
+		// An owner-templated prefix is advertised truncated at the variable
+		// (user/%u/ -> user/): the prefix is what a client prepends to a
+		// name, and the template prepends to nothing (#1171).
+		desc := imaplib.NamespaceDescriptor{Prefix: mailbox.AdvertisedPrefix(ns.Prefix), Delim: ns.Separator}
 		switch ns.Type {
 		case NamespacePersonal:
 			data.Personal = append(data.Personal, desc)

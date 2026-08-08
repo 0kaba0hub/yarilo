@@ -5,9 +5,11 @@ import (
 	"testing"
 )
 
-// The unexpanded template is not a mailbox: no LIST/LSUB row may carry it.
-// NAMESPACE still advertises the prefix verbatim -- per RFC 2342 the client
-// completes it with an owner; advertising the template is parity, not a lie.
+// The unexpanded template is not a mailbox and never reaches the wire: no
+// LIST/LSUB row may carry it, and NAMESPACE advertises the prefix truncated
+// at the variable (user/) -- per RFC 2342 the prefix is what the client
+// prepends to a name, and the template prepends to nothing (#1171). The
+// reference applies the same truncation to its namespace prefix.
 func TestTemplatedNamespace_NoTemplateNode(t *testing.T) {
 	_, addr := startOrphanServer(t)
 	a := orphanLogin(t, addr, "alice")
@@ -24,8 +26,11 @@ func TestTemplatedNamespace_NoTemplateNode(t *testing.T) {
 	}
 
 	ns := a.cmd(`NAMESPACE`)
-	if !strings.Contains(ns, `"user/%u/" "/"`) {
-		t.Errorf("NAMESPACE should advertise the template prefix verbatim, got:\n%s", ns)
+	if !strings.Contains(ns, `"user/" "/"`) {
+		t.Errorf("NAMESPACE should advertise the truncated prefix user/, got:\n%s", ns)
+	}
+	if strings.Contains(ns, "%u") {
+		t.Errorf("NAMESPACE leaks the unexpanded template:\n%s", ns)
 	}
 }
 

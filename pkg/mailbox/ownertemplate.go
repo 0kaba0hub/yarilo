@@ -163,6 +163,22 @@ func NamespaceSubsFile(prefix, separator, nsType string) string {
 	return "subscriptions-" + NamespaceFileSlug(prefix, separator, nsType)
 }
 
+// AdvertisedPrefix is the prefix NAMESPACE tells a client to prepend: an
+// owner-templated prefix is truncated at the first owner variable, the same
+// truncation the reference applies to its namespace prefix. RFC 2342 defines
+// the prefix as what the client prepends to a mailbox name; the template
+// itself prepends to nothing, so it never reaches the wire. A fixed prefix
+// passes through unchanged.
+func AdvertisedPrefix(prefix string) string {
+	cut := len(prefix)
+	for _, v := range []string{"%u", "%n", "%d"} {
+		if i := strings.Index(prefix, v); i >= 0 && i < cut {
+			cut = i
+		}
+	}
+	return prefix[:cut]
+}
+
 // NamespaceListMode normalises the operator's `list` setting to yes /
 // children / no. Bool spellings are accepted because the key used to be a
 // boolean ("true"/"1" -> yes, "false"/"0" -> no). Unset takes the default for
