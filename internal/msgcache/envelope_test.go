@@ -1,4 +1,4 @@
-package imap
+package msgcache
 
 import (
 	"reflect"

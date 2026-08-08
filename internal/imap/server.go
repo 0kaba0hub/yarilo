@@ -29,6 +29,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/auth/scram"
 	"github.com/yarilomail/yarilo/internal/connlimit"
 	"github.com/yarilomail/yarilo/internal/loginproto"
+	"github.com/yarilomail/yarilo/internal/msgcache"
 	"github.com/yarilomail/yarilo/internal/quotawarn"
 	"github.com/yarilomail/yarilo/internal/sieve"
 	"github.com/yarilomail/yarilo/internal/storage/idxrebuild"
@@ -2902,10 +2903,15 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	// Opened once per FETCH, misses parsed and written back, offsets stamped
 	// in one batch on close. nil-safe: any cache trouble degrades to
 	// parsing, never to a client error.
-	var envCache *folderCache
+	var envCache *msgcache.Handle
 	if opts.Envelope || opts.BodyStructure != nil {
-		envCache = s.openFolderCache(s.folderIdx(), s.folder.ID)
-		defer envCache.close()
+		envCache = msgcache.Open(s.folderIdx(), s.folder.ID, msgcache.Options{
+			Locker:  s.srv.opts.Locker,
+			User:    s.userInfo.Username,
+			Folder:  s.folder.Name,
+			TraceID: s.sid,
+		})
+		defer envCache.Close()
 	}
 	for _, fe := range fetchList {
 		m := fe.msg
@@ -2970,24 +2976,24 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			mw.WriteThreadID("") // no threading -> NIL
 		}
 		if opts.Envelope && m.Filename != "" {
-			if env := envCache.envelope(m); env != nil {
+			if env := envCache.Envelope(m); env != nil {
 				mw.WriteEnvelope(env)
 			} else if rc, ferr := s.fetchSelected(m); ferr == nil {
 				hdr, _ := textproto.ReadHeader(bufio.NewReader(rc))
 				rc.Close()
 				env := imapserver.ExtractEnvelope(hdr)
 				mw.WriteEnvelope(env)
-				envCache.store(m, env)
+				envCache.StoreEnvelope(m, env)
 			}
 		}
 		if opts.BodyStructure != nil && m.Filename != "" {
-			if bs := envCache.bodyStructure(m); bs != nil {
+			if bs := envCache.BodyStructure(m); bs != nil {
 				mw.WriteBodyStructure(bs)
 			} else if rc, ferr := s.fetchSelected(m); ferr == nil {
 				bs := imapserver.ExtractBodyStructure(rc)
 				rc.Close()
 				mw.WriteBodyStructure(bs)
-				envCache.storeBodyStructure(m, bs)
+				envCache.StoreBodyStructure(m, bs)
 			}
 		}
 		for _, section := range opts.BodySection {

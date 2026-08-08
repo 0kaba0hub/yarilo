@@ -1,8 +1,4 @@
-// FETCH BODYSTRUCTURE from the index cache (#1030): the second of the two
-// per-message file opens in a FETCH (ENVELOPE BODYSTRUCTURE) round. Same
-// three misses, same lock window, same producer-generation ownership as the
-// envelope codec next door.
-package imap
+package msgcache
 
 import (
 	"encoding/binary"
