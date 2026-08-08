@@ -843,6 +843,13 @@ characters — the reference's own bound), and identifiers containing spaces
 parse and round-trip, so an operator can no longer legally write a line the
 parser then refuses to read back.
 
+One residue of allowing spaces, decided rather than left implicit: in
+`user=bob lr lrs` the middle token is absorbed into the identifier
+(`user=bob lr`, rights `lrs`) instead of failing the line. Rejecting it would
+need a "does a token parse as rights?" heuristic, which misfires on legitimate
+names (`user=area 51` — every letter of `area` is a right). The absorbed
+form is still a valid, validated identifier; nothing is silently dropped.
+
 ## 8. Testing plan
 
 - **Unit (`pkg/mailbox`)**: owner extraction from names for `%u` prefixes

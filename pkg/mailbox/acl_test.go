@@ -216,6 +216,15 @@ func TestParseEntry(t *testing.T) {
 			want:     Entry{Identifier: Identifier{Type: IDAnyone}, Rights: "lr"},
 			wantLine: "anyone lr",
 		},
+		// A middle token that happens to spell valid rights is absorbed into
+		// the spaced identifier -- the direct consequence of allowing spaces,
+		// pinned as decided: rejecting it would need a heuristic ("does a
+		// token parse as rights?") that misfires on names like "area 51".
+		{
+			name: "rights-looking middle token absorbed", in: "user=bob lr lrs", wantOK: true,
+			want:     Entry{Identifier: Identifier{Type: IDUser, Name: "bob lr"}, Rights: "lrs"},
+			wantLine: "user=bob lr lrs",
+		},
 		// What the line-oriented format cannot carry is refused (#1140 item 2).
 		{name: "control character in identifier", in: "user=ev\x01l lr", wantErr: true},
 		{name: "newline smuggled into identifier", in: "user=a\nanyone lr", wantErr: true},

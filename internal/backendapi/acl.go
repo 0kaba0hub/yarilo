@@ -582,23 +582,21 @@ func jsonToACL(in []aclEntryJSON) (mailbox.ACL, error) {
 // authenticated / owner / user= / group= / group-override=) and a
 // bare username (same convention as internal/imap.identifierFromIMAP).
 func parseAdminIdentifier(s string) (mailbox.Identifier, error) {
-	switch s {
-	case "anyone":
-		return mailbox.Identifier{Type: mailbox.IDAnyone}, nil
-	case "authenticated":
-		return mailbox.Identifier{Type: mailbox.IDAuthenticated}, nil
-	case "owner":
-		return mailbox.Identifier{Type: mailbox.IDOwner}, nil
-	}
 	if len(s) == 0 {
 		return mailbox.Identifier{}, fmt.Errorf("backendapi/acl: empty identifier")
 	}
-	// Disk-canonical prefixed forms go through ParseIdentifier so
-	// validation and Name extraction stay in one place.
+	// Every form goes through the one parser -- keywords (anonymous
+	// included), the disk-canonical prefixed forms, and the bare name as
+	// user=<name>. Constructing an Identifier here directly would bypass
+	// ValidIdentifier, which is how a control character reached the file
+	// through the SETACL path once already.
 	if hasAnyPrefix(s, "user=", "group=", "group-override=") {
 		return mailbox.ParseIdentifier(s)
 	}
-	return mailbox.Identifier{Type: mailbox.IDUser, Name: s}, nil
+	if id, err := mailbox.ParseIdentifier(s); err == nil && id.Type != mailbox.IDUser {
+		return id, nil // anyone / anonymous / authenticated / owner
+	}
+	return mailbox.ParseIdentifier("user=" + s)
 }
 
 func hasAnyPrefix(s string, prefixes ...string) bool {
