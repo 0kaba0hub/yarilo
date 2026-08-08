@@ -191,39 +191,39 @@ func TestParseEntry(t *testing.T) {
 		{name: "too many fields", in: "user=eve lrs trailing", wantErr: true},
 		{name: "invalid right", in: "user=eve LRS", wantErr: true},
 		{name: "invalid identifier", in: "everyone lrs", wantErr: true},
-		// The identifier may contain spaces; rights are the LAST field. The
-		// reference round-trips these, and one such line must not poison the
-		// file (#1140 item 3).
+		// An identifier containing a space is a QUOTED string, the reference's
+		// own encoding -- a migrated file round-trips byte-compatibly, and an
+		// unquoted spaced identifier does not parse there or here (#1140 item 3).
 		{
-			name: "spaced identifier with rights", in: "user=John Smith lrw", wantOK: true,
+			name: "quoted spaced identifier with rights", in: `"user=John Smith" lrw`, wantOK: true,
 			want:     Entry{Identifier: Identifier{Type: IDUser, Name: "John Smith"}, Rights: "lrw"},
-			wantLine: "user=John Smith lrw",
+			wantLine: `"user=John Smith" lrw`,
 		},
 		{
-			name: "spaced identifier, explicit no rights", in: "user=John Smith ", wantOK: true,
+			name: "quoted spaced identifier, explicit no rights", in: `"user=John Smith" `, wantOK: true,
 			want:     Entry{Identifier: Identifier{Type: IDUser, Name: "John Smith"}, Rights: ""},
-			wantLine: "user=John Smith ",
+			wantLine: `"user=John Smith" `,
 		},
 		{
-			name: "negative spaced identifier", in: "-user=John Smith a", wantOK: true,
+			name: "negative sign inside the quotes", in: `"-user=John Smith" a`, wantOK: true,
 			want:     Entry{Identifier: Identifier{Type: IDUser, Name: "John Smith"}, Rights: "a", Negative: true},
-			wantLine: "-user=John Smith a",
+			wantLine: `"-user=John Smith" a`,
 		},
+		{
+			name: "escaped quote in quoted identifier", in: `"user=Jo\"hn" lr`, wantOK: true,
+			want:     Entry{Identifier: Identifier{Type: IDUser, Name: `Jo"hn`}, Rights: "lr"},
+			wantLine: `"user=Jo\"hn" lr`,
+		},
+		{name: "unquoted spaced identifier rejected", in: "user=John Smith lrw", wantErr: true},
+		{name: "rights-looking extra token rejected", in: "user=bob lr lrs", wantErr: true},
+		{name: "unterminated quote", in: `"user=John lrw`, wantErr: true},
+		{name: "garbage after closing quote", in: `"user=John"x lrw`, wantErr: true},
 		// anonymous is the reference's spelling of anyone; canonical output
 		// normalises it (#1140 item 4).
 		{
 			name: "anonymous is anyone", in: "anonymous lr", wantOK: true,
 			want:     Entry{Identifier: Identifier{Type: IDAnyone}, Rights: "lr"},
 			wantLine: "anyone lr",
-		},
-		// A middle token that happens to spell valid rights is absorbed into
-		// the spaced identifier -- the direct consequence of allowing spaces,
-		// pinned as decided: rejecting it would need a heuristic ("does a
-		// token parse as rights?") that misfires on names like "area 51".
-		{
-			name: "rights-looking middle token absorbed", in: "user=bob lr lrs", wantOK: true,
-			want:     Entry{Identifier: Identifier{Type: IDUser, Name: "bob lr"}, Rights: "lrs"},
-			wantLine: "user=bob lr lrs",
 		},
 		// What the line-oriented format cannot carry is refused (#1140 item 2).
 		{name: "control character in identifier", in: "user=ev\x01l lr", wantErr: true},

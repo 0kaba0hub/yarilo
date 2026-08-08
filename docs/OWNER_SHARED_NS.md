@@ -837,18 +837,14 @@ never widen. Fail-closed costs availability of one folder's ACL; fail-open
 costs the subtraction someone wrote on purpose.
 
 Recorded here so it is not "fixed" later by matching the reference without
-this trade-off in view. The adjacent divergences shrink what the abort can
-hit: identifiers are validated before every write (length, UTF-8, control
-characters — the reference's own bound), and identifiers containing spaces
-parse and round-trip, so an operator can no longer legally write a line the
-parser then refuses to read back.
-
-One residue of allowing spaces, decided rather than left implicit: in
-`user=bob lr lrs` the middle token is absorbed into the identifier
-(`user=bob lr`, rights `lrs`) instead of failing the line. Rejecting it would
-need a "does a token parse as rights?" heuristic, which misfires on legitimate
-names (`user=area 51` — every letter of `area` is a right). The absorbed
-form is still a valid, validated identifier; nothing is silently dropped.
+this trade-off in view. The adjacent changes shrink what the abort can hit:
+identifiers are validated before every write (length, UTF-8, control
+characters — the reference's own bound, which the reference itself enforces
+only on its IMAP write path), and identifiers containing spaces use the
+reference's own quoted encoding (`"user=John Smith" lrw`, backslash-escaped,
+the negative sign inside the quotes) — so a file migrated in either direction
+round-trips byte-compatibly, and an operator can no longer legally write a
+line the parser then refuses to read back.
 
 ## 8. Testing plan
 

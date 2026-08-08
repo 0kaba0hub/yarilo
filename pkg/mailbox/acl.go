@@ -268,41 +268,77 @@ func ParseEntry(line string) (Entry, bool, error) {
 	if t := strings.TrimSpace(line); t == "" || strings.HasPrefix(t, "#") {
 		return Entry{}, false, nil
 	}
-	raw := strings.TrimRight(strings.TrimLeft(line, " \t"), "\r")
-	negative := false
-	if strings.HasPrefix(raw, "-") {
-		negative = true
-		raw = raw[1:]
+	s := strings.TrimRight(strings.TrimLeft(line, " \t"), "\r")
+
+	// The reference's format: an identifier containing a space is written as
+	// a backslash-escaped quoted string, the '-' of a negative entry INSIDE
+	// the quotes; an unquoted identifier carries no space and splits at the
+	// FIRST one. Rights are the single remaining field.
+	var idStr, rest string
+	if strings.HasPrefix(s, `"`) {
+		var err error
+		idStr, rest, err = unquoteACL(s)
+		if err != nil {
+			return Entry{}, false, err
+		}
+	} else {
+		idStr, rest = s, ""
+		if i := strings.IndexAny(s, " \t"); i >= 0 {
+			idStr, rest = s[:i], s[i+1:]
+		}
 	}
-	// The identifier may itself contain spaces (user=John Smith), so the
-	// split is at the LAST separator: rights are one field and never carry a
-	// space, the identifier is everything before it. The reference
-	// round-trips such identifiers the same way. When the last token does not
-	// parse as rights but the line ends in a separator, it is the canonical
-	// empty-rights form "<id> " of a spaced identifier. (An identifier whose
-	// last token happens to spell valid rights cannot round-trip with empty
-	// rights -- an ambiguity of the format itself.)
-	s := strings.TrimRight(raw, " \t")
-	if s == "" {
+	negative := false
+	if strings.HasPrefix(idStr, "-") {
+		negative = true
+		idStr = idStr[1:]
+	}
+	if idStr == "" {
 		return Entry{}, false, fmt.Errorf("mailbox/acl: empty entry")
 	}
-	idStr, rightsStr := s, ""
-	if i := strings.LastIndexAny(s, " \t"); i >= 0 {
-		idStr, rightsStr = strings.TrimRight(s[:i], " \t"), s[i+1:]
-	}
-	rights, rerr := ParseRights(rightsStr)
-	if rerr != nil {
-		if len(raw) > len(s) { // trailing separator: spaced identifier, no rights
-			idStr, rights = s, ""
-		} else {
-			return Entry{}, false, rerr
-		}
+	rightsStr := strings.Trim(rest, " \t")
+	if strings.ContainsAny(rightsStr, " \t") {
+		return Entry{}, false, fmt.Errorf("mailbox/acl: too many fields in %q", line)
 	}
 	id, err := ParseIdentifier(idStr)
 	if err != nil {
 		return Entry{}, false, err
 	}
+	rights, err := ParseRights(rightsStr)
+	if err != nil {
+		return Entry{}, false, err
+	}
 	return Entry{Identifier: id, Rights: rights, Negative: negative}, true, nil
+}
+
+// unquoteACL reads a leading quoted identifier: backslash escapes the next
+// byte, the closing quote must be followed by a separator or end the line.
+// Returns the unescaped content and what follows the separator.
+func unquoteACL(s string) (content, rest string, err error) {
+	var b strings.Builder
+	i := 1
+	for i < len(s) {
+		switch c := s[i]; c {
+		case '\\':
+			if i+1 >= len(s) {
+				return "", "", fmt.Errorf("mailbox/acl: unterminated escape in quoted identifier")
+			}
+			b.WriteByte(s[i+1])
+			i += 2
+		case '"':
+			i++
+			if i == len(s) {
+				return b.String(), "", nil
+			}
+			if s[i] != ' ' && s[i] != '\t' {
+				return "", "", fmt.Errorf("mailbox/acl: garbage after quoted identifier")
+			}
+			return b.String(), s[i+1:], nil
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return "", "", fmt.Errorf("mailbox/acl: unterminated quoted identifier")
 }
 
 // String returns the canonical wire/disk encoding of one entry
@@ -314,7 +350,13 @@ func (e Entry) String() string {
 	if e.Negative {
 		prefix = "-"
 	}
-	return prefix + e.Identifier.String() + " " + e.Rights.String()
+	id := prefix + e.Identifier.String()
+	// The reference's quoting: an identifier a plain split would misread is
+	// written as a backslash-escaped quoted string, sign inside the quotes.
+	if strings.ContainsAny(id, " \t\"\\") {
+		id = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(id) + `"`
+	}
+	return id + " " + e.Rights.String()
 }
 
 // ACL is the ordered set of entries from a yarilo-acl file. Order is
