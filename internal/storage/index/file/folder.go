@@ -1180,6 +1180,9 @@ func (u *userIndex) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbo
 			if data, ok := rec.Ext[extNameKeywords]; ok {
 				meta.Keywords = keywordsFromBitmask(fs.keywords, decodeKeywordsRec(data))
 			}
+			if data, ok := rec.Ext[extNameCache]; ok {
+				meta.CacheOffset = decodeCacheRec(data)
+			}
 			if data, ok := rec.Ext[extNameInternalDate]; ok {
 				meta.InternalDate = decodeIdateRec(data)
 			}
@@ -1966,4 +1969,51 @@ func truncateLog(indexPath string, indexID uint32) error {
 		return fmt.Errorf("fileindex/log truncate: rename: %w", err)
 	}
 	return nil
+}
+
+// SetCacheOffsets stamps cache-file offsets for the given UIDs (#1030).
+// Batched by design: the writer parses a FETCH's worth of messages and
+// stamps them in one flush. Unlike SetGUIDs an offset MAY be overwritten --
+// a new record appended to a message's chain has a new offset -- but only
+// with a non-zero value; zeroing is the expunge/reconcile paths' job. An
+// index predating the extension gains it here, lazily, like guid does.
+func (u *userIndex) SetCacheOffsets(folderID uint64, offsets map[uint32]uint32) error {
+	if len(offsets) == 0 {
+		return nil
+	}
+	return u.withFolder(folderID, func(fs *folderState) error {
+		if findExt(fs.file.Extensions, extNameCache) == nil {
+			if err := fs.file.AddRecordExtension(extNameCache, nil,
+				cacheRecSize, 4, fs.file.Header.UIDValidity); err != nil {
+				return fmt.Errorf("fileindex: add cache extension: %w", err)
+			}
+		}
+		for _, rec := range fs.file.Records {
+			off, ok := offsets[rec.UID]
+			if !ok || off == 0 {
+				continue
+			}
+			if rec.Ext == nil {
+				rec.Ext = make(map[string][]byte, 1)
+			}
+			rec.Ext[extNameCache] = encodeCacheRec(off)
+		}
+		return fs.flush(true)
+	})
+}
+
+// CachePairIdentity returns what the cache layer needs to open or create the
+// paired yarilo.index.cache: the index identity and the cache extension's
+// reset_id (== the file_seq a valid cache file must carry). ok is false when
+// the folder's index predates the extension and no offset was ever stamped.
+func (u *userIndex) CachePairIdentity(folderID uint64) (indexID, resetID uint32, ok bool, err error) {
+	err = u.withFolderRO(folderID, func(fs *folderState) error {
+		indexID = fs.file.Header.IndexID
+		if ext := findExt(fs.file.Extensions, extNameCache); ext != nil {
+			resetID = ext.ResetID
+			ok = true
+		}
+		return nil
+	})
+	return indexID, resetID, ok, err
 }

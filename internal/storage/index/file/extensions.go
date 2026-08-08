@@ -20,6 +20,7 @@ const (
 	extNameHdrVsize     = "hdr-vsize"
 	extNameVsize        = "vsize"
 	extNameGUID         = "guid"
+	extNameCache        = "cache"
 )
 
 // guid extension layout (4-byte header, 16 bytes per-record):
@@ -438,6 +439,17 @@ func defaultExtensions(uidValidity uint32, guid [16]byte) []mailindex.Extension 
 			ResetID:     uidValidity,
 		},
 		{
+			// Offset into yarilo.index.cache; ResetID doubles as the cache
+			// file's file_seq, so a purge invalidates every offset with one
+			// bump (#1030).
+			Name:        extNameCache,
+			HdrSize:     0,
+			HdrData:     nil,
+			RecordSize:  cacheRecSize,
+			RecordAlign: 4,
+			ResetID:     uidValidity,
+		},
+		{
 			// A fresh folder holds no pre-existing messages, so it is born
 			// backfilled; only indexes predating the extension start pending.
 			Name:        extNameGUID,
@@ -460,4 +472,30 @@ func findExt(exts []mailindex.Extension, name string) *mailindex.Extension {
 		}
 	}
 	return nil
+}
+
+// cache extension layout (0-byte header, 4 bytes per-record):
+//
+//	per-record:
+//	  uint32 offset  // into yarilo.index.cache; 0 = nothing cached
+//
+// The extension's ResetID must equal the cache file's file_seq: a purge
+// writes a new file, bumps both, and every stored offset dies at once --
+// no walk over records (INTERNALS.md §7, #1030). The offset never travels
+// with a message: it is meaningful only inside its own (indexid, file_seq)
+// pair, so COPY/MOVE deliberately do not carry it and the copy is uncached
+// until first parse.
+const cacheRecSize = 4
+
+func encodeCacheRec(offset uint32) []byte {
+	out := make([]byte, cacheRecSize)
+	binary.LittleEndian.PutUint32(out, offset)
+	return out
+}
+
+func decodeCacheRec(b []byte) uint32 {
+	if len(b) < cacheRecSize {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(b)
 }
