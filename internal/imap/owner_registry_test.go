@@ -212,4 +212,12 @@ func TestOwnerRegistry_DivergentRootPersonalGrantStaysLocal(t *testing.T) {
 	if out := b.cmd(`LIST "" "user/*"`); strings.Contains(out, "alice") {
 		t.Errorf("a grant outside the templated tree fed discovery:\n%s", out)
 	}
+	// The wire is not the distinguishing assertion here: with an unconditional
+	// attach the row IS written and the gate hides it anyway, so LIST is
+	// silent in both branches. The property the design claims lives in the
+	// dict -- the registry holds only owners who granted something reachable
+	// through the templated space -- so assert the key's absence itself.
+	if _, found, err := d.Lookup(context.Background(), nil, "shared/shared-boxes/user/bob/alice"); err != nil || found {
+		t.Errorf("registry row written for a grant the templated space cannot reach (found=%v err=%v)", found, err)
+	}
 }
