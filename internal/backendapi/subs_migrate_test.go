@@ -104,6 +104,28 @@ func TestSubsMigrate_FoldsIntoTheOwnersOwnFile(t *testing.T) {
 	}
 }
 
+// A user with no old files gets an explicit signal, not a look-alike success:
+// the operator may have typo'd the user or already migrated.
+func TestSubsMigrate_NothingToMigrate(t *testing.T) {
+	root := t.TempDir()
+	ts := migrateServer(t, root)
+	const user = "alice@example.com"
+	doJSON(t, ts, http.MethodPost, "/api/backend/folder/list", "", map[string]any{"user": user})
+
+	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/subscriptions/migrate", "", map[string]any{
+		"user": user, "namespace": "user/%u",
+	})
+	if status != 200 {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if !strings.Contains(string(body), `"status":"nothing-to-migrate"`) {
+		t.Errorf("missing nothing-to-migrate status: %s", body)
+	}
+	if !strings.Contains(string(body), `"applied":false`) {
+		t.Errorf("applied should be false: %s", body)
+	}
+}
+
 // A namespace that keeps its own subscriptions has nothing to migrate, and
 // saying so beats folding a site-wide list into one person's file.
 func TestSubsMigrate_RefusesANamespaceThatKeepsItsOwn(t *testing.T) {

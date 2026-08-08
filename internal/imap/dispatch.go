@@ -125,6 +125,36 @@ func (s *session) subsTarget(visible string) (*subs.Store, string, error) {
 	return best.subs, key, nil
 }
 
+// namesPrimaryFolder reports whether a client-visible name addresses the
+// personal namespace rather than another one. Used where a set of names has to
+// be personal-relative: a subscription key like "user/alice/Sent" is a visible
+// name for another namespace, not a personal folder called that.
+func (s *session) namesPrimaryFolder(visible string) bool {
+	for _, h := range s.namespaces {
+		if h == nil || h == s.primary {
+			continue
+		}
+		if p := h.visiblePrefix(); p != "" && strings.HasPrefix(visible, p) {
+			return false
+		}
+	}
+	// Owner-templated namespaces open no handle until referenced, so their
+	// names are matched by the template's literal head.
+	specs := s.srv.opts.Namespaces
+	if len(specs) == 0 {
+		specs = defaultNamespaces
+	}
+	for _, spec := range specs {
+		if !isOwnerTemplated(spec) {
+			continue
+		}
+		if _, _, ok := extractOwner(spec, visible); ok {
+			return false
+		}
+	}
+	return true
+}
+
 // subsView is subsTarget for a whole namespace: the store keeping its
 // subscriptions, and the key prefix that a name relative to it takes there.
 func (s *session) subsView(h *nsHandle) (*subs.Store, string, error) {

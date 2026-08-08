@@ -125,6 +125,17 @@ func (s *Server) handleSubsMigrate(w http.ResponseWriter, r *http.Request) {
 			folded = append(folded, key)
 		}
 	}
+	if len(sources) == 0 {
+		// No source files: wrong user, or a rerun after a successful apply.
+		apiJSON(w, map[string]any{
+			"status":  "nothing-to-migrate",
+			"applied": false,
+			"sources": sources,
+			"folded":  folded,
+			"already": already,
+		})
+		return
+	}
 	sort.Strings(folded)
 	sort.Strings(already)
 
