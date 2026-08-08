@@ -192,6 +192,31 @@ Never push directly to `main`. Feature branch → PR → user merges.
 
 ---
 
+## Issue labels
+
+Every issue carries **exactly one type label** at creation — this is what keeps
+the bug statistics honest (defects are not drowned in backlog):
+
+- `bug` — behaviour diverges from what is documented or intended. A defect
+  found in review is always `bug`.
+- `enhancement` — new feature or parity work someone asked for.
+- `phase` — a large roadmap stage (JMAP-N, AUTH-N, REPL, OBOX): backlog, not a
+  request. Never also `enhancement`.
+- `decision` — needs a decision before code; the issue records the choice.
+- `documentation`, `question` — as usual.
+
+Severity, only on `bug` and only when it applies: `data-loss` (user data lost
+or corrupted), `security` (disclosure, oracle, rights bypass).
+
+Subsystem labels are optional but encouraged: `imap`, `pop3`, `lmtp`,
+`submission`, `sieve`, `jmap`, `fts`, `acl`, `auth`, `director`, `storage`,
+`backend-api`, `config`, `testing`.
+
+Label management (create/edit) requires the `0kaba0hub` account
+(`gh auth switch`); `0kaba0` can label issues it opens via `--label`.
+
+---
+
 ## Release checklist
 
 Before bumping `appVersion` in `helm/Chart.yaml`:
