@@ -184,14 +184,7 @@ func (uc *userContext) ns(s *Server, name string) (*nsBundle, error) {
 // orphan existing state; non-personal namespaces use "subscriptions-<slug>"
 // siblings in their own home.
 func subsFileFor(spec config.NamespaceConfig) string {
-	if spec.Type == "personal" {
-		return "subscriptions"
-	}
-	slug := strings.ToLower(strings.TrimSuffix(spec.Prefix, "/"))
-	if slug == "" {
-		slug = strings.ToLower(spec.Type)
-	}
-	return "subscriptions-" + slug
+	return mailbox.NamespaceSubsFile(spec.Prefix, spec.Separator, spec.Type)
 }
 
 // mailboxForUser returns the MailboxBackend that matches the driver in

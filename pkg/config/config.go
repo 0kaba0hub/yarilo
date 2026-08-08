@@ -2538,6 +2538,25 @@ func ValidateNamespaceTypes(namespaces []NamespaceConfig) error {
 			return err
 		}
 	}
+	return validateNamespaceFileSlugs(namespaces)
+}
+
+// validateNamespaceFileSlugs fails startup when two namespaces would write their
+// per-namespace state to the same filename. The slug is one path segment, so a
+// separator inside a prefix becomes '-' (#1159) -- which means "Public/Team/"
+// and "Public-Team/" reduce alike. Silently sharing one subscriptions file would
+// make each namespace show the other's subscriptions; naming the pair at startup
+// costs nothing and cannot be mistaken for a storage bug later.
+func validateNamespaceFileSlugs(namespaces []NamespaceConfig) error {
+	seen := make(map[string]int, len(namespaces))
+	for i, ns := range namespaces {
+		slug := mailbox.NamespaceSubsFile(ns.Prefix, ns.Separator, ns.Type)
+		if j, dup := seen[slug]; dup {
+			return fmt.Errorf("config: namespaces %d (prefix %q) and %d (prefix %q) both use the on-disk name %q "+
+				"for their per-namespace state; give one a distinct prefix", j, namespaces[j].Prefix, i, ns.Prefix, slug)
+		}
+		seen[slug] = i
+	}
 	return nil
 }
 

@@ -108,3 +108,57 @@ func fillIfEmpty(dst *string, src string) {
 		*dst = src
 	}
 }
+
+// NamespaceFileSlug builds the per-namespace component of an on-disk filename
+// ("subscriptions-<slug>") from a namespace prefix. It is always ONE path
+// segment: the prefix is a client-visible name, so it carries the hierarchy
+// separator and may carry per-user variables, and using it raw made
+// "subscriptions-user/%u" a directory named subscriptions-user holding a file
+// %u -- a path where a filename was intended, spelled from an unexpanded
+// template (#1159).
+//
+// Everything from the first variable onwards is dropped: those parts vary per
+// user, while this names a file inside one store, so they can only mislead
+// (the file describes no owner). Remaining separators become '-'. A prefix that
+// reduces to nothing falls back to the namespace type, as an empty prefix does.
+//
+// A prefix with no separator and no variable is unchanged, so the common
+// "Public/" and "Shared/" keep the names already on disk.
+func NamespaceFileSlug(prefix, separator, nsType string) string {
+	name := prefix
+	if i := strings.IndexByte(name, '%'); i >= 0 {
+		name = name[:i]
+	}
+	sep := separator
+	if sep == "" {
+		sep = "/"
+	}
+	name = strings.Trim(name, sep)
+	name = strings.ReplaceAll(name, sep, "-")
+	// Path separators are never part of one filename, whatever the namespace
+	// declared as its hierarchy separator.
+	name = strings.ReplaceAll(name, "/", "-")
+	name = strings.ReplaceAll(name, `\`, "-")
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return strings.ToLower(strings.TrimSpace(nsType))
+	}
+	return name
+}
+
+// NamespaceSubsFile is the filename holding a namespace's subscription state,
+// and the one producer of it. The personal namespace keeps the bare
+// "subscriptions" so an upgrade does not orphan state already on disk; every
+// other namespace gets a "subscriptions-<slug>" sibling.
+//
+// One producer because the rule had been written out at each site that needed
+// it -- and the one that did not know about the personal case rejected a valid
+// config, reporting a collision between files that are not the same file
+// (#1159). A caller comparing or building these names must use this, not
+// "subscriptions-" + NamespaceFileSlug.
+func NamespaceSubsFile(prefix, separator, nsType string) string {
+	if strings.EqualFold(strings.TrimSpace(nsType), "personal") {
+		return "subscriptions"
+	}
+	return "subscriptions-" + NamespaceFileSlug(prefix, separator, nsType)
+}
