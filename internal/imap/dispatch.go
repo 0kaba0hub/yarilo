@@ -216,8 +216,6 @@ func (s *session) mailboxBackendFor(spec NamespaceSpec, ui *mailbox.UserInfo) ma
 	return s.srv.opts.Mailbox
 }
 
-// nsSlug returns a short identifier for a namespace spec, used in
-// per-namespace filenames (subscriptions-<slug>) and log fields.
 // nsSlug is an in-memory identifier for a namespace (handle name, log field).
 // It is NOT a filename: it keeps the prefix as the client sees it, separator and
 // template variable intact. Anything that names a file must go through
