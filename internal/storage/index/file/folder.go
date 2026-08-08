@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"time"
@@ -2016,4 +2017,15 @@ func (u *userIndex) CachePairIdentity(folderID uint64) (indexID, resetID uint32,
 		return nil
 	})
 	return indexID, resetID, ok, err
+}
+
+// CachePath is where the folder's yarilo.index.cache lives: beside
+// yarilo.index in the folder's index directory.
+func (u *userIndex) CachePath(folderID uint64) (string, error) {
+	var path string
+	err := u.withFolderRO(folderID, func(fs *folderState) error {
+		path = filepath.Join(fs.indexDir, mailindex.CacheFileName)
+		return nil
+	})
+	return path, err
 }

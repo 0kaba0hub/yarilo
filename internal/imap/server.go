@@ -2896,6 +2896,15 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			break
 		}
 	}
+	// The envelope cache serves the listing's hot path without opening
+	// message files (#1030). Opened once per FETCH, misses parsed and
+	// written back, offsets stamped in one batch on close. nil-safe: any
+	// cache trouble degrades to parsing, never to a client error.
+	var envCache *folderCache
+	if opts.Envelope {
+		envCache = s.openFolderCache(s.folderIdx(), s.folder.ID)
+		defer envCache.close()
+	}
 	for _, fe := range fetchList {
 		m := fe.msg
 		// CHANGEDSINCE filter — skip messages whose modseq has not moved
@@ -2959,10 +2968,14 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			mw.WriteThreadID("") // no threading -> NIL
 		}
 		if opts.Envelope && m.Filename != "" {
-			if rc, ferr := s.fetchSelected(m); ferr == nil {
+			if env := envCache.envelope(m); env != nil {
+				mw.WriteEnvelope(env)
+			} else if rc, ferr := s.fetchSelected(m); ferr == nil {
 				hdr, _ := textproto.ReadHeader(bufio.NewReader(rc))
 				rc.Close()
-				mw.WriteEnvelope(imapserver.ExtractEnvelope(hdr))
+				env := imapserver.ExtractEnvelope(hdr)
+				mw.WriteEnvelope(env)
+				envCache.store(m, env)
 			}
 		}
 		if opts.BodyStructure != nil && m.Filename != "" {

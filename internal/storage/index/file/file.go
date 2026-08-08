@@ -1065,3 +1065,19 @@ func ensureLogStub(indexPath, volatileDir string, indexID uint32) error {
 // in tests by setting slog default's level to LevelInfo. Kept as
 // a free function so it has no method-receiver allocation.
 func debugLog(msg string, kv ...any) { slog.Debug("fileindex: "+msg, kv...) }
+
+// Cache-pair surface (#1030), forwarded like every other folder verb so the
+// interface assertion in the IMAP layer sees it on the handle sessions hold.
+func (h *userHandle) CachePairIdentity(folderID uint64) (uint32, uint32, bool, error) {
+	h.stampTrace(folderID)
+	return h.ui.CachePairIdentity(folderID)
+}
+
+func (h *userHandle) CachePath(folderID uint64) (string, error) {
+	return h.ui.CachePath(folderID)
+}
+
+func (h *userHandle) SetCacheOffsets(folderID uint64, offsets map[uint32]uint32) error {
+	h.stampTrace(folderID)
+	return h.ui.SetCacheOffsets(folderID, offsets)
+}
