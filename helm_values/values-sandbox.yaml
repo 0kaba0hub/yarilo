@@ -16,6 +16,10 @@ hostname: mail-sb.seconddns.com
 ## ACL is a top-level, protocol-agnostic mail-storage concern.
 acl:
   enabled: true
+  ## Owner discovery (#1168): names the dict below that records who granted
+  ## what to whom, which is what lets LIST user/* enumerate owners instead of
+  ## the caller having to already know the name.
+  acl_shared_dict: "acl_shared"
 
 ## Quota engine — count-authoritative enforcement on every save (IMAP
 ## APPEND/COPY/MOVE, LMTP delivery, quota-status policy service). Limits come
@@ -184,6 +188,15 @@ sieve:
     - vnd.yarilo.environment
 
 dicts:
+  ## Owner-discovery registry for the user/%u namespace. Discovery only —
+  ## rights always come from the ACL files; a lost key costs visibility,
+  ## never access.
+  acl_shared:
+    driver: redis
+    settings:
+      addr: redis.redis.svc.cluster.local:6379
+      db: 0
+      prefix: "yarilo-sb:acl-shared:"
   metadata:
     driver: redis
     settings:
