@@ -107,7 +107,7 @@ func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) 
 	// Invalidate FTS documents for the expunged records; otherwise ghost
 	// documents linger until the next fts rescan.
 	for _, uid := range expunged {
-		s.ftsNotify(rel, true, uid)
+		s.ftsNotify(f, true, uid)
 	}
 	slog.Info("imap: dbox reactive heal", "folder", rel, "expunged", len(expunged))
 	refreshed, err := h.idx.OpenFolder(rel, f.UIDValidity)
