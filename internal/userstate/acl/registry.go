@@ -25,6 +25,7 @@ package acl
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -101,6 +102,12 @@ func (r *Registry) SyncFromList(entries []ListEntry, complete bool) error {
 			iterOK = false
 		}
 		haveCurrent = iterOK
+	}
+	if !haveCurrent {
+		// Every wanted row is re-set and nothing is removed -- correct
+		// (no_removes) but worth a trace, or a persistently failing dict
+		// looks like a healthy one doing full writes.
+		slog.Debug("userstate/acl: registry current-rows read failed; add-only sync", "owner", r.owner)
 	}
 
 	tx, err := r.dict.Begin(ctx, nil)

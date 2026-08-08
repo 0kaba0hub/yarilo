@@ -243,6 +243,33 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 		out[""] = h
 		primary = h
 	}
+
+	// The personal store and the owner-templated store for this same account
+	// are usually ONE yarilo-acl tree: user/alice/Sent and alice's own Sent
+	// share a file, which is what the strong owner grant rests on (§7.6). A
+	// grant made through the personal namespace -- the ordinary way a user
+	// shares their own mailbox -- must feed discovery too, or LIST user/*
+	// misses exactly the grants SELECT honours. The condition is not "this is
+	// the personal store" but "this store backs an owner-templated space for
+	// this account": StampOwnerLocation lets a templated namespace point at a
+	// different root from the owner's userdb, and then it does not.
+	if s.srv.opts.SharedDict != nil {
+		for _, spec := range specs {
+			if !isOwnerTemplated(spec) {
+				continue
+			}
+			ownerUI, err := mailbox.StampOwnerLocation(personalUI, personalUI, spec.Location, byte(spec.Separator))
+			if err != nil {
+				continue
+			}
+			cand := acl.New(ownerUI.Home, ownerUI.MailPath, ownerUI.Driver, ownerUI.Separator,
+				ownerUI.StorageEscapeChar, personalUI.Username, owner, acl.Policy{}, nil)
+			if cand.ListPath() == primary.acl.ListPath() {
+				primary.acl.SetRegistry(acl.NewRegistry(s.srv.opts.SharedDict, personalUI.Username))
+				break
+			}
+		}
+	}
 	return out, primary, nil
 }
 
