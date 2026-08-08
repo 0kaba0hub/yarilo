@@ -63,6 +63,104 @@ func (h *nsHandle) fullName(relName string) string {
 	return h.spec.Prefix + relName
 }
 
+// visiblePrefix is this namespace's prefix as the client sees it: for an
+// owner-templated instance the owner variable is expanded, because a client
+// never addresses the template.
+func (h *nsHandle) visiblePrefix() string {
+	if !mailbox.PrefixIsOwnerTemplated(h.spec.Prefix) || h.owner == "" {
+		return h.spec.Prefix
+	}
+	return strings.Replace(h.spec.Prefix, mailbox.OwnerVar, h.owner, 1)
+}
+
+// visibleName is a wire name in the form the subscription key rule works on:
+// what the client addressed, normalised. INBOX is canonical.
+func (s *session) visibleName(name string) string {
+	if strings.EqualFold(name, "INBOX") {
+		return "INBOX"
+	}
+	return s.normaliseName(name)
+}
+
+// subsTarget resolves WHERE a subscription for a client-visible name is kept and
+// under WHICH key.
+//
+// The rule: the storing namespace is the one that keeps subscriptions and whose
+// visible prefix is a prefix of the name; the key is the name minus that prefix.
+// With the usual empty personal prefix the key is the whole visible name -- but
+// it is the rule that is coded, not that coincidence: where the personal
+// namespace has a prefix of its own, a name outside it has no storing namespace,
+// and that must refuse rather than write a key nothing would ever match.
+//
+// No namespace keeping subscriptions is an outright refusal, not a silent
+// success: the caller asked to remember something nothing will remember.
+func (s *session) subsTarget(visible string) (*subs.Store, string, error) {
+	var best *nsHandle
+	var bestPrefix string
+	for _, h := range s.namespaces {
+		if h == nil || h.subs == nil || !h.spec.keepsSubscriptions() {
+			continue
+		}
+		p := h.visiblePrefix()
+		if !strings.HasPrefix(visible, p) {
+			continue
+		}
+		if best == nil || len(p) > len(bestPrefix) {
+			best, bestPrefix = h, p
+		}
+	}
+	if best == nil {
+		return nil, "", &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeCannot,
+			Text: "This namespace has no subscriptions",
+		}
+	}
+	key, ok := strings.CutPrefix(visible, bestPrefix)
+	if !ok {
+		// Unreachable: the prefix is how best was chosen. An invariant, so it
+		// fails rather than writing a key under the wrong namespace.
+		return nil, "", fmt.Errorf("imap: subscription key %q does not start with its storing prefix %q", visible, bestPrefix)
+	}
+	return best.subs, key, nil
+}
+
+// namesPrimaryFolder reports whether a client-visible name addresses the
+// personal namespace rather than another one. Used where a set of names has to
+// be personal-relative: a subscription key like "user/alice/Sent" is a visible
+// name for another namespace, not a personal folder called that.
+func (s *session) namesPrimaryFolder(visible string) bool {
+	for _, h := range s.namespaces {
+		if h == nil || h == s.primary {
+			continue
+		}
+		if p := h.visiblePrefix(); p != "" && strings.HasPrefix(visible, p) {
+			return false
+		}
+	}
+	// Owner-templated namespaces open no handle until referenced, so their
+	// names are matched by the template's literal head.
+	specs := s.srv.opts.Namespaces
+	if len(specs) == 0 {
+		specs = defaultNamespaces
+	}
+	for _, spec := range specs {
+		if !isOwnerTemplated(spec) {
+			continue
+		}
+		if _, _, ok := extractOwner(spec, visible); ok {
+			return false
+		}
+	}
+	return true
+}
+
+// subsView is subsTarget for a whole namespace: the store keeping its
+// subscriptions, and the key prefix that a name relative to it takes there.
+func (s *session) subsView(h *nsHandle) (*subs.Store, string, error) {
+	return s.subsTarget(h.visiblePrefix())
+}
+
 // openHandles constructs the per-namespace handles for a session at login
 // time, keyed by namespace prefix. The personal handle is always created.
 // Other-class handles are skipped (declared in the NAMESPACE response but

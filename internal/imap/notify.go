@@ -425,16 +425,29 @@ func (s *session) expandNotifySpec(it imaplib.NotifyItem, list func() []string) 
 	case imaplib.NotifyMailboxSpecInboxes:
 		return append([]string{"INBOX"}, descendants("INBOX", list())...)
 	case imaplib.NotifyMailboxSpecSubscribed:
-		if s.subs == nil {
-			return nil
-		}
-		snap, err := s.subs.Snapshot()
+		// These names are compared against folder names relative to a handle,
+		// so the set must hold personal-namespace names -- and the store's keys
+		// are client-visible names now that subscriptions follow the subscriber
+		// (user/alice/Sent, Public/Foo live in this same file). Before that the
+		// file held only personal names, so reading it raw was correct by
+		// accident; taking the keys as personal folders would put another
+		// namespace's mailbox into the watch set under a name the personal
+		// namespace does not have.
+		store, keyPrefix, err := s.subsView(s.primary)
 		if err != nil {
 			return nil
 		}
+		snap, serr := store.Snapshot()
+		if serr != nil {
+			return nil
+		}
 		out := make([]string, 0, len(snap))
-		for name := range snap {
-			out = append(out, name)
+		for key := range snap {
+			rel, ok := strings.CutPrefix(key, keyPrefix)
+			if !ok || !s.namesPrimaryFolder(rel) {
+				continue
+			}
+			out = append(out, rel)
 		}
 		return out
 	default:

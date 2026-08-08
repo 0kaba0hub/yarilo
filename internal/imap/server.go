@@ -215,6 +215,16 @@ type NamespaceSpec struct {
 	// IgnoreACL bypasses ACL enforcement for this namespace (rights not
 	// checked, no lookup-right LIST hiding) even when ACL is enabled.
 	IgnoreACL bool
+	// Subscriptions is the operator's setting, nil when unset; the answer is
+	// resolved by mailbox.NamespaceKeepsSubscriptions (see keepsSubscriptions),
+	// so a spec built without it takes the default for its kind.
+	Subscriptions *bool
+}
+
+// keepsSubscriptions reports whether this namespace holds its own subscription
+// file, or delegates to the subscriber's own namespace.
+func (spec NamespaceSpec) keepsSubscriptions() bool {
+	return mailbox.NamespaceKeepsSubscriptions(string(spec.Type), spec.Prefix, spec.Subscriptions)
 }
 
 // NamespaceType is the NAMESPACE response slot: Personal / Other / Shared.
@@ -1049,12 +1059,13 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 
 	// auto-subscribe on first SELECT so LSUB returns the folder without an
 	// explicit SUBSCRIBE.
-	if h.subs != nil {
+	if store, keyPrefix, terr := s.subsView(h); terr == nil {
 		tSubs := time.Now()
-		if subs, snapErr := h.subs.Snapshot(); snapErr == nil {
-			if _, already := subs[rel]; !already {
+		key := keyPrefix + rel
+		if subs, snapErr := store.Snapshot(); snapErr == nil {
+			if _, already := subs[key]; !already {
 				tAdd := time.Now()
-				_ = h.subs.Add(rel)
+				_ = store.Add(key)
 				slog.Debug("imap: select timing subs_add_ms", "folder", rel, "add_ms", time.Since(tAdd).Milliseconds())
 			}
 		}
@@ -1367,9 +1378,6 @@ func (s *session) Subscribe(name string) error {
 	if err != nil {
 		return err
 	}
-	if h.subs == nil {
-		return nil
-	}
 	// Existence is deliberately not checked: RFC 9051 6.3.7 allows subscribing
 	// to a mailbox that does not exist yet, and clients rely on it. The name
 	// itself still has to be one this server would accept somewhere -- storing
@@ -1378,7 +1386,14 @@ func (s *session) Subscribe(name string) error {
 	if err := mailbox.CheckName(h.box, rel); err != nil {
 		return nameError(err)
 	}
-	if err := h.subs.Add(rel); err != nil {
+	// A subscription is the subscriber's state, so it is kept by the namespace
+	// that keeps subscriptions -- normally the caller's own -- under the
+	// client-visible name, not in the store of whoever owns the mailbox.
+	store, key, err := s.subsTarget(h.visiblePrefix() + rel)
+	if err != nil {
+		return err
+	}
+	if err := store.Add(key); err != nil {
 		return fmt.Errorf("imap: subscribe %q: %w", name, err)
 	}
 	s.emitMailboxList(locks.EventMailboxSubscribe, name)
@@ -1387,14 +1402,17 @@ func (s *session) Subscribe(name string) error {
 
 func (s *session) Unsubscribe(name string) error {
 	slog.Debug("imap: command", "sid", s.sid, "cmd", "Unsubscribe")
-	h, rel, err := s.dispatch(name)
+	// Deliberately not through dispatch. Removing a row from the list the caller
+	// owns is not learning about anyone else's space, so the owner-templated
+	// visibility gate (#1138) must not reach it: gated, a peer's own row would
+	// be one nothing could remove. Resolving the storing namespace needs no
+	// owner lookup either -- an owner-templated namespace never keeps
+	// subscriptions.
+	store, key, err := s.subsTarget(s.visibleName(name))
 	if err != nil {
 		return err
 	}
-	if h.subs == nil {
-		return nil
-	}
-	if err := h.subs.Remove(rel); err != nil {
+	if err := store.Remove(key); err != nil {
 		return fmt.Errorf("imap: unsubscribe %q: %w", name, err)
 	}
 	s.emitMailboxList(locks.EventMailboxUnsubscribe, name)
@@ -1518,10 +1536,15 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 
 	// snapshot subscriptions once per LIST so every folder consults the
 	// same view.
+	// The subscribed set comes from whichever namespace keeps this one's
+	// subscriptions, and its keys carry that namespace's prefix -- so a
+	// relative name is looked up as subsKeyPrefix+name, not bare.
 	var subs map[string]struct{}
-	if h.subs != nil && (opts != nil && (opts.SelectSubscribed || opts.ReturnSubscribed)) {
+	var subsKeyPrefix string
+	if store, keyPrefix, terr := s.subsView(h); terr == nil && opts != nil && (opts.SelectSubscribed || opts.ReturnSubscribed) {
+		subsKeyPrefix = keyPrefix
 		tSubs := time.Now()
-		subs, err = h.subs.Snapshot()
+		subs, err = store.Snapshot()
 		slog.Debug("imap: list timing subs_ms", "subs_ms", time.Since(tSubs).Milliseconds())
 		if err != nil {
 			slog.Warn("imap: subscription snapshot failed", "ns", h.name, "err", err)
@@ -1543,7 +1566,7 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 		// SELECT SUBSCRIBED drops folders the user has not subscribed to.
 		// RECURSIVEMATCH refinement is not implemented.
 		if opts != nil && opts.SelectSubscribed {
-			if _, ok := subs[name]; !ok {
+			if _, ok := subs[subsKeyPrefix+name]; !ok {
 				continue
 			}
 		}
@@ -1555,7 +1578,7 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 			attrs = append(attrs, childrenAttr(name, names, sep))
 		}
 		if opts != nil && opts.ReturnSubscribed {
-			if _, ok := subs[name]; ok {
+			if _, ok := subs[subsKeyPrefix+name]; ok {
 				attrs = append(attrs, imaplib.MailboxAttrSubscribed)
 			}
 		}
