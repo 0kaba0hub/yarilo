@@ -45,7 +45,7 @@ type nsHandle struct {
 	// none does. A personal namespace is owned by the session user; a fixed
 	// shared or public namespace is owned by nobody -- there is no principal who
 	// holds rights implicitly, which is what makes a bootstrap grant necessary
-	// (see docs/OWNER_SHARED_NS.md 7.2). An owner-templated namespace (B1) will
+	// (see https://doc.yarilomail.org/OWNER_SHARED_NS 7.2). An owner-templated namespace (B1) will
 	// carry the resolved owner here. isOwner compares this against the session
 	// user, so the definition is by person, not by namespace type.
 	owner string

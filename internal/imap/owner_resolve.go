@@ -9,7 +9,7 @@ import (
 
 // resolveOwnerUserInfo resolves the owner of an owner-templated namespace
 // instance through the userdb, then stamps the storage identity via the shared
-// producer (mailbox.StampOwnerLocation, precedence in docs/OWNER_SHARED_NS.md
+// producer (mailbox.StampOwnerLocation, precedence in https://doc.yarilomail.org/OWNER_SHARED_NS
 // 3.3). A userdb miss is a NO [NONEXISTENT] to the caller -- no such user, no
 // such owner.
 func resolveOwnerUserInfo(

@@ -20,7 +20,7 @@ type Settings struct {
 	AddressMaxLen int
 }
 
-// DefaultSettings mirrors docs/FTS.md: stemming and stopwords on by default —
+// DefaultSettings mirrors https://doc.yarilomail.org/FTS: stemming and stopwords on by default —
 // deliberately stronger than the reference's empty default filter chain.
 func DefaultSettings() Settings {
 	return Settings{

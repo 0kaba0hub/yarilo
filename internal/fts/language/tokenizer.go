@@ -3,7 +3,7 @@
 // "simple" algorithm — ASCII/Unicode word-break classes, apostrophe
 // continuation, byte-length truncation and base64-run skipping — so indexes
 // tokenize identically to ones built by the reference implementation
-// (traceability in docs/FTS.md).
+// (traceability in https://doc.yarilomail.org/FTS).
 package language
 
 import (

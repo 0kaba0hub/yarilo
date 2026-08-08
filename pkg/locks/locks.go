@@ -1,7 +1,7 @@
 // Package locks is the single cross-process write-coordination abstraction
 // for yarilo. One Locker API, one TAB-delimited wire protocol, two backends
 // behind it: embedded (in-memory, Unix socket) for standalone; remote
-// (mTLS TCP, Redis-backed) for backend deployments. See docs/DEPLOYMENT.md
+// (mTLS TCP, Redis-backed) for backend deployments. See https://doc.yarilomail.org/DEPLOYMENT
 // §yarilo-locks for the design.
 package locks
 

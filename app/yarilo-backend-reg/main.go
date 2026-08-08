@@ -6,7 +6,7 @@
 // director ring. Readiness is read passively from the shared readiness
 // directory (readyfile): a protocol container that stops touching its file
 // (wedged / not ready) makes the sidecar withhold the heartbeat, and the
-// director expires the whole pod. See docs/DEPLOYMENT.md "backend liveness".
+// director expires the whole pod. See https://doc.yarilomail.org/DEPLOYMENT "backend liveness".
 package main
 
 import (

@@ -695,7 +695,7 @@ func TestValidIdentifier(t *testing.T) {
 }
 
 // One malformed line fails the whole file, deliberately: fail-closed beats
-// serving a partial ACL (docs/OWNER_SHARED_NS.md 7.7). Pinned so it is not
+// serving a partial ACL (https://doc.yarilomail.org/OWNER_SHARED_NS 7.7). Pinned so it is not
 // "fixed" later by someone matching the reference's log-and-keep.
 func TestParseACL_OneBadLineFailsClosed(t *testing.T) {
 	body := "user=alice lr\nuser=bob !!\nuser=carol lr\n"

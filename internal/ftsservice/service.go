@@ -1,5 +1,5 @@
 // Package ftsservice is the yarilo-fts core: the sole owner of the FTS
-// indexes (single writer + lookup endpoint, docs/FTS.md §4), an indexing
+// indexes (single writer + lookup endpoint, https://doc.yarilomail.org/FTS §4), an indexing
 // queue with priority inserts for on-demand search catch-up, and the worker
 // that streams messages through buildmail into the engine.
 package ftsservice

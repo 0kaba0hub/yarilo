@@ -43,7 +43,7 @@ data:
     -- so the same yarilo wiring works against multi-table production schemas.
     --
     -- password column holds reference-style "{SCHEME}hash". Supported schemes:
-    -- BCRYPT, SHA512-CRYPT, PLAIN. See docs/AUTH.md.
+    -- BCRYPT, SHA512-CRYPT, PLAIN. See https://doc.yarilomail.org/AUTH.
     --
     -- Read-status per column (yarilo HEAD):
     --   username, password, active       → used now (passwordQuery)

@@ -124,7 +124,7 @@ type Options struct {
 	QuotaPolicy quota.Policy
 	// QuotaWarner runs quota_warning actions. Nil = warnings only log.
 	QuotaWarner *quotawarn.Runner
-	// FTS wires full-text search (docs/FTS.md §11). Zero value disables it.
+	// FTS wires full-text search (https://doc.yarilomail.org/FTS §11). Zero value disables it.
 	FTS FTSOptions
 	// QuotaClone mirrors usage to external dicts. Nil = disabled.
 	QuotaClone *quota.Clone
@@ -166,7 +166,7 @@ type Options struct {
 	// identity via the yarilo-auth master -- the same lookup LMTP uses for a
 	// recipient. Owner-templated shared namespaces (B1) need it to open the
 	// owner's store: the owner is not the session user, and the owner's driver
-	// comes only from their userdb mail_location (docs/OWNER_SHARED_NS.md 3.3).
+	// comes only from their userdb mail_location (https://doc.yarilomail.org/OWNER_SHARED_NS 3.3).
 	// nil disables owner-templated resolution.
 	UserdbLookup func(ctx context.Context, username string) (*mailbox.UserInfo, error)
 
@@ -272,7 +272,7 @@ func New(opts Options) *Server {
 	// #1132 config error one layer up: without UserdbLookup wired, every
 	// SELECT user/... would fail at runtime with an internals message. Fail at
 	// startup instead, with the reason named -- the pod crashes loudly rather
-	// than serving a namespace it can never open (docs/OWNER_SHARED_NS.md 3.3).
+	// than serving a namespace it can never open (https://doc.yarilomail.org/OWNER_SHARED_NS 3.3).
 	for i, ns := range opts.Namespaces {
 		if mailbox.PrefixIsOwnerTemplated(ns.Prefix) && opts.UserdbLookup == nil {
 			panic(fmt.Sprintf("imap: namespace %q is owner-templated but no userdb lookup is wired; "+
@@ -2595,7 +2595,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		!criteria.SentSince.IsZero() || !criteria.SentBefore.IsZero() || searchNeedsBodyRecurse(criteria.Not, criteria.Or)
 
 	// Full-text path: answer Body/Text/Header criteria from the index and
-	// scan only the candidates (docs/FTS.md §11). nil = sequential scan.
+	// scan only the candidates (https://doc.yarilomail.org/FTS §11). nil = sequential scan.
 	ftsF, ftsErr := s.prepareFTSSearch(criteria, msgs)
 	if ftsErr != nil {
 		return nil, ftsErr
