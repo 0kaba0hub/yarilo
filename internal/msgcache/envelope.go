@@ -1,19 +1,8 @@
-// FETCH ENVELOPE from the index cache (#1030, commit 3): the listing's hot
-// path stops opening message files. The cached value is the parsed envelope
-// in our own length-prefixed encoding -- the producer generation in the cache
-// header owns its identity, so the encoding may evolve with a gen bump and
-// never with a silent reinterpretation.
-//
-// Three different kinds of "not there", none of them a client error:
-//
-//	file invalid  (ErrCacheInvalid)  -> cache absent for the folder; the old
-//	                                    file is removed and a fresh pair is
-//	                                    created lazily on the next write
-//	offset 0                         -> nothing cached for the message; parse
-//	                                    as today, append, stamp
-//	record hit, field missing        -> parse, append a chain record carrying
-//	                                    the field, stamp the new head
-package imap
+// Package msgcache reads and writes the per-folder index cache
+// (yarilo.index.cache) that lets a listing answer without opening message
+// files. Shared by the protocol servers: one cache, one set of invalidation
+// rules. Format and invalidation: https://doc.yarilomail.org/BACKEND-API
+package msgcache
 
 import (
 	"context"
@@ -54,7 +43,9 @@ const cacheFieldEnvelope = "yarilo.envelope"
 
 // indexCacher is the slice of the file-index surface the cache reader needs.
 // Asserted at use: an index backend without it simply serves no cache.
-type indexCacher interface {
+// Index is the slice of the index surface the cache needs. Asserted at use:
+// a backend without it serves no cache.
+type Index interface {
 	CachePairIdentity(folderID uint64) (indexID, resetID uint32, ok bool, err error)
 	// EnsureCacheExtension adds the extension to an index written before it
 	// existed. Without it the lazy add is unreachable: only a stamping write
@@ -201,12 +192,15 @@ func decodeEnvelope(b []byte) (*imaplib.Envelope, bool) {
 // folderCache serves one FETCH's worth of envelope lookups and batches the
 // write-back. Opened lazily on the first envelope-needing message; nil-safe
 // throughout, so every failure degrades to "parse as today".
-type folderCache struct {
+// Handle is one request's view of a folder's cache. Opened per FETCH,
+// closed after the batched stamp. nil is a valid value meaning "no cache":
+// every method tolerates it, so a miss degrades to parsing.
+type Handle struct {
 	file   *mailindex.CacheFile
 	envID  uint32
 	bsID   uint32
 	stamps map[uint32]uint32 // uid -> new head offset, flushed on close
-	idx    indexCacher
+	idx    Index
 	fid    uint64
 	// unlock releases the locks taken for the open-append-stamp window, in
 	// reverse acquisition order. Two sessions of one account in one folder
@@ -220,8 +214,20 @@ type folderCache struct {
 // openFolderCache opens (or lazily creates) the folder's cache pair. Any
 // invalidity removes the stale file and starts a fresh one -- the cache is
 // derived data, absence is its recovery mode.
-func (s *session) openFolderCache(idx mailbox.UserIndex, folderID uint64) *folderCache {
-	ic, ok := idx.(indexCacher)
+// Options carries what the cache needs from its caller: the lock identity
+// and a trace id for logs.
+type Options struct {
+	Locker  locks.Locker
+	User    string
+	Folder  string
+	TraceID string
+}
+
+// Open returns a handle on the folder's cache, or nil when none can be
+// served -- a wrong pair, an unopenable file, a backend without a cache. The
+// caller parses as it would without one.
+func Open(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle {
+	ic, ok := idx.(Index)
 	if !ok {
 		return nil
 	}
@@ -233,7 +239,7 @@ func (s *session) openFolderCache(idx mailbox.UserIndex, folderID uint64) *folde
 		// Every mailbox older than the extension arrives here, which is every
 		// mailbox in an upgraded deployment.
 		if indexID, resetID, err = ic.EnsureCacheExtension(folderID); err != nil {
-			slog.Debug("imap: cache extension unavailable; serving uncached", "sid", s.sid, "err", err)
+			slog.Debug("msgcache: cache extension unavailable; serving uncached", "trace_id", opts.TraceID, "err", err)
 			return nil
 		}
 	}
@@ -241,19 +247,19 @@ func (s *session) openFolderCache(idx mailbox.UserIndex, folderID uint64) *folde
 	if err != nil {
 		return nil
 	}
-	fc := &folderCache{idx: ic, fid: folderID, stamps: make(map[uint32]uint32)}
+	fc := &Handle{idx: ic, fid: folderID, stamps: make(map[uint32]uint32)}
 	// The whole open-append-stamp window runs under the lock, reads
 	// included: remove-and-recreate under a live descriptor and the
 	// read-modify-write of the field table are only safe when nobody else
 	// is inside the pair. In-process mutex first, then the cross-process
 	// MailboxKey -- the same two tiers every shared write path uses.
 	fc.unlock = append(fc.unlock, lockCachePath(path))
-	if lkr := s.srv.opts.Locker; lkr != nil && s.userInfo != nil && s.folder != nil {
+	if lkr := opts.Locker; lkr != nil && opts.User != "" && opts.Folder != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-		lk, lerr := locks.Acquire(ctx, lkr, locks.MailboxKey(s.userInfo.Username, s.folder.Name), s.userInfo.Username, 30*time.Second)
+		lk, lerr := locks.Acquire(ctx, lkr, locks.MailboxKey(opts.User, opts.Folder), opts.User, 30*time.Second)
 		cancel()
 		if lerr != nil {
-			slog.Debug("imap: cache lock unavailable; serving uncached", "sid", s.sid, "err", lerr)
+			slog.Debug("msgcache: cache lock unavailable; serving uncached", "trace_id", opts.TraceID, "err", lerr)
 			fc.release()
 			return nil
 		}
@@ -277,7 +283,7 @@ func (s *session) openFolderCache(idx mailbox.UserIndex, folderID uint64) *folde
 			_ = os.Remove(path)
 			newSeq, berr := ic.BumpCacheGeneration(folderID)
 			if berr != nil {
-				slog.Debug("imap: cache generation bump failed; serving uncached", "sid", s.sid, "err", berr)
+				slog.Debug("msgcache: cache generation bump failed; serving uncached", "trace_id", opts.TraceID, "err", berr)
 				fc.release()
 				return nil
 			}
@@ -285,13 +291,13 @@ func (s *session) openFolderCache(idx mailbox.UserIndex, folderID uint64) *folde
 		}
 		cf, cerr := mailindex.CreateCache(path, indexID, resetID)
 		if cerr != nil {
-			slog.Debug("imap: cache create failed; serving uncached", "sid", s.sid, "err", cerr)
+			slog.Debug("msgcache: cache create failed; serving uncached", "trace_id", opts.TraceID, "err", cerr)
 			fc.release()
 			return nil
 		}
 		fc.file = cf
 	default:
-		slog.Debug("imap: cache open failed; serving uncached", "sid", s.sid, "err", err)
+		slog.Debug("msgcache: cache open failed; serving uncached", "trace_id", opts.TraceID, "err", err)
 		fc.release()
 		return nil
 	}
@@ -327,7 +333,7 @@ func (s *session) openFolderCache(idx mailbox.UserIndex, folderID uint64) *folde
 // THIS window when there is one, else what the index carries. Without it a
 // second append for the same message in one FETCH (envelope, then body
 // structure) would chain from the stale head and orphan the first value.
-func (fc *folderCache) head(m *mailbox.MessageMeta) uint32 {
+func (fc *Handle) head(m *mailbox.MessageMeta) uint32 {
 	if fc == nil {
 		return 0
 	}
@@ -338,7 +344,7 @@ func (fc *folderCache) head(m *mailbox.MessageMeta) uint32 {
 }
 
 // read returns the merged field values for a message, or nil on a miss.
-func (fc *folderCache) read(m *mailbox.MessageMeta) map[uint32][]byte {
+func (fc *Handle) read(m *mailbox.MessageMeta) map[uint32][]byte {
 	if fc == nil {
 		return nil
 	}
@@ -354,7 +360,7 @@ func (fc *folderCache) read(m *mailbox.MessageMeta) map[uint32][]byte {
 }
 
 // storeField appends one field value for a message and moves the chain head.
-func (fc *folderCache) storeField(m *mailbox.MessageMeta, fieldID uint32, data []byte) {
+func (fc *Handle) storeField(m *mailbox.MessageMeta, fieldID uint32, data []byte) {
 	if fc == nil {
 		return
 	}
@@ -362,7 +368,7 @@ func (fc *folderCache) storeField(m *mailbox.MessageMeta, fieldID uint32, data [
 		{FieldID: fieldID, Data: data},
 	})
 	if err != nil {
-		slog.Debug("imap: cache append failed", "uid", m.UID, "err", err)
+		slog.Debug("msgcache: cache append failed", "uid", m.UID, "err", err)
 		return
 	}
 	fc.stamps[m.UID] = off
@@ -370,7 +376,7 @@ func (fc *folderCache) storeField(m *mailbox.MessageMeta, fieldID uint32, data [
 
 // envelope returns the cached envelope for a message, or nil on any of the
 // three misses.
-func (fc *folderCache) envelope(m *mailbox.MessageMeta) *imaplib.Envelope {
+func (fc *Handle) Envelope(m *mailbox.MessageMeta) *imaplib.Envelope {
 	if fc == nil {
 		return nil
 	}
@@ -386,7 +392,7 @@ func (fc *folderCache) envelope(m *mailbox.MessageMeta) *imaplib.Envelope {
 }
 
 // store appends the freshly-parsed envelope for a message.
-func (fc *folderCache) store(m *mailbox.MessageMeta, env *imaplib.Envelope) {
+func (fc *Handle) StoreEnvelope(m *mailbox.MessageMeta, env *imaplib.Envelope) {
 	if fc == nil || env == nil {
 		return
 	}
@@ -394,7 +400,7 @@ func (fc *folderCache) store(m *mailbox.MessageMeta, env *imaplib.Envelope) {
 }
 
 // bodyStructure returns the cached body structure, or nil on any miss.
-func (fc *folderCache) bodyStructure(m *mailbox.MessageMeta) imaplib.BodyStructure {
+func (fc *Handle) BodyStructure(m *mailbox.MessageMeta) imaplib.BodyStructure {
 	if fc == nil {
 		return nil
 	}
@@ -413,13 +419,13 @@ func (fc *folderCache) bodyStructure(m *mailbox.MessageMeta) imaplib.BodyStructu
 // that does not survive its own codec is not stored: serving a value the
 // reader would reject is worse than a miss, and this is where an unknown
 // node kind is caught.
-func (fc *folderCache) storeBodyStructure(m *mailbox.MessageMeta, bs imaplib.BodyStructure) {
+func (fc *Handle) StoreBodyStructure(m *mailbox.MessageMeta, bs imaplib.BodyStructure) {
 	if fc == nil || bs == nil {
 		return
 	}
 	enc := encodeBodyStructure(bs)
 	if _, ok := decodeBodyStructure(enc); !ok {
-		slog.Debug("imap: body structure not representable; leaving uncached", "uid", m.UID)
+		slog.Debug("msgcache: body structure not representable; leaving uncached", "uid", m.UID)
 		return
 	}
 	fc.storeField(m, fc.bsID, enc)
@@ -428,25 +434,25 @@ func (fc *folderCache) storeBodyStructure(m *mailbox.MessageMeta, bs imaplib.Bod
 // close flushes the batched offset stamps -- one index write per FETCH, not
 // per message -- releases the descriptor (no long-lived handles, #1176), and
 // only then drops the locks: the stamp is part of the guarded window.
-func (fc *folderCache) close() {
+func (fc *Handle) Close() {
 	if fc == nil {
 		return
 	}
 	if len(fc.stamps) > 0 {
 		if err := fc.idx.SetCacheOffsets(fc.fid, fc.stamps); err != nil {
-			slog.Debug("imap: cache stamp failed", "err", err)
+			slog.Debug("msgcache: cache stamp failed", "err", err)
 		}
 	}
 	if fc.file != nil {
 		if err := fc.file.Close(); err != nil {
-			slog.Debug("imap: cache close failed", "err", err)
+			slog.Debug("msgcache: cache close failed", "err", err)
 		}
 	}
 	fc.release()
 }
 
 // release drops held locks in reverse acquisition order.
-func (fc *folderCache) release() {
+func (fc *Handle) release() {
 	for i := len(fc.unlock) - 1; i >= 0; i-- {
 		fc.unlock[i]()
 	}

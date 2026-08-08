@@ -65,25 +65,38 @@ func fetchEnvelopeProbe(c *imapClient) error {
 	// Twice: the first pass parses and fills the cache, the second is served
 	// from it. A cache that answers wrongly, or a reader that dies on a cache
 	// it just wrote, shows only on the second.
+	// A range, not one message: a listing is a range, and a build that
+	// answers the first row and dies on the fifth is the shape a single
+	// fetch would call healthy.
+	low := exists - 4
+	if low < 1 {
+		low = 1
+	}
+	want := exists - low + 1
+	span := fmt.Sprintf("%d:%d", low, exists)
+
 	for _, label := range []string{"cold", "warm"} {
-		lines, ferr := c.cmd(fmt.Sprintf("FETCH %d (ENVELOPE BODYSTRUCTURE)", exists))
+		lines, ferr := c.cmd(fmt.Sprintf("FETCH %s (ENVELOPE BODYSTRUCTURE)", span))
 		if ferr != nil {
-			return fmt.Errorf("%s FETCH (ENVELOPE BODYSTRUCTURE) on message %d: %w", label, exists, ferr)
+			return fmt.Errorf("%s FETCH (ENVELOPE BODYSTRUCTURE) %s: %w", label, span, ferr)
 		}
-		var fetched string
+		// The row COUNT, not just a tagged OK: a dropped connection is no
+		// tagged response at all, and a partial answer is a tagged OK with
+		// rows missing. Only counting tells those from a healthy run.
+		rows := 0
 		for _, l := range lines {
-			if strings.HasPrefix(l, "* ") && strings.Contains(l, "FETCH") {
-				fetched = l
-				break
+			if !strings.HasPrefix(l, "* ") || !strings.Contains(l, "FETCH") {
+				continue
+			}
+			rows++
+			for _, item := range []string{"ENVELOPE", "BODYSTRUCTURE"} {
+				if !strings.Contains(l, item) {
+					return fmt.Errorf("%s FETCH %s answered without %s: %s", label, span, item, l)
+				}
 			}
 		}
-		if fetched == "" {
-			return fmt.Errorf("%s FETCH returned no untagged data for message %d", label, exists)
-		}
-		for _, want := range []string{"ENVELOPE", "BODYSTRUCTURE"} {
-			if !strings.Contains(fetched, want) {
-				return fmt.Errorf("%s FETCH answered without %s: %s", label, want, fetched)
-			}
+		if rows != want {
+			return fmt.Errorf("%s FETCH %s returned %d untagged rows, want %d", label, span, rows, want)
 		}
 	}
 	return nil

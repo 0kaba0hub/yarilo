@@ -141,9 +141,21 @@ func dispatch(args []string) error {
 	}
 
 	// When YARILO_ADMIN_TYPE is set the plane is implicit: first arg is the
-	// service/command directly.
+	// service/command directly. It stays ACCEPTED though -- every usage string
+	// and doc prints one, so rejecting it answers a correct command with an
+	// error about service names (#1188). A word naming ANOTHER plane is a real
+	// mistake and says so.
 	adminType := os.Getenv("YARILO_ADMIN_TYPE")
 	if adminType != "" {
+		if len(args) > 0 {
+			switch args[0] {
+			case adminType:
+				args = args[1:]
+			case "backend", "director", "auth":
+				return fmt.Errorf("this container serves the %s plane (YARILO_ADMIN_TYPE=%s), so %q addresses a different one — drop it or run yarctl elsewhere",
+					adminType, adminType, args[0])
+			}
+		}
 		switch adminType {
 		case "backend":
 			return dispatchBackend(args)

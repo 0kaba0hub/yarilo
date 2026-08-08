@@ -1,4 +1,4 @@
-package imap
+package msgcache
 
 import (
 	"testing"
@@ -34,27 +34,22 @@ func TestStoreBodyStructure_RefusesWhatItCannotDecode(t *testing.T) {
 		}
 	}
 
-	s := &session{
-		srv:      &Server{opts: Options{}},
-		userInfo: &mailbox.UserInfo{Username: "u"},
-		folder:   f,
-	}
-	fc := s.openFolderCache(idx, f.ID)
+	fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
 	if fc == nil {
 		t.Fatal("cache unavailable")
 	}
-	defer fc.close()
+	defer fc.Close()
 
 	// A structure the codec round-trips is stored, so the test cannot pass by
 	// storeBodyStructure doing nothing at all.
-	fc.storeBodyStructure(known, &imaplib.BodyStructureSinglePart{
+	fc.StoreBodyStructure(known, &imaplib.BodyStructureSinglePart{
 		Type: "text", Subtype: "plain", Encoding: "7bit", Size: 3,
 	})
 	if _, ok := fc.stamps[known.UID]; !ok {
 		t.Error("an ordinary body structure was not cached")
 	}
 
-	fc.storeBodyStructure(unknown, foreignBS{})
+	fc.StoreBodyStructure(unknown, foreignBS{})
 	if off, stamped := fc.stamps[unknown.UID]; stamped {
 		t.Errorf("a structure the codec cannot decode was cached at offset %d; "+
 			"every later FETCH would read that offset and miss", off)

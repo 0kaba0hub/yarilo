@@ -1,4 +1,4 @@
-package imap
+package msgcache
 
 import (
 	"strconv"
@@ -34,12 +34,6 @@ func TestFolderCache_TwoWritersStampTheirOwnMessages(t *testing.T) {
 		metas = append(metas, m)
 	}
 
-	s := &session{
-		srv:      &Server{opts: Options{}},
-		userInfo: &mailbox.UserInfo{Username: "u"},
-		folder:   f,
-	}
-
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for w := 0; w < 2; w++ {
@@ -51,13 +45,13 @@ func TestFolderCache_TwoWritersStampTheirOwnMessages(t *testing.T) {
 			// open-append-stamp sections between the two writers.
 			for i := 0; i < n; i++ {
 				m := metas[w*n+i]
-				fc := s.openFolderCache(idx, f.ID)
+				fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
 				if fc == nil {
 					t.Error("cache unavailable")
 					return
 				}
-				fc.store(m, &imaplib.Envelope{Subject: "msg-" + strconv.Itoa(int(m.UID))})
-				fc.close()
+				fc.StoreEnvelope(m, &imaplib.Envelope{Subject: "msg-" + strconv.Itoa(int(m.UID))})
+				fc.Close()
 			}
 		}(w)
 	}
@@ -69,18 +63,18 @@ func TestFolderCache_TwoWritersStampTheirOwnMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fc := s.openFolderCache(idx, f.ID)
+	fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
 	if fc == nil {
 		t.Fatal("cache unavailable for verification")
 	}
-	defer fc.close()
+	defer fc.Close()
 	verified := 0
 	for _, m := range msgs {
 		if m.CacheOffset == 0 {
 			t.Errorf("uid %d: no offset stamped", m.UID)
 			continue
 		}
-		env := fc.envelope(m)
+		env := fc.Envelope(m)
 		if env == nil {
 			t.Errorf("uid %d: offset %d resolves to no envelope", m.UID, m.CacheOffset)
 			continue

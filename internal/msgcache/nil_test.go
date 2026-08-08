@@ -1,4 +1,4 @@
-package imap
+package msgcache
 
 import (
 	"testing"
@@ -9,21 +9,21 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// nil is a designed value here: openFolderCache returns it on every miss, and
+// nil is a designed value here: Open returns it on every miss, and
 // the contract is "no cache, parse as today". Every method must honour it --
 // the readers panicked because a field id is evaluated before the map lookup,
 // so the guard on the helper they call did not cover them (#1184).
 func TestFolderCacheNilReceiverIsTheAbsentCache(t *testing.T) {
-	var fc *folderCache
+	var fc *Handle
 	m := &mailbox.MessageMeta{UID: 1, CacheOffset: 4096}
 
 	t.Run("envelope", func(t *testing.T) {
-		if got := fc.envelope(m); got != nil {
+		if got := fc.Envelope(m); got != nil {
 			t.Errorf("envelope = %+v, want nil", got)
 		}
 	})
 	t.Run("bodyStructure", func(t *testing.T) {
-		if got := fc.bodyStructure(m); got != nil {
+		if got := fc.BodyStructure(m); got != nil {
 			t.Errorf("bodyStructure = %+v, want nil", got)
 		}
 	})
@@ -38,16 +38,16 @@ func TestFolderCacheNilReceiverIsTheAbsentCache(t *testing.T) {
 		}
 	})
 	t.Run("store", func(t *testing.T) {
-		fc.store(m, &imaplib.Envelope{Subject: "s"})
+		fc.StoreEnvelope(m, &imaplib.Envelope{Subject: "s"})
 	})
 	t.Run("storeBodyStructure", func(t *testing.T) {
-		fc.storeBodyStructure(m, &imaplib.BodyStructureSinglePart{Type: "text", Subtype: "plain"})
+		fc.StoreBodyStructure(m, &imaplib.BodyStructureSinglePart{Type: "text", Subtype: "plain"})
 	})
 	t.Run("storeField", func(t *testing.T) {
 		fc.storeField(m, 0, []byte("x"))
 	})
 	t.Run("close", func(t *testing.T) {
-		fc.close()
+		fc.Close()
 	})
 }
 
@@ -102,17 +102,12 @@ func TestOpenFolderCacheAddsTheExtensionToAnOlderIndex(t *testing.T) {
 	}
 	idx := &olderIndex{UserIndex: real}
 
-	s := &session{
-		srv:      &Server{opts: Options{}},
-		userInfo: &mailbox.UserInfo{Username: "u"},
-		folder:   f,
-	}
-	fc := s.openFolderCache(idx, f.ID)
+	fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
 	if fc == nil {
 		t.Fatal("an index without the extension served no cache: every mailbox in an " +
 			"upgraded deployment would stay uncached forever")
 	}
-	defer fc.close()
+	defer fc.Close()
 	if idx.ensured != 1 {
 		t.Errorf("EnsureCacheExtension called %d times, want 1", idx.ensured)
 	}
