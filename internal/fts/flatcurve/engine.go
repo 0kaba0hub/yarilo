@@ -900,10 +900,19 @@ func optimizeDir(st *mboxState) error {
 	}
 	// Durability of the directory entries themselves: without this a crash
 	// can leave the merged shard renamed but unrecorded, or a deleted one
-	// back from the dead. Both reconcile through Rescan at the cost of a
-	// rebuild, and on NFS with async exports the window is wider than local
-	// intuition suggests (#1176). Best-effort: a failure here costs a
-	// rebuild, never correctness.
+	// back from the dead -- both reconcile through Rescan, at the cost of a
+	// rebuild.
+	//
+	// This is for LOCAL index storage (standalone, any non-NFS index root).
+	// Over NFS it does nothing and has nothing to do: the protocol requires
+	// metadata operations to be committed before the reply, so the rename
+	// and the removals above are already durable when they return, and the
+	// client has no "commit a directory" operation anyway -- fsync of a
+	// directory is a no-op there. An async export breaks that guarantee, and
+	// no client-side call can repair it: that is a server setting, not a code
+	// path (#1176).
+	//
+	// Best-effort: a failure costs a rebuild, never correctness.
 	if d, derr := os.Open(st.dir); derr == nil {
 		if serr := d.Sync(); serr != nil {
 			slog.Debug("fts/flatcurve: optimize dir sync failed", "dir", st.dir, "err", serr)
