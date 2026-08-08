@@ -222,6 +222,11 @@ type NamespaceSpec struct {
 	Subscriptions *bool
 }
 
+// SessionID hands the cross-service correlation id to the imapserver layer:
+// its diagnostics otherwise name the login proxy's address with port 0, which
+// identifies no connection (#1164). Detected there by interface assertion.
+func (s *session) SessionID() string { return s.sid }
+
 // keepsSubscriptions reports whether this namespace holds its own subscription
 // file, or delegates to the subscriber's own namespace.
 func (spec NamespaceSpec) keepsSubscriptions() bool {

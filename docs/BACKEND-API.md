@@ -298,6 +298,25 @@ CLI: `yarctl backend folder list <user> [--namespace NS]`
 > replace a genuinely complete set (the root alone) and every other row is
 > cleared, which is the maximal orphan case and precisely the repair. Blanking on
 > a *failed* enumeration would be the hazard, and that answers `500` first.
+>
+> **`rebuild --dry-run` reports instead of writing.** `"dry_run": true` runs the
+> same walk and diffs it against the index: per folder, `missing` (in the file,
+> not the index), `stale` (in the index, not the file) and `mismatched` (both,
+> different rights), with `in_sync` summarising. Scope follows the write it
+> previews — a named subset compares those folders, `--all` compares everything.
+> This is the answer to "did my deployment drift, and where" (#1154), which was
+> otherwise answerable only by comparing `list` against `get` folder by folder —
+> presuming the folder list the drifted index was supposed to provide.
+>
+> **The namespace root is a first-class address everywhere.** `"root": true`
+> works on `get`, `set`, `apply` and `delete` alike (CLI `--root` on each). On
+> the request side it must be a field: after JSON decoding an absent `folder`
+> and `folder: ""` are the same empty string, so the intent has no other
+> spelling. On the reply side there is no such ambiguity — **an empty `mailbox`
+> (or `folder` in the drift report) IS the namespace root**: that is its name
+> in the store, no folder can be called `""`, and this sentence is its
+> definition (#1163). The root's rows are the ones that inherit to every
+> mailbox under them.
 
 ### `POST /api/backend/subscriptions/migrate`
 

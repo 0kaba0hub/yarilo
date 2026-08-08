@@ -38,16 +38,22 @@ Commands:
   list    <user>                              — every (mailbox, identifier, rights) in
                                                 the namespace-wide yarilo-acl-list index
   get     <user> <mailbox>                    — parsed ACL of one mailbox
+  get     --root <user>                       — parsed ACL of the namespace root
   set     <user> <mailbox> <identifier> <rights>
                                               — upsert ONE entry (replaces matching
                                                 identifier; '-' prefix marks negative)
+  set     --root <user> <identifier> <rights> — same, on the namespace root
   delete  <user> <mailbox> [<identifier>]     — without identifier: drop entire file;
                                                 with identifier: drop just that entry
+  delete  --root <user> [<identifier>]        — same, on the namespace root
   rebuild <user> <folder> [<folder> ...]      — reseed those folders in the namespace-wide
                                                 index from per-mailbox files (merges:
                                                 other folders are left alone)
   rebuild <user> --all                        — reseed every folder, replacing the index
                                                 (drops rows for folders that are gone)
+  rebuild ... --dry-run                       — report the drift the rebuild would
+                                                repair (missing / stale / mismatched
+                                                rows), without writing
   materialise <user> <folder> [<folder> ...]  — write what each mailbox inherits into
                                                 its own ACL; repairs mailboxes created
                                                 before inheritance was materialised at
@@ -79,11 +85,23 @@ func aclList(args []string) error {
 func aclGet(args []string) error {
 	fs := flag.NewFlagSet("acl get", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
+	root := fs.Bool("root", false, "address the namespace root rather than a mailbox")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
+	if *root {
+		if fs.NArg() != 1 {
+			return fmt.Errorf("usage: yarctl backend acl get --root <user> [--namespace NS]")
+		}
+		return printJSON(backendAPIPost("/api/backend/acl/get", map[string]any{
+			"user":      fs.Arg(0),
+			"namespace": *ns,
+			"root":      true,
+		}))
+	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarctl backend acl get <user> <mailbox> [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend acl get <user> <mailbox> [--namespace NS]\n" +
+			"       yarctl backend acl get --root <user> [--namespace NS]")
 	}
 	return printJSON(backendAPIPost("/api/backend/acl/get", map[string]any{
 		"user":      fs.Arg(0),
@@ -131,11 +149,16 @@ func aclSet(args []string) error {
 func aclDelete(args []string) error {
 	fs := flag.NewFlagSet("acl delete", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
+	root := fs.Bool("root", false, "address the namespace root rather than a mailbox")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
+	if *root {
+		return aclDeleteRoot(fs, *ns)
+	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarctl backend acl delete <user> <mailbox> [<identifier>] [--namespace NS]")
+		return fmt.Errorf("usage: yarctl backend acl delete <user> <mailbox> [<identifier>] [--namespace NS]\n" +
+			"       yarctl backend acl delete --root <user> [<identifier>] [--namespace NS]")
 	}
 	user, mbox := fs.Arg(0), fs.Arg(1)
 	if fs.NArg() == 2 {
@@ -160,25 +183,51 @@ func aclDelete(args []string) error {
 	}))
 }
 
+// aclDeleteRoot mirrors aclDelete for the namespace root: set could write a
+// root entry that nothing could then remove except a set with empty rights --
+// a removal spelled as a write, discoverable only by guessing (#1163).
+func aclDeleteRoot(fs *flag.FlagSet, ns string) error {
+	switch fs.NArg() {
+	case 1: // drop the entire root ACL file
+		return printJSON(backendAPIPost("/api/backend/acl/delete", map[string]any{
+			"user":      fs.Arg(0),
+			"namespace": ns,
+			"root":      true,
+		}))
+	case 2: // remove one identifier, DELETEACL semantics
+		return printJSON(backendAPIPost("/api/backend/acl/apply", map[string]any{
+			"user":       fs.Arg(0),
+			"namespace":  ns,
+			"root":       true,
+			"identifier": fs.Arg(1),
+			"rights":     "",
+			"mode":       "replace",
+		}))
+	}
+	return fmt.Errorf("usage: yarctl backend acl delete --root <user> [<identifier>] [--namespace NS]")
+}
+
 func aclRebuild(args []string) error {
 	fs := flag.NewFlagSet("acl rebuild", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
 	all := fs.Bool("all", false, "rebuild every folder in the namespace")
+	dryRun := fs.Bool("dry-run", false, "report the drift the rebuild would repair, without writing")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if *all {
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: yarctl backend acl rebuild <user> --all [--namespace NS] (no folder list with --all)")
+			return fmt.Errorf("usage: yarctl backend acl rebuild <user> --all [--dry-run] [--namespace NS] (no folder list with --all)")
 		}
 		return printJSON(backendAPIPost("/api/backend/acl/rebuild", map[string]any{
 			"user":      fs.Arg(0),
 			"namespace": *ns,
 			"all":       true,
+			"dry_run":   *dryRun,
 		}))
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarctl backend acl rebuild <user> <folder> [<folder> ...] [--namespace NS], or --all")
+		return fmt.Errorf("usage: yarctl backend acl rebuild <user> <folder> [<folder> ...] [--dry-run] [--namespace NS], or --all")
 	}
 	folders := make([]string, 0, fs.NArg()-1)
 	for i := 1; i < fs.NArg(); i++ {
@@ -188,6 +237,7 @@ func aclRebuild(args []string) error {
 		"user":      fs.Arg(0),
 		"namespace": *ns,
 		"folders":   folders,
+		"dry_run":   *dryRun,
 	}))
 }
 

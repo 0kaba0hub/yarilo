@@ -70,6 +70,12 @@ type aclRequest struct {
 	// would do" is how it is meant to be run first, not a flag remembered
 	// afterwards.
 	Apply bool `json:"apply,omitempty"`
+	// DryRun turns a rebuild into a drift report: the same walk, diffed
+	// against the index instead of written into it. "Did my deployment drift,
+	// and where" was otherwise answerable only by comparing list against get
+	// folder by folder -- which presumes the folder list the drifted index
+	// was supposed to provide (#1154).
+	DryRun bool `json:"dry_run,omitempty"`
 	// Actor is the acting identity for lock ownership and audit -- separate from
 	// User, which keeps its meaning (the store account). When an operator edits
 	// another account's owner-templated namespace, the lock must be held under
@@ -268,6 +274,10 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 	// so a batch of three names of which two did not exist answered
 	// {"folders":3,"status":"ok"} -- an operator who misspelt one got a success
 	// with the number they expected and went away believing the index reseeded.
+	if req.DryRun {
+		s.aclRebuildDryRun(w, store, req, present)
+		return
+	}
 	rebuilt := make([]string, 0, len(req.Folders))
 	skipped := make([]map[string]string, 0)
 	rootRebuilt := false
@@ -315,6 +325,122 @@ func (s *Server) handleACLRebuild(w http.ResponseWriter, r *http.Request) {
 		// rather than as an empty name in "rebuilt". False means the root simply
 		// holds no ACL (it cannot be "not found" -- see the existence exemption).
 		"root":    rootRebuilt,
+		"skipped": skipped,
+	})
+}
+
+// aclRebuildDryRun answers "did my deployment drift, and where": the same walk
+// a rebuild would run, diffed against the index instead of written into it.
+// Scope follows the write it previews -- a named subset compares only those
+// folders (a rebuild of them merges), --all compares everything (a rebuild
+// replaces, so index rows outside the walked set are stale by definition).
+func (s *Server) aclRebuildDryRun(w http.ResponseWriter, store *acl.Store, req *aclRequest, present map[string]bool) {
+	type row struct {
+		id     string
+		rights string
+	}
+	rowID := func(id mailbox.Identifier, neg bool) string {
+		out := id.String()
+		if neg {
+			out = "-" + out
+		}
+		return out
+	}
+
+	wanted := make(map[string]map[string]string, len(req.Folders)) // folder -> id -> rights
+	skipped := make([]map[string]string, 0)
+	inScope := make(map[string]bool, len(req.Folders))
+	for _, folder := range req.Folders {
+		inScope[folder] = true
+		if folder != "" && !present[folder] {
+			skipped = append(skipped, map[string]string{"folder": folder, "reason": "folder not found"})
+			continue
+		}
+		parsed, err := store.Get(folder)
+		if err != nil {
+			apiError(w, "read "+folder+": "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rows := make(map[string]string, len(parsed))
+		for _, e := range parsed {
+			rows[rowID(e.Identifier, e.Negative)] = e.Rights.String()
+		}
+		wanted[folder] = rows
+	}
+
+	snapshot, err := store.ListSnapshot()
+	if err != nil {
+		apiError(w, "read index: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	current := make(map[string]map[string]string)
+	for _, e := range snapshot {
+		if !req.All && !inScope[e.Mailbox] {
+			continue
+		}
+		if current[e.Mailbox] == nil {
+			current[e.Mailbox] = make(map[string]string)
+		}
+		current[e.Mailbox][rowID(e.Identifier, e.Negative)] = e.Rights.String()
+	}
+
+	folders := make(map[string]bool, len(wanted)+len(current))
+	for f := range wanted {
+		folders[f] = true
+	}
+	for f := range current {
+		folders[f] = true
+	}
+	names := make([]string, 0, len(folders))
+	for f := range folders {
+		names = append(names, f)
+	}
+	sort.Strings(names)
+	drift := make([]map[string]any, 0)
+	for _, folder := range names {
+		missing := make([]row, 0) // in the file, not in the index
+		stale := make([]row, 0)   // in the index, not in the file
+		mismatched := make([]map[string]string, 0)
+		for id, rights := range wanted[folder] {
+			got, ok := current[folder][id]
+			switch {
+			case !ok:
+				missing = append(missing, row{id, rights})
+			case got != rights:
+				mismatched = append(mismatched, map[string]string{
+					"identifier": id, "file_rights": rights, "index_rights": got,
+				})
+			}
+		}
+		for id, rights := range current[folder] {
+			if _, ok := wanted[folder][id]; !ok {
+				stale = append(stale, row{id, rights})
+			}
+		}
+		if len(missing) == 0 && len(stale) == 0 && len(mismatched) == 0 {
+			continue
+		}
+		rowsJSON := func(rs []row) []map[string]string {
+			sort.Slice(rs, func(i, j int) bool { return rs[i].id < rs[j].id })
+			out := make([]map[string]string, 0, len(rs))
+			for _, r := range rs {
+				out = append(out, map[string]string{"identifier": r.id, "rights": r.rights})
+			}
+			return out
+		}
+		drift = append(drift, map[string]any{
+			"folder":     folder, // "" is the namespace root, as everywhere
+			"missing":    rowsJSON(missing),
+			"stale":      rowsJSON(stale),
+			"mismatched": mismatched,
+		})
+	}
+	apiJSON(w, map[string]any{
+		"status":  "ok",
+		"dry_run": true,
+		"all":     req.All,
+		"in_sync": len(drift) == 0,
+		"drift":   drift,
 		"skipped": skipped,
 	})
 }
@@ -624,6 +750,11 @@ func entriesToJSON(in []acl.ListEntry) []map[string]any {
 		if e.Negative {
 			id = "-" + id
 		}
+		// The empty mailbox IS the namespace root -- that is its name in the
+		// store, no folder can be called "", and the API doc says so. A
+		// "root": true alongside would be the same fact computed twice; on
+		// the REQUEST side root stays a field, because there absence and ""
+		// decode alike and the intent has no other spelling (#1163).
 		out = append(out, map[string]any{
 			"mailbox":    e.Mailbox,
 			"identifier": id,

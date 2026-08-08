@@ -817,10 +817,19 @@ store owner.
 Three defects with three different causes shared one consequence: stored ACL
 state could not be read back by the same path that wrote it. #1109 -- the admin
 API read the wrong store, so shared-namespace folders were invisible to it.
-#1145 -- `GETACL` never listed negative entries (a pre-#1141 surfacing), so the
-listing overstated the rights in force. #1147 -- IMAP `SETACL`/`DELETEACL`
-updated the per-mailbox file but not the `yarilo-acl-list` index, so `yarctl acl
-list` named grants that were changed or removed.
+#1144 -- the admin API and IMAP resolved the same mailbox name to two different
+stores, so each surface read back its own write and the two still disagreed
+with each other: agreement with the evaluator is necessary, and not sufficient
+unless the surfaces also resolve the same state. #1147 -- IMAP
+`SETACL`/`DELETEACL` updated the per-mailbox file but not the
+`yarilo-acl-list` index, so `yarctl acl list` named grants that were changed
+or removed.
+
+(An earlier revision cited #1145 -- `GETACL` hiding negative entries -- as the
+third case; that report was retracted as invalid: the reproduction used
+`SETACL <mailbox> <id> -w`, which is RFC 4314 rights *removal*, not a negative
+identifier, so nothing negative was ever stored. GETACL lists negative entries
+correctly.)
 
 The absent invariant, stated once:
 
@@ -873,6 +882,12 @@ line the parser then refuses to read back.
   instance and gives them the owner tier. Interaction with `acl_ignore`
   (IgnoreACL) is the open edge to watch: those are exactly the lines the
   reference's clearing disables.
+- **`--root` / `"root": true` on the admin request.** Not a semantic
+  divergence but a workaround for two format limits: the reference's admin
+  CLI takes the mailbox as a positional argument, so the namespace root
+  cannot be addressed there at all, and in JSON an absent `folder` and
+  `folder: ""` decode identically. On output both implementations use the one
+  field, and the empty name IS the root.
 - **CREATE under a namespace the caller may not see.** The reference answers
   Permission denied -- with its own comment conceding the existence
   disclosure -- and an internal error for a nonexistent owner, so CREATE is an

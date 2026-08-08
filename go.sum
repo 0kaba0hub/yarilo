@@ -1,7 +1,7 @@
 filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
 filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
-github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260808011355-b13f50c9d0ed h1:QJuAsxl7NAvi5mMb/rOca+vhS9AHK8GTHq1em0fxuFQ=
-github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260808011355-b13f50c9d0ed/go.mod h1:dhoFe2Q0PwLrMD7oZw8ODuaD0vLYPe5uj2wcOMnvh48=
+github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260808092521-9a6d1ee6a8a6 h1:QcMqQ9kKmRXWJkcK5U6yhkO3YB+Uxm5Q5dl4zF+uCaU=
+github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260808092521-9a6d1ee6a8a6/go.mod h1:dhoFe2Q0PwLrMD7oZw8ODuaD0vLYPe5uj2wcOMnvh48=
 github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f h1:h/57H2GGT5mZ5wJ7r5FwpWkO7RAaKVQtrgTT2Bmxzws=
 github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f/go.mod h1:OrcngXZxc5yyDuG4NezpzTmY19Ln8JoDKoQqzHd4Tao=
 github.com/0kaba0hub/go-sieve v0.0.0-20260713145935-39e12c5d4b1f h1:u6b3fcT8S8plmbzgK01nUHWqaX2hiMei7sgfWY3biPI=
