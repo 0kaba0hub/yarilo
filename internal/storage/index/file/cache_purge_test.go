@@ -181,3 +181,55 @@ func TestPurgeCacheReclaims(t *testing.T) {
 		t.Error("purge temp file left behind")
 	}
 }
+
+// An unreadable cache is dropped -- and the generation must move with it, or
+// the stamps left in the index would apply to whatever is written at those
+// offsets next (#1184).
+func TestPurgeCacheAbandonsTheGenerationOfAnUnreadableFile(t *testing.T) {
+	home := t.TempDir()
+	ui := New().OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userHandle).ui
+	f, err := ui.OpenFolder("INBOX", 7, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	indexID, resetID, _, err := ui.CachePairIdentity(f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := ui.CachePath(f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf, err := mailindex.CreateCache(path, indexID, resetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf.Close()
+	if err := ui.SetCacheOffsets(f.ID, map[uint32]uint32{1: 512}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("torn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := ui.PurgeCache(f.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, newResetID, _, err := ui.CachePairIdentity(f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newResetID == resetID {
+		t.Error("the generation did not move: stamps would apply to the next file written here")
+	}
+	msgs, err := ui.GetMessages(f.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].CacheOffset != 0 {
+		t.Errorf("stale stamp survived: %+v", msgs)
+	}
+}

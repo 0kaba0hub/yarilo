@@ -349,6 +349,14 @@ CLI: `yarctl backend index cache-purge <user> <folder> [--namespace NS]`.
 > corrupting anything, so a folder that reaches it simply stops caching until
 > purged. Run this after a large expunge, or periodically on busy folders.
 >
+> **A generation is only ever left by entering the next one.** That holds for
+> the failure paths too: an unreadable cache is dropped *and* the generation
+> moved, because stamps left in the index would otherwise apply to whatever is
+> written at those offsets next — a fully decodable record belonging to
+> another message, which no validity check can catch. Generations are seeded
+> from the clock rather than counted, since a rebuild reapplies the default
+> extensions and would otherwise hand back a number already used.
+>
 > **A purge is a new generation, never an edit.** Survivors are written to a
 > new file with a new `file_seq`, and the index's `cache` extension has its
 > `reset_id` moved to match in one write — which invalidates every stale

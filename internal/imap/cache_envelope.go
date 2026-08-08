@@ -61,6 +61,10 @@ type indexCacher interface {
 	// adds the extension, and stamping needs a pair that the missing
 	// extension prevents opening.
 	EnsureCacheExtension(folderID uint64) (indexID, resetID uint32, err error)
+	// BumpCacheGeneration abandons the current generation and returns the
+	// next file_seq. Discarding a file without it leaves the index's stamps
+	// applying to whatever gets written at those offsets next.
+	BumpCacheGeneration(folderID uint64) (uint32, error)
 	CachePath(folderID uint64) (string, error)
 	SetCacheOffsets(folderID uint64, offsets map[uint32]uint32) error
 }
@@ -265,9 +269,19 @@ func (s *session) openFolderCache(idx mailbox.UserIndex, folderID uint64) *folde
 		fc.file = cf
 	case os.IsNotExist(err), errors.Is(err, mailindex.ErrCacheInvalid):
 		if errors.Is(err, mailindex.ErrCacheInvalid) {
-			// Wrong pair, wrong generation: garbage by definition. Remove
-			// and recreate; the parse the client already paid for seeds it.
+			// Garbage by definition -- but recreating under the SAME file_seq
+			// would leave the index's stamps pointing into a fresh file,
+			// where the first append to reach one of those offsets answers
+			// its FETCH with another message's record. Enter a new
+			// generation, which kills every stamp in one index write.
 			_ = os.Remove(path)
+			newSeq, berr := ic.BumpCacheGeneration(folderID)
+			if berr != nil {
+				slog.Debug("imap: cache generation bump failed; serving uncached", "sid", s.sid, "err", berr)
+				fc.release()
+				return nil
+			}
+			resetID = newSeq
 		}
 		cf, cerr := mailindex.CreateCache(path, indexID, resetID)
 		if cerr != nil {

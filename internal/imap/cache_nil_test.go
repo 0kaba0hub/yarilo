@@ -70,6 +70,12 @@ func (o *olderIndex) EnsureCacheExtension(folderID uint64) (uint32, uint32, erro
 	}).EnsureCacheExtension(folderID)
 }
 
+func (o *olderIndex) BumpCacheGeneration(folderID uint64) (uint32, error) {
+	return o.UserIndex.(interface {
+		BumpCacheGeneration(uint64) (uint32, error)
+	}).BumpCacheGeneration(folderID)
+}
+
 func (o *olderIndex) CachePath(folderID uint64) (string, error) {
 	return o.UserIndex.(interface {
 		CachePath(uint64) (string, error)

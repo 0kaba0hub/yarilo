@@ -1093,3 +1093,9 @@ func (h *userHandle) EnsureCacheExtension(folderID uint64) (uint32, uint32, erro
 	h.stampTrace(folderID)
 	return h.ui.EnsureCacheExtension(folderID)
 }
+
+// BumpCacheGeneration forwards the generation bump (#1184).
+func (h *userHandle) BumpCacheGeneration(folderID uint64) (uint32, error) {
+	h.stampTrace(folderID)
+	return h.ui.BumpCacheGeneration(folderID)
+}
