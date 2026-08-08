@@ -1246,12 +1246,11 @@ func personalSeparator(cfg []config.NamespaceConfig) string {
 	return "."
 }
 
-// nsListMode resolves the operator's list setting; config validation already
-// rejected unknown values, so a failed normalisation here can only mean the
-// value bypassed validation -- fall back to the kind default rather than crash.
+// nsListMode resolves the operator's list setting.
 func nsListMode(ns config.NamespaceConfig) imapsvr.ListMode {
 	mode, ok := mailbox.NamespaceListMode(ns.Prefix, ns.List)
 	if !ok {
+		// Unreachable: pkg/config rejects unknown values at startup.
 		mode, _ = mailbox.NamespaceListMode(ns.Prefix, "")
 	}
 	return imapsvr.ListMode(mode)

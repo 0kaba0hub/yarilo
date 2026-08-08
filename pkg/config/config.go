@@ -2622,6 +2622,11 @@ func validateOwnerTemplatedNamespace(i int, ns NamespaceConfig) error {
 			"subscription file: its storage is resolved per owner at runtime, so the file would name no "+
 			"owner; remove subscriptions: true and they follow the subscriber", i, ns.Prefix)
 	}
+	if mode, ok := mailbox.NamespaceListMode(ns.Prefix, ns.List); ok && mode == "yes" && strings.TrimSpace(ns.List) != "" {
+		return fmt.Errorf("config: namespace %d (prefix %q) is owner-templated and cannot list its own "+
+			"node: the unexpanded template is not a mailbox and cannot become one; remove list: yes and "+
+			"the children list themselves (list: children)", i, ns.Prefix)
+	}
 	_, after, _ := strings.Cut(ns.Prefix, mailbox.OwnerVar)
 	if after != "" && after != sep {
 		return fmt.Errorf("config: namespace %d (prefix %q) puts %q after the owner variable; v1 supports "+
