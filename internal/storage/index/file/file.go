@@ -1081,3 +1081,21 @@ func (h *userHandle) SetCacheOffsets(folderID uint64, offsets map[uint32]uint32)
 	h.stampTrace(folderID)
 	return h.ui.SetCacheOffsets(folderID, offsets)
 }
+
+// PurgeCache forwards the cache purge (#1030) like every other folder verb.
+func (h *userHandle) PurgeCache(folderID uint64) (int, int64, error) {
+	h.stampTrace(folderID)
+	return h.ui.PurgeCache(folderID)
+}
+
+// EnsureCacheExtension forwards the lazy add (#1184).
+func (h *userHandle) EnsureCacheExtension(folderID uint64) (uint32, uint32, error) {
+	h.stampTrace(folderID)
+	return h.ui.EnsureCacheExtension(folderID)
+}
+
+// BumpCacheGeneration forwards the generation bump (#1184).
+func (h *userHandle) BumpCacheGeneration(folderID uint64) (uint32, error) {
+	h.stampTrace(folderID)
+	return h.ui.BumpCacheGeneration(folderID)
+}

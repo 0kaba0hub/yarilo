@@ -332,6 +332,39 @@ when `acl_shared_dict` is not configured.
 CLI: `yarctl backend acl registry list <user>`,
 `yarctl backend acl registry rebuild <owner> --namespace NS`.
 
+### `POST /api/backend/index/cache-purge`
+
+Rewrites a folder's `yarilo.index.cache` as a **new generation** holding only
+the records live messages point at, and reclaims the rest. The reply carries
+`carried` (records moved), `reclaimed_bytes` and `duration_ms`.
+
+CLI: `yarctl backend index cache-purge <user> <folder> [--namespace NS]`.
+
+> **The cache only grows on its own — purging is an operator action in v1.**
+> The file is append-only: every envelope or body structure a client asks for
+> is parsed once and appended, and expunging the message leaves its record
+> behind. There is no automatic trigger yet (the reference purges on
+> thresholds — deleted-record count, size); the only automatic bound is the
+> format's own offset ceiling, which refuses further appends rather than
+> corrupting anything, so a folder that reaches it simply stops caching until
+> purged. Run this after a large expunge, or periodically on busy folders.
+>
+> **A generation is only ever left by entering the next one.** That holds for
+> the failure paths too: an unreadable cache is dropped *and* the generation
+> moved, because stamps left in the index would otherwise apply to whatever is
+> written at those offsets next — a fully decodable record belonging to
+> another message, which no validity check can catch. Generations are seeded
+> from the clock rather than counted, since a rebuild reapplies the default
+> extensions and would otherwise hand back a number already used.
+>
+> **A purge is a new generation, never an edit.** Survivors are written to a
+> new file with a new `file_seq`, and the index's `cache` extension has its
+> `reset_id` moved to match in one write — which invalidates every stale
+> offset at once, with no walk over records. Every crash point lands on a
+> state readers already treat as "no cache, rebuild lazily", so an interrupted
+> purge costs a reparse, never a wrong answer. It takes the same per-mailbox
+> lock the session-side cache window takes.
+
 ### `POST /api/backend/subscriptions/migrate`
 
 Folds a namespace's old per-namespace subscription file into the subscriber's

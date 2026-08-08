@@ -17,10 +17,12 @@ func dispatchIndex(args []string) error {
 		return indexRebuild(args[1:])
 	case "rebuild-storage":
 		return indexRebuildStorage(args[1:])
+	case "cache-purge":
+		return indexCachePurge(args[1:])
 	case "optimize":
 		return indexOptimize(args[1:])
 	default:
-		return fmt.Errorf("unknown index command %q — available: dump, rebuild, rebuild-storage, optimize", args[0])
+		return fmt.Errorf("unknown index command %q — available: dump, rebuild, rebuild-storage, optimize, cache-purge", args[0])
 	}
 }
 
@@ -50,6 +52,12 @@ Commands:
         a tag proves only "was once here", not "is lost").
 
   optimize <user> <folder> [--namespace NS]
+  cache-purge <user> <folder> [--namespace NS]
+                             — rewrite yarilo.index.cache as a new generation
+                               holding only what live messages point at, and
+                               reclaim the rest. The cache is append-only and
+                               never shrinks on its own; there is no automatic
+                               trigger yet, so this is an operator action.
         Compact the .index.log overlay into the base .index file.
         No semantic change; safe to run while no IMAP session
         references this folder.`)
@@ -116,6 +124,23 @@ func indexOptimize(args []string) error {
 		return fmt.Errorf("usage: yarctl backend index optimize <user> <folder> [--namespace NS]")
 	}
 	return printJSON(backendAPIPost("/api/backend/index/optimize", map[string]any{
+		"user":      fs.Arg(0),
+		"folder":    fs.Arg(1),
+		"namespace": *ns,
+	}))
+}
+
+// indexCachePurge reclaims a folder's index cache (#1030).
+func indexCachePurge(args []string) error {
+	fs := flag.NewFlagSet("index cache-purge", flag.ContinueOnError)
+	ns := fs.String("namespace", "personal", "namespace slug")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 2 {
+		return fmt.Errorf("usage: yarctl backend index cache-purge <user> <folder> [--namespace NS]")
+	}
+	return printJSON(backendAPIPost("/api/backend/index/cache-purge", map[string]any{
 		"user":      fs.Arg(0),
 		"folder":    fs.Arg(1),
 		"namespace": *ns,

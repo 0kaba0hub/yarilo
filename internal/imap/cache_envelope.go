@@ -56,6 +56,15 @@ const cacheFieldEnvelope = "yarilo.envelope"
 // Asserted at use: an index backend without it simply serves no cache.
 type indexCacher interface {
 	CachePairIdentity(folderID uint64) (indexID, resetID uint32, ok bool, err error)
+	// EnsureCacheExtension adds the extension to an index written before it
+	// existed. Without it the lazy add is unreachable: only a stamping write
+	// adds the extension, and stamping needs a pair that the missing
+	// extension prevents opening.
+	EnsureCacheExtension(folderID uint64) (indexID, resetID uint32, err error)
+	// BumpCacheGeneration abandons the current generation and returns the
+	// next file_seq. Discarding a file without it leaves the index's stamps
+	// applying to whatever gets written at those offsets next.
+	BumpCacheGeneration(folderID uint64) (uint32, error)
 	CachePath(folderID uint64) (string, error)
 	SetCacheOffsets(folderID uint64, offsets map[uint32]uint32) error
 }
@@ -217,8 +226,16 @@ func (s *session) openFolderCache(idx mailbox.UserIndex, folderID uint64) *folde
 		return nil
 	}
 	indexID, resetID, extOK, err := ic.CachePairIdentity(folderID)
-	if err != nil || !extOK {
+	if err != nil {
 		return nil
+	}
+	if !extOK {
+		// Every mailbox older than the extension arrives here, which is every
+		// mailbox in an upgraded deployment.
+		if indexID, resetID, err = ic.EnsureCacheExtension(folderID); err != nil {
+			slog.Debug("imap: cache extension unavailable; serving uncached", "sid", s.sid, "err", err)
+			return nil
+		}
 	}
 	path, err := ic.CachePath(folderID)
 	if err != nil {
@@ -252,9 +269,19 @@ func (s *session) openFolderCache(idx mailbox.UserIndex, folderID uint64) *folde
 		fc.file = cf
 	case os.IsNotExist(err), errors.Is(err, mailindex.ErrCacheInvalid):
 		if errors.Is(err, mailindex.ErrCacheInvalid) {
-			// Wrong pair, wrong generation: garbage by definition. Remove
-			// and recreate; the parse the client already paid for seeds it.
+			// Garbage by definition -- but recreating under the SAME file_seq
+			// would leave the index's stamps pointing into a fresh file,
+			// where the first append to reach one of those offsets answers
+			// its FETCH with another message's record. Enter a new
+			// generation, which kills every stamp in one index write.
 			_ = os.Remove(path)
+			newSeq, berr := ic.BumpCacheGeneration(folderID)
+			if berr != nil {
+				slog.Debug("imap: cache generation bump failed; serving uncached", "sid", s.sid, "err", berr)
+				fc.release()
+				return nil
+			}
+			resetID = newSeq
 		}
 		cf, cerr := mailindex.CreateCache(path, indexID, resetID)
 		if cerr != nil {
@@ -301,6 +328,9 @@ func (s *session) openFolderCache(idx mailbox.UserIndex, folderID uint64) *folde
 // second append for the same message in one FETCH (envelope, then body
 // structure) would chain from the stale head and orphan the first value.
 func (fc *folderCache) head(m *mailbox.MessageMeta) uint32 {
+	if fc == nil {
+		return 0
+	}
 	if off, ok := fc.stamps[m.UID]; ok {
 		return off
 	}
@@ -341,6 +371,9 @@ func (fc *folderCache) storeField(m *mailbox.MessageMeta, fieldID uint32, data [
 // envelope returns the cached envelope for a message, or nil on any of the
 // three misses.
 func (fc *folderCache) envelope(m *mailbox.MessageMeta) *imaplib.Envelope {
+	if fc == nil {
+		return nil
+	}
 	data, ok := fc.read(m)[fc.envID]
 	if !ok {
 		return nil // no record, or a record without this field
@@ -362,6 +395,9 @@ func (fc *folderCache) store(m *mailbox.MessageMeta, env *imaplib.Envelope) {
 
 // bodyStructure returns the cached body structure, or nil on any miss.
 func (fc *folderCache) bodyStructure(m *mailbox.MessageMeta) imaplib.BodyStructure {
+	if fc == nil {
+		return nil
+	}
 	data, ok := fc.read(m)[fc.bsID]
 	if !ok {
 		return nil

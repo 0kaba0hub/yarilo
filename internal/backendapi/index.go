@@ -15,6 +15,7 @@ func (s *Server) registerIndexRoutes() {
 	s.mux.Handle("POST /api/backend/index/rebuild", s.middleware(s.handleIndexRebuild))
 	s.mux.Handle("POST /api/backend/index/rebuild-storage", s.middleware(s.handleStorageRebuild))
 	s.mux.Handle("POST /api/backend/index/optimize", s.middleware(s.handleIndexOptimize))
+	s.mux.Handle("POST /api/backend/index/cache-purge", s.middleware(s.handleIndexCachePurge))
 }
 
 type indexDumpRequest struct {

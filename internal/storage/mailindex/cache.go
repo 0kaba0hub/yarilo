@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -572,4 +573,55 @@ func unpackCacheOffset(stored uint32) uint32 {
 		(v&0x00007f00)>>8<<7 |
 		(v&0x007f0000)>>16<<14 |
 		(v&0x7f000000)>>24<<21) << 2
+}
+
+// PurgeInto copies the records live points at (uid -> offset) into a fresh
+// file at newPath, returning their new offsets. A purge is a new generation,
+// never an in-place edit: the caller moves the extension's reset_id to
+// newFileSeq, which invalidates every stale offset in one write.
+//
+// An unreadable chain is dropped, not an error: replacing a file with
+// unreadable corners is what a purge is for.
+func (c *CacheFile) PurgeInto(newPath string, newFileSeq uint32, live map[uint32]uint32) (map[uint32]uint32, error) {
+	dst, err := CreateCache(newPath, c.hdr.IndexID, newFileSeq)
+	if err != nil {
+		return nil, err
+	}
+	defer dst.Close()
+
+	// Field ids are positions in this table: without it they mean nothing.
+	fields := c.Fields()
+	if len(fields) > 0 {
+		if _, err := dst.AddFields(fields); err != nil {
+			return nil, err
+		}
+	}
+
+	out := make(map[uint32]uint32, len(live))
+	for key, off := range live {
+		if off == 0 {
+			continue
+		}
+		vals, rerr := c.ReadRecord(off)
+		if rerr != nil || len(vals) == 0 {
+			continue // dropped, see above
+		}
+		// Sorted so a purge is reproducible.
+		ids := make([]uint32, 0, len(vals))
+		for id := range vals {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		flat := make([]CacheFieldValue, 0, len(ids))
+		for _, id := range ids {
+			flat = append(flat, CacheFieldValue{FieldID: id, Data: vals[id]})
+		}
+		// prev=0: a purge flattens the chain.
+		newOff, aerr := dst.AppendRecord(0, flat)
+		if aerr != nil {
+			return nil, aerr
+		}
+		out[key] = newOff
+	}
+	return out, nil
 }

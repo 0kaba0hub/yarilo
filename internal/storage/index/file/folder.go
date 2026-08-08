@@ -2029,3 +2029,150 @@ func (u *userIndex) CachePath(folderID uint64) (string, error) {
 	})
 	return path, err
 }
+
+// PurgeCache rewrites the folder's cache as a new generation holding only
+// what live messages point at (#1030). Returns records carried and bytes
+// reclaimed.
+//
+// Write the new file, rename it over, then move the extension's reset_id --
+// in that order, so a crash between steps leaves a file_seq mismatch, which
+// readers already treat as "no cache, rebuild". No directory fsync: unlike an
+// FTS shard, a cache generation back from the dead carries the old file_seq
+// and invalidates itself.
+func (u *userIndex) PurgeCache(folderID uint64) (carried int, reclaimed int64, err error) {
+	err = u.withFolder(folderID, func(fs *folderState) error {
+		ext := findExt(fs.file.Extensions, extNameCache)
+		if ext == nil {
+			return nil // nothing was ever cached
+		}
+		path := filepath.Join(fs.indexDir, mailindex.CacheFileName)
+		before, serr := os.Stat(path)
+		if serr != nil {
+			return nil // no cache file
+		}
+		old, oerr := mailindex.OpenCache(path, fs.file.Header.IndexID, ext.ResetID)
+		if oerr != nil {
+			// Already invalid: drop it -- and enter a new generation, or the
+			// stamps still in the index would apply to whatever is written
+			// at those offsets next.
+			if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
+				return fmt.Errorf("fileindex: purge cache remove: %w", rerr)
+			}
+			reclaimed = before.Size()
+			if _, berr := abandonCacheGeneration(fs); berr != nil {
+				return berr
+			}
+			return nil
+		}
+
+		live := make(map[uint32]uint32, len(fs.file.Records))
+		for _, rec := range fs.file.Records {
+			if off := decodeCacheRec(rec.Ext[extNameCache]); off != 0 {
+				live[rec.UID] = off
+			}
+		}
+		newSeq := newCacheGeneration(ext.ResetID)
+		tmp := path + ".purge"
+		_ = os.Remove(tmp)
+		moved, perr := old.PurgeInto(tmp, newSeq, live)
+		old.Close()
+		if perr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("fileindex: purge cache: %w", perr)
+		}
+		after, aerr := os.Stat(tmp)
+		if aerr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("fileindex: purge cache stat: %w", aerr)
+		}
+		if rerr := os.Rename(tmp, path); rerr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("fileindex: purge cache rename: %w", rerr)
+		}
+		for _, rec := range fs.file.Records {
+			off, ok := moved[rec.UID]
+			if !ok {
+				delete(rec.Ext, extNameCache)
+				continue
+			}
+			if rec.Ext == nil {
+				rec.Ext = make(map[string][]byte, 1)
+			}
+			rec.Ext[extNameCache] = encodeCacheRec(off)
+		}
+		ext.ResetID = newSeq
+		carried = len(moved)
+		reclaimed = before.Size() - after.Size()
+		return fs.flush(true)
+	})
+	return carried, reclaimed, err
+}
+
+// newCacheGeneration returns a file_seq no live stamp can belong to. Seeded
+// from the clock, as the reference seeds its first one: a counter would
+// repeat after adoptLegacy, which reapplies defaultExtensions and drops every
+// reset_id back to UIDValidity. Never goes backwards -- a clock that does
+// would otherwise hand back a generation already used.
+func newCacheGeneration(prev uint32) uint32 {
+	now := uint32(time.Now().Unix())
+	if now <= prev {
+		return prev + 1
+	}
+	return now
+}
+
+// abandonCacheGeneration enters a new generation and drops every stamp
+// pointing into the old one. A generation may only be left by entering the
+// next: an offset kept across a file that was removed and recreated under the
+// SAME file_seq stays "valid" by all four levels, and the first append to
+// reuse that offset answers one message's FETCH with another's record.
+func abandonCacheGeneration(fs *folderState) (uint32, error) {
+	ext := findExt(fs.file.Extensions, extNameCache)
+	if ext == nil {
+		return 0, nil
+	}
+	ext.ResetID = newCacheGeneration(ext.ResetID)
+	for _, rec := range fs.file.Records {
+		delete(rec.Ext, extNameCache)
+	}
+	return ext.ResetID, fs.flush(true)
+}
+
+// BumpCacheGeneration abandons the current cache generation and returns the
+// new file_seq, for callers that had to discard the file (#1184).
+func (u *userIndex) BumpCacheGeneration(folderID uint64) (uint32, error) {
+	var seq uint32
+	err := u.withFolder(folderID, func(fs *folderState) error {
+		var berr error
+		seq, berr = abandonCacheGeneration(fs)
+		return berr
+	})
+	return seq, err
+}
+
+// EnsureCacheExtension adds the cache extension to an index written before it
+// existed, and returns the pair identity. Folders created since carry it from
+// defaultExtensions; without this an older folder could never gain one, since
+// the only other add sits behind a stamping write that needs the extension to
+// be reachable at all (#1184).
+func (u *userIndex) EnsureCacheExtension(folderID uint64) (indexID, resetID uint32, err error) {
+	err = u.withFolder(folderID, func(fs *folderState) error {
+		if findExt(fs.file.Extensions, extNameCache) == nil {
+			// From the clock, not UIDValidity: a file left at this path by an
+			// earlier life must not match the generation we are creating.
+			if aerr := fs.file.AddRecordExtension(extNameCache, nil,
+				cacheRecSize, 4, newCacheGeneration(0)); aerr != nil {
+				return fmt.Errorf("fileindex: add cache extension: %w", aerr)
+			}
+			if ferr := fs.flush(true); ferr != nil {
+				return ferr
+			}
+		}
+		indexID = fs.file.Header.IndexID
+		if ext := findExt(fs.file.Extensions, extNameCache); ext != nil {
+			resetID = ext.ResetID
+		}
+		return nil
+	})
+	return indexID, resetID, err
+}
