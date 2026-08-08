@@ -480,6 +480,9 @@ data:
       fts_flatcurve_rotate_count: {{ $.Values.fts.fts_flatcurve_rotate_count }}
       fts_flatcurve_rotate_time: {{ $.Values.fts.fts_flatcurve_rotate_time }}
       fts_index_root: {{ $.Values.fts.fts_index_root | quote }}
+      {{- if hasKey $.Values.fts "fts_storage_type" }}
+      fts_storage_type: {{ $.Values.fts.fts_storage_type | quote }}
+      {{- end }}
       fts_autoindex_exclude: {{ $.Values.fts.fts_autoindex_exclude | default list | toJson }}
       fts_flatcurve_substring_search: {{ $.Values.fts.fts_flatcurve_substring_search }}
       fts_flatcurve_prefix_search: {{ $.Values.fts.fts_flatcurve_prefix_search | quote }}

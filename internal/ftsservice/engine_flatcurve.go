@@ -11,6 +11,9 @@ import (
 )
 
 func newFlatcurveEngine(cfg config.FTSConfig) (fts.Engine, error) {
+	// Validation refused an unknown value at startup, so the fallback here is
+	// the unset case, not a silent repair of a typo.
+	storageType, _ := config.NormalizeFTSStorageType(cfg.StorageType)
 	return flatcurve.New(flatcurve.Options{
 		CommitLimit:     cfg.FlatcurveCommitLimit,
 		MinTermSize:     cfg.FlatcurveMinTermSize,
@@ -19,5 +22,6 @@ func newFlatcurveEngine(cfg config.FTSConfig) (fts.Engine, error) {
 		RotateCount:     uint32(cfg.FlatcurveRotateCount),
 		RotateTime:      time.Duration(cfg.FlatcurveRotateTimeMsecs) * time.Millisecond,
 		SubstringSearch: cfg.FlatcurveSubstringSearch,
+		StorageType:     storageType,
 	}), nil
 }

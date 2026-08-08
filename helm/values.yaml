@@ -2521,6 +2521,18 @@ fts:
   ## and leaves the old fts-flatcurve directories occupying space until they
   ## are removed by hand. Set fts_index_root: "" to keep the old placement.
   fts_index_root: "posix:prefix=%h/fts/"
+  ## What the index shards sit on: "local" or "nfs". Declared, not detected
+  ## — an approach that changes with the filesystem has to be a setting.
+  ## It decides where a durability call is real: on a local filesystem the
+  ## shard directory is fsynced after a compaction so the rename and the
+  ## removals survive a crash, while NFS commits metadata operations before
+  ## the reply by protocol and has no commit-a-directory call at all, so the
+  ## same fsync is a no-op and is skipped. Unset means "local", the value
+  ## that does the extra work — mis-declaring costs a wasted syscall one way
+  ## and a rebuilt index after a crash the other. Every k8s backend runs on
+  ## the tag's RWX NFS PV and should say so; standalone on a local PV should
+  ## not. NOTE: an NFS export must be `sync` either way (docs/DEPLOYMENT.md).
+  fts_storage_type: "local"
   ## Mailboxes autoindexing skips: special-use flags written with their
   ## backslash, or names with * and ? wildcards. Empty excludes nothing.
   ##

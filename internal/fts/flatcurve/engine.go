@@ -65,7 +65,22 @@ type Options struct {
 	// wires this to the real index-path resolver; nil uses
 	// <IndexRoot>/<folder name>/fts-flatcurve.
 	MailboxDir func(user fts.UserRef, mbox fts.MailboxRef) string
+
+	// StorageType is what the shards sit on: "local" (default) or "nfs",
+	// declared by the operator through fts_storage_type. The engine decides
+	// what it means -- today, whether a directory fsync is worth issuing
+	// (#1176). The TYPE is plumbed rather than a derived boolean, so the next
+	// filesystem-dependent decision reads the same setting instead of adding
+	// a second one.
+	StorageType string
 }
+
+// dirSyncUseful reports whether fsyncing a shard directory buys anything.
+// Local filesystems: yes, it is what makes the rename and the removals
+// survive a crash. NFS: no -- the protocol commits metadata operations
+// before the reply, and there is no commit-a-directory call to make, so the
+// fsync is a no-op the kernel answers 0 to.
+func (o Options) dirSyncUseful() bool { return o.StorageType != "nfs" }
 
 func (o Options) withDefaults() Options {
 	if o.CommitLimit <= 0 {
@@ -903,21 +918,23 @@ func optimizeDir(st *mboxState) error {
 	// back from the dead -- both reconcile through Rescan, at the cost of a
 	// rebuild.
 	//
-	// This is for LOCAL index storage (standalone, any non-NFS index root).
-	// Over NFS it does nothing and has nothing to do: the protocol requires
-	// metadata operations to be committed before the reply, so the rename
-	// and the removals above are already durable when they return, and the
-	// client has no "commit a directory" operation anyway -- fsync of a
-	// directory is a no-op there. An async export breaks that guarantee, and
-	// no client-side call can repair it: that is a server setting, not a code
-	// path (#1176).
+	// Issued only where it buys something -- the operator declares that
+	// through fts_storage_type. Over NFS the rename and the removals above
+	// are already durable when they return (the protocol commits metadata
+	// operations before the reply) and there is no commit-a-directory call
+	// regardless, so the fsync is skipped rather than issued as a no-op. An
+	// async export breaks that guarantee and no client-side call repairs it:
+	// a server setting, not a code path (docs/DEPLOYMENT.md, #1176).
 	//
-	// Best-effort: a failure costs a rebuild, never correctness.
-	if d, derr := os.Open(st.dir); derr == nil {
-		if serr := d.Sync(); serr != nil {
-			slog.Debug("fts/flatcurve: optimize dir sync failed", "dir", st.dir, "err", serr)
+	// Best-effort: a failure costs a rebuild through Rescan, never
+	// correctness.
+	if st.eng.opts.dirSyncUseful() {
+		if d, derr := os.Open(st.dir); derr == nil {
+			if serr := d.Sync(); serr != nil {
+				slog.Debug("fts/flatcurve: optimize dir sync failed", "dir", st.dir, "err", serr)
+			}
+			d.Close()
 		}
-		d.Close()
 	}
 	metricOptimizeRuns.Inc()
 	metricOptimizeShardsMerged.Add(float64(len(paths)))

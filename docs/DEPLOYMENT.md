@@ -89,6 +89,11 @@ handle. On the shared NFS every per-user Xapian dir then has exactly one writer 
 the same "1 user = 1 pod" invariant that fixes #788 gives FTS single-writer for
 free, so `replicas > N` is safe (indexing load follows the users on each pod).
 
+Declare the storage in the chart: `fts.fts_storage_type: "nfs"` for every
+backend tag (the shards live on the tag's RWX PV), `"local"` for a standalone
+on a local PV. It is a declaration, not a detection, and it decides where a
+durability call is real — see the setting's own note in `helm/values.yaml`.
+
 **The NFS export must be `sync`.** This is a server setting no code path can
 compensate for. NFSv3/v4 require metadata operations (`RENAME`, `REMOVE`,
 `RMDIR`) to be committed to stable storage before the reply, and every atomic
