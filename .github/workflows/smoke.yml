@@ -98,6 +98,16 @@ jobs:
           if [ -n "$SMOKE_ACL_PEER_USER" ] && [ -n "$SMOKE_ACL_SHARED_PREFIX" ]; then
             QUOTA_ACL_FLAGS="$QUOTA_ACL_FLAGS -acl-peer-user $SMOKE_ACL_PEER_USER -acl-peer-pass $SMOKE_ACL_PEER_PASS -acl-shared-prefix $SMOKE_ACL_SHARED_PREFIX"
           fi
+          # FETCH (ENVELOPE BODYSTRUCTURE) on the login user's OWN INBOX. It
+          # reuses that account deliberately: the value of this check is that
+          # the mailbox is long-lived, not created by the run, since a fresh
+          # one carries current index extensions and takes a different path
+          # (#1184). Run the workflow once per mailbox format to cover all
+          # three.
+          ENVELOPE_FLAGS=""
+          if [ -n "$SMOKE_IMAP_USER" ]; then
+            ENVELOPE_FLAGS="-envelope-user $SMOKE_IMAP_USER -envelope-pass $SMOKE_IMAP_PASS"
+          fi
           # Enforcement check only runs when a dedicated over-quota user is set.
           if [ -n "$SMOKE_QUOTA_OVER_USER" ]; then
             QUOTA_ACL_FLAGS="$QUOTA_ACL_FLAGS -quota-over-user $SMOKE_QUOTA_OVER_USER -quota-over-pass $SMOKE_QUOTA_OVER_PASS"
@@ -108,7 +118,7 @@ jobs:
             -telemetry "${{ inputs.telemetry_url }}" \
             -insecure="${{ inputs.insecure }}" \
             -timeout 15s \
-            $POP3S_FLAGS $QUOTA_ACL_FLAGS $DIRECTOR_FLAGS
+            $POP3S_FLAGS $QUOTA_ACL_FLAGS $ENVELOPE_FLAGS $DIRECTOR_FLAGS
 
       - name: Run imaptest
         run: |

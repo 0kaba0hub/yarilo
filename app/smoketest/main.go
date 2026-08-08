@@ -75,6 +75,9 @@ var (
 	flagACLPeerPass     = flag.String("acl-peer-pass", "", "password for -acl-peer-user")
 	flagACLSharedPrefix = flag.String("acl-shared-prefix", "", `shared namespace prefix for the ACL check, e.g. "Public/"`)
 
+	flagEnvelopeUser = flag.String("envelope-user", "", "IMAP username whose EXISTING INBOX is probed with FETCH (ENVELOPE BODYSTRUCTURE) (enables it)")
+	flagEnvelopePass = flag.String("envelope-pass", "", "password for -envelope-user")
+
 	flagFTSUser = flag.String("fts-user", "", "IMAP username for the full-text search check (enables it)")
 	flagFTSPass = flag.String("fts-pass", "", "password for -fts-user")
 
@@ -217,6 +220,14 @@ func main() {
 		}{"imap ACL disclosure (shared namespace, peer vs absent mailbox)", func() error {
 			return checkACLDisclosure(*flagACLUser, *flagACLPass,
 				*flagACLPeerUser, *flagACLPeerPass, *flagACLSharedPrefix)
+		}})
+	}
+	if *flagEnvelopeUser != "" {
+		checks = append(checks, struct {
+			name string
+			fn   func() error
+		}{"imap FETCH (ENVELOPE BODYSTRUCTURE) on an existing INBOX", func() error {
+			return checkFetchEnvelope(*flagEnvelopeUser, *flagEnvelopePass)
 		}})
 	}
 	if *flagFTSUser != "" {
