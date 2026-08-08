@@ -76,22 +76,43 @@ func TestDriverChangeKeepsTheIndex(t *testing.T) {
 }
 
 // An index written under an older layout is adopted, not abandoned: both
-// name-keyed layouts are looked for, and the data moves to the GUID path.
+// name-keyed layouts are looked for, the data moves to the GUID path, and
+// the directories it sat in go with it.
+//
+// The mdbox case is the one that distinguishes: its layout nests the index
+// two levels down (mailboxes/<name>/dbox-Mails/), so removing the moved
+// directory alone leaves a shell that answers "not migrated yet" to anyone
+// looking (#1195). A flat fixture cannot show that -- there the moved
+// directory IS the whole chain.
 func TestOlderLayoutsAreMigrated(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		user fts.UserRef
 		dir  func(root string) string
+		gone []func(root string) string // must not survive the migration
 	}{
 		{
-			name: "driver-aware layout",
+			name: "driver-aware layout, nested (mdbox)",
+			user: fts.UserRef{Username: "u@test", Driver: "mdbox", Separator: "/"},
+			dir: func(root string) string {
+				return filepath.Join(root, "mailboxes", "Sent", "dbox-Mails", Label)
+			},
+			gone: []func(string) string{
+				func(r string) string { return filepath.Join(r, "mailboxes", "Sent", "dbox-Mails") },
+				func(r string) string { return filepath.Join(r, "mailboxes", "Sent") },
+			},
+		},
+		{
+			name: "driver-aware layout (maildir)",
 			user: fts.UserRef{Username: "u@test", Driver: "maildir", Separator: "."},
 			dir:  func(root string) string { return filepath.Join(root, ".Sent", Label) },
+			gone: []func(string) string{func(r string) string { return filepath.Join(r, ".Sent") }},
 		},
 		{
 			name: "flat layout",
 			user: fts.UserRef{Username: "u@test", Driver: "maildir", Separator: "."},
 			dir:  func(root string) string { return filepath.Join(root, "Sent", Label) },
+			gone: []func(string) string{func(r string) string { return filepath.Join(r, "Sent") }},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,6 +143,52 @@ func TestOlderLayoutsAreMigrated(t *testing.T) {
 			if _, serr := os.Stat(old); !os.IsNotExist(serr) {
 				t.Errorf("the old directory is still there: %v", serr)
 			}
+			for _, g := range tc.gone {
+				if _, serr := os.Stat(g(root)); !os.IsNotExist(serr) {
+					t.Errorf("the migration left %s behind, which reads as "+
+						"\"not migrated yet\" to anyone looking", g(root))
+				}
+			}
+			// The index root itself is never climbed past.
+			if _, serr := os.Stat(root); serr != nil {
+				t.Errorf("the index root was removed: %v", serr)
+			}
 		})
+	}
+}
+
+// The climb stops at the first directory that is not empty: a user whose
+// other mailboxes have not been migrated yet must keep the shell, or the
+// prune would take their indexes with it.
+func TestMigrationKeepsAParentThatStillHoldsAnotherIndex(t *testing.T) {
+	root := t.TempDir()
+	user := fts.UserRef{Username: "u@test", IndexRoot: root, Driver: "mdbox", Separator: "/"}
+	mbox := fts.MailboxRef{GUID: "g-sent", Name: "Sent", UIDValidity: 1}
+
+	old := filepath.Join(root, "mailboxes", "Sent", "dbox-Mails", Label)
+	if err := os.MkdirAll(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, "marker"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A sibling mailbox still on the old layout, untouched by this migration.
+	sibling := filepath.Join(root, "mailboxes", "Drafts", "dbox-Mails", Label)
+	if err := os.MkdirAll(sibling, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	ui, err := New(Options{}).OpenUser(t.Context(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ui.Close() }) //nolint:errcheck
+	_ = ui.(*userIndex).state(mbox).dir
+
+	if _, serr := os.Stat(sibling); serr != nil {
+		t.Errorf("the prune took an unmigrated mailbox's index with it: %v", serr)
+	}
+	if _, serr := os.Stat(filepath.Join(root, "mailboxes")); serr != nil {
+		t.Errorf("the shared parent was removed while still in use: %v", serr)
 	}
 }
