@@ -1087,3 +1087,9 @@ func (h *userHandle) PurgeCache(folderID uint64) (int, int64, error) {
 	h.stampTrace(folderID)
 	return h.ui.PurgeCache(folderID)
 }
+
+// EnsureCacheExtension forwards the lazy add (#1184).
+func (h *userHandle) EnsureCacheExtension(folderID uint64) (uint32, uint32, error) {
+	h.stampTrace(folderID)
+	return h.ui.EnsureCacheExtension(folderID)
+}

@@ -3,6 +3,7 @@ package file
 import (
 	"testing"
 
+	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -106,5 +107,72 @@ func TestAppendNeverPersistsACacheOffset(t *testing.T) {
 		if m.UID == 1 && m.CacheOffset != 512 {
 			t.Errorf("explicit stamp lost: uid 1 offset = %d, want 512", m.CacheOffset)
 		}
+	}
+}
+
+// A folder whose index predates the extension must be able to gain one: that
+// is every folder in an upgraded deployment. Without it the lazy add is
+// unreachable -- only a stamping write adds the extension, and stamping needs
+// the pair the missing extension prevents opening (#1184).
+func TestEnsureCacheExtensionOnAnIndexThatPredatesIt(t *testing.T) {
+	ui := New().OpenUser(&mailbox.UserInfo{Username: testUser, Home: t.TempDir()}).(*userHandle).ui
+	f, err := ui.OpenFolder("INBOX", 7, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewrite the index the way a version before the extension wrote it.
+	if err := ui.withFolder(f.ID, func(fs *folderState) error {
+		kept := fs.file.Extensions[:0]
+		for _, ext := range fs.file.Extensions {
+			if ext.Name != extNameCache {
+				kept = append(kept, ext)
+			}
+		}
+		for _, rec := range fs.file.Records {
+			delete(rec.Ext, extNameCache)
+		}
+		// Recompute the layout the way addExtension does, so the header's
+		// record size matches the shortened set.
+		layout, lerr := mailindex.ComputeRecordLayout(kept)
+		if lerr != nil {
+			return lerr
+		}
+		extBytes, eerr := mailindex.EncodeExtHeaders(layout.Extensions)
+		if eerr != nil {
+			return eerr
+		}
+		fs.file.Extensions = layout.Extensions
+		fs.file.Layout = layout
+		fs.file.Header.RecordSize = layout.RecordSize
+		fs.file.Header.HeaderSize = uint32(mailindex.HeaderMinSize) + uint32(len(extBytes))
+		return fs.flush(true)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, err := ui.CachePairIdentity(f.ID); ok || err != nil {
+		t.Fatalf("precondition: extension still present (ok=%v err=%v)", ok, err)
+	}
+
+	indexID, resetID, err := ui.EnsureCacheExtension(f.ID)
+	if err != nil || indexID == 0 || resetID == 0 {
+		t.Fatalf("EnsureCacheExtension = (%d, %d, %v)", indexID, resetID, err)
+	}
+	if _, _, ok, _ := ui.CachePairIdentity(f.ID); !ok {
+		t.Fatal("extension still absent after Ensure")
+	}
+	// And the folder can cache from here.
+	if err := ui.SetCacheOffsets(f.ID, map[uint32]uint32{1: 64}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := ui.GetMessages(f.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].CacheOffset != 64 {
+		t.Errorf("offset after Ensure = %+v, want 64", msgs)
 	}
 }

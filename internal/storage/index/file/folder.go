@@ -2102,3 +2102,28 @@ func (u *userIndex) PurgeCache(folderID uint64) (carried int, reclaimed int64, e
 	})
 	return carried, reclaimed, err
 }
+
+// EnsureCacheExtension adds the cache extension to an index written before it
+// existed, and returns the pair identity. Folders created since carry it from
+// defaultExtensions; without this an older folder could never gain one, since
+// the only other add sits behind a stamping write that needs the extension to
+// be reachable at all (#1184).
+func (u *userIndex) EnsureCacheExtension(folderID uint64) (indexID, resetID uint32, err error) {
+	err = u.withFolder(folderID, func(fs *folderState) error {
+		if findExt(fs.file.Extensions, extNameCache) == nil {
+			if aerr := fs.file.AddRecordExtension(extNameCache, nil,
+				cacheRecSize, 4, fs.file.Header.UIDValidity); aerr != nil {
+				return fmt.Errorf("fileindex: add cache extension: %w", aerr)
+			}
+			if ferr := fs.flush(true); ferr != nil {
+				return ferr
+			}
+		}
+		indexID = fs.file.Header.IndexID
+		if ext := findExt(fs.file.Extensions, extNameCache); ext != nil {
+			resetID = ext.ResetID
+		}
+		return nil
+	})
+	return indexID, resetID, err
+}
