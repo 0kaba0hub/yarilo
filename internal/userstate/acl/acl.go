@@ -525,20 +525,3 @@ func (s *Store) withLock(folder string, fn func() error) error {
 	defer func() { _ = s.locker.Unlock(ctx, lk.ID) }()
 	return fn()
 }
-
-// loadFrom parses one ACL file, treating absence as no ACL.
-func (s *Store) loadFrom(path string) (mailbox.ACL, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("userstate/acl: open %s: %w", path, err)
-	}
-	defer f.Close()
-	acl, err := mailbox.ParseACL(f)
-	if err != nil {
-		return nil, fmt.Errorf("userstate/acl: parse %s: %w: %w", path, errACLFileCorrupt, err)
-	}
-	return acl, nil
-}
