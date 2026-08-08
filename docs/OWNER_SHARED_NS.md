@@ -827,6 +827,22 @@ separate investigations that each had to start from a symptom. The #1147 fix
 follows it structurally: `Set` is `Update` with a constant function, so the file
 and the index are written in one place with no second path to forget the index.
 
+### 7.8 A malformed ACL line fails the whole file, deliberately
+
+The reference logs a malformed `vfile` line and keeps what it read; we abort
+the parse with the line number and serve nothing (`ParseACL`). That is a
+decision, not an accident: a partially-read ACL silently drops entries, and a
+dropped *negative* entry widens access — the one direction a parser error must
+never widen. Fail-closed costs availability of one folder's ACL; fail-open
+costs the subtraction someone wrote on purpose.
+
+Recorded here so it is not "fixed" later by matching the reference without
+this trade-off in view. The adjacent divergences shrink what the abort can
+hit: identifiers are validated before every write (length, UTF-8, control
+characters — the reference's own bound), and identifiers containing spaces
+parse and round-trip, so an operator can no longer legally write a line the
+parser then refuses to read back.
+
 ## 8. Testing plan
 
 - **Unit (`pkg/mailbox`)**: owner extraction from names for `%u` prefixes

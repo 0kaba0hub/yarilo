@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // RFC 4314 §2.1 single-letter ACL rights. The 11 codes below are
@@ -169,12 +170,38 @@ type Identifier struct {
 	Name string // user=/group=/group-override= only
 }
 
+// maxIdentifierLen matches the reference's identifier bound; a longer one is
+// refused before it can reach a file.
+const maxIdentifierLen = 1024
+
+// ValidIdentifier refuses what the line-oriented format cannot carry: an
+// over-long identifier, invalid UTF-8, or a control character (a newline in a
+// name would end the entry early and start a forged one).
+func ValidIdentifier(s string) error {
+	if len(s) > maxIdentifierLen {
+		return fmt.Errorf("mailbox/acl: identifier longer than %d bytes", maxIdentifierLen)
+	}
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("mailbox/acl: identifier is not valid UTF-8")
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("mailbox/acl: identifier contains a control character")
+		}
+	}
+	return nil
+}
+
 // ParseIdentifier parses the wire/disk form into an Identifier.
-// Rejects empty Name for user=/group=/group-override=. The '-'
+// Rejects empty Name for user=/group=/group-override= and anything
+// the on-disk format cannot represent (ValidIdentifier). The '-'
 // negativity marker is handled by ParseEntry, not here.
 func ParseIdentifier(s string) (Identifier, error) {
+	if err := ValidIdentifier(s); err != nil {
+		return Identifier{}, err
+	}
 	switch s {
-	case "anyone":
+	case "anyone", "anonymous": // anonymous is the reference's spelling
 		return Identifier{Type: IDAnyone}, nil
 	case "authenticated":
 		return Identifier{Type: IDAuthenticated}, nil
@@ -238,31 +265,40 @@ type Entry struct {
 // Whitespace-only and '#'-prefixed lines return (Entry{}, false, nil)
 // — the caller skips them. Trailing comments are not supported.
 func ParseEntry(line string) (Entry, bool, error) {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+	if t := strings.TrimSpace(line); t == "" || strings.HasPrefix(t, "#") {
 		return Entry{}, false, nil
 	}
+	raw := strings.TrimRight(strings.TrimLeft(line, " \t"), "\r")
 	negative := false
-	if strings.HasPrefix(trimmed, "-") {
+	if strings.HasPrefix(raw, "-") {
 		negative = true
-		trimmed = trimmed[1:]
+		raw = raw[1:]
 	}
-	fields := strings.Fields(trimmed)
-	if len(fields) == 0 {
+	// The identifier may itself contain spaces (user=John Smith), so the
+	// split is at the LAST separator: rights are one field and never carry a
+	// space, the identifier is everything before it. The reference
+	// round-trips such identifiers the same way. When the last token does not
+	// parse as rights but the line ends in a separator, it is the canonical
+	// empty-rights form "<id> " of a spaced identifier. (An identifier whose
+	// last token happens to spell valid rights cannot round-trip with empty
+	// rights -- an ambiguity of the format itself.)
+	s := strings.TrimRight(raw, " \t")
+	if s == "" {
 		return Entry{}, false, fmt.Errorf("mailbox/acl: empty entry")
 	}
-	if len(fields) > 2 {
-		return Entry{}, false, fmt.Errorf("mailbox/acl: too many fields in %q", line)
+	idStr, rightsStr := s, ""
+	if i := strings.LastIndexAny(s, " \t"); i >= 0 {
+		idStr, rightsStr = strings.TrimRight(s[:i], " \t"), s[i+1:]
 	}
-	id, err := ParseIdentifier(fields[0])
-	if err != nil {
-		return Entry{}, false, err
+	rights, rerr := ParseRights(rightsStr)
+	if rerr != nil {
+		if len(raw) > len(s) { // trailing separator: spaced identifier, no rights
+			idStr, rights = s, ""
+		} else {
+			return Entry{}, false, rerr
+		}
 	}
-	var rightsStr string
-	if len(fields) == 2 {
-		rightsStr = fields[1]
-	}
-	rights, err := ParseRights(rightsStr)
+	id, err := ParseIdentifier(idStr)
 	if err != nil {
 		return Entry{}, false, err
 	}

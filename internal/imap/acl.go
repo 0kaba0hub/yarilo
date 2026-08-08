@@ -77,8 +77,14 @@ func identifierFromIMAP(rid imaplib.RightsIdentifier) (mailbox.Identifier, bool,
 	if s == "" {
 		return mailbox.Identifier{}, false, fmt.Errorf("imap/acl: empty identifier")
 	}
+	// The reference validates every identifier before it can reach a file;
+	// the bare-username and $group forms below bypass ParseIdentifier, so
+	// the same check runs here.
+	if err := mailbox.ValidIdentifier(s); err != nil {
+		return mailbox.Identifier{}, false, err
+	}
 	switch s {
-	case "anyone":
+	case "anyone", "anonymous": // anonymous is the reference's spelling
 		return mailbox.Identifier{Type: mailbox.IDAnyone}, negative, nil
 	case "authenticated":
 		return mailbox.Identifier{Type: mailbox.IDAuthenticated}, negative, nil
