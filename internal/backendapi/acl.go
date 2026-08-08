@@ -391,8 +391,13 @@ func (s *Server) aclRebuildDryRun(w http.ResponseWriter, store *acl.Store, req *
 	for f := range current {
 		folders[f] = true
 	}
+	names := make([]string, 0, len(folders))
+	for f := range folders {
+		names = append(names, f)
+	}
+	sort.Strings(names)
 	drift := make([]map[string]any, 0)
-	for folder := range folders {
+	for _, folder := range names {
 		missing := make([]row, 0) // in the file, not in the index
 		stale := make([]row, 0)   // in the index, not in the file
 		mismatched := make([]map[string]string, 0)
@@ -430,8 +435,6 @@ func (s *Server) aclRebuildDryRun(w http.ResponseWriter, store *acl.Store, req *
 			"mismatched": mismatched,
 		})
 	}
-	sort.Slice(drift, func(i, j int) bool { return drift[i]["folder"].(string) < drift[j]["folder"].(string) })
-
 	apiJSON(w, map[string]any{
 		"status":  "ok",
 		"dry_run": true,
