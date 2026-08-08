@@ -882,6 +882,12 @@ line the parser then refuses to read back.
   instance and gives them the owner tier. Interaction with `acl_ignore`
   (IgnoreACL) is the open edge to watch: those are exactly the lines the
   reference's clearing disables.
+- **`--root` / `"root": true` on the admin request.** Not a semantic
+  divergence but a workaround for two format limits: the reference's admin
+  CLI takes the mailbox as a positional argument, so the namespace root
+  cannot be addressed there at all, and in JSON an absent `folder` and
+  `folder: ""` decode identically. On output both implementations use the one
+  field, and the empty name IS the root.
 - **CREATE under a namespace the caller may not see.** The reference answers
   Permission denied -- with its own comment conceding the existence
   disclosure -- and an internal error for a nonexistent owner, so CREATE is an
