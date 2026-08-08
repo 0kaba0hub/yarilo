@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // RFC 4314 §2.1 single-letter ACL rights. The 11 codes below are
@@ -169,12 +170,38 @@ type Identifier struct {
 	Name string // user=/group=/group-override= only
 }
 
+// maxIdentifierLen matches the reference's identifier bound; a longer one is
+// refused before it can reach a file.
+const maxIdentifierLen = 1024
+
+// ValidIdentifier refuses what the line-oriented format cannot carry: an
+// over-long identifier, invalid UTF-8, or a control character (a newline in a
+// name would end the entry early and start a forged one).
+func ValidIdentifier(s string) error {
+	if len(s) > maxIdentifierLen {
+		return fmt.Errorf("mailbox/acl: identifier longer than %d bytes", maxIdentifierLen)
+	}
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("mailbox/acl: identifier is not valid UTF-8")
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("mailbox/acl: identifier contains a control character")
+		}
+	}
+	return nil
+}
+
 // ParseIdentifier parses the wire/disk form into an Identifier.
-// Rejects empty Name for user=/group=/group-override=. The '-'
+// Rejects empty Name for user=/group=/group-override= and anything
+// the on-disk format cannot represent (ValidIdentifier). The '-'
 // negativity marker is handled by ParseEntry, not here.
 func ParseIdentifier(s string) (Identifier, error) {
+	if err := ValidIdentifier(s); err != nil {
+		return Identifier{}, err
+	}
 	switch s {
-	case "anyone":
+	case "anyone", "anonymous": // anonymous is the reference's spelling
 		return Identifier{Type: IDAnyone}, nil
 	case "authenticated":
 		return Identifier{Type: IDAuthenticated}, nil
@@ -238,35 +265,80 @@ type Entry struct {
 // Whitespace-only and '#'-prefixed lines return (Entry{}, false, nil)
 // — the caller skips them. Trailing comments are not supported.
 func ParseEntry(line string) (Entry, bool, error) {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+	if t := strings.TrimSpace(line); t == "" || strings.HasPrefix(t, "#") {
 		return Entry{}, false, nil
 	}
-	negative := false
-	if strings.HasPrefix(trimmed, "-") {
-		negative = true
-		trimmed = trimmed[1:]
+	s := strings.TrimRight(strings.TrimLeft(line, " \t"), "\r")
+
+	// The reference's format: an identifier containing a space is written as
+	// a backslash-escaped quoted string, the '-' of a negative entry INSIDE
+	// the quotes; an unquoted identifier carries no space and splits at the
+	// FIRST one. Rights are the single remaining field.
+	var idStr, rest string
+	if strings.HasPrefix(s, `"`) {
+		var err error
+		idStr, rest, err = unquoteACL(s)
+		if err != nil {
+			return Entry{}, false, err
+		}
+	} else {
+		idStr, rest = s, ""
+		if i := strings.IndexAny(s, " \t"); i >= 0 {
+			idStr, rest = s[:i], s[i+1:]
+		}
 	}
-	fields := strings.Fields(trimmed)
-	if len(fields) == 0 {
+	negative := false
+	if strings.HasPrefix(idStr, "-") {
+		negative = true
+		idStr = idStr[1:]
+	}
+	if idStr == "" {
 		return Entry{}, false, fmt.Errorf("mailbox/acl: empty entry")
 	}
-	if len(fields) > 2 {
+	rightsStr := strings.Trim(rest, " \t")
+	if strings.ContainsAny(rightsStr, " \t") {
 		return Entry{}, false, fmt.Errorf("mailbox/acl: too many fields in %q", line)
 	}
-	id, err := ParseIdentifier(fields[0])
+	id, err := ParseIdentifier(idStr)
 	if err != nil {
 		return Entry{}, false, err
-	}
-	var rightsStr string
-	if len(fields) == 2 {
-		rightsStr = fields[1]
 	}
 	rights, err := ParseRights(rightsStr)
 	if err != nil {
 		return Entry{}, false, err
 	}
 	return Entry{Identifier: id, Rights: rights, Negative: negative}, true, nil
+}
+
+// unquoteACL reads a leading quoted identifier: backslash escapes the next
+// byte, the closing quote must be followed by a separator or end the line.
+// Returns the unescaped content and what follows the separator.
+func unquoteACL(s string) (content, rest string, err error) {
+	var b strings.Builder
+	i := 1
+	for i < len(s) {
+		switch c := s[i]; c {
+		case '\\':
+			if i+1 >= len(s) {
+				return "", "", fmt.Errorf("mailbox/acl: unterminated escape in quoted identifier")
+			}
+			b.WriteByte(s[i+1])
+			i += 2
+		case '"':
+			i++
+			if i == len(s) {
+				return b.String(), "", nil
+			}
+			if s[i] != ' ' && s[i] != '\t' {
+				return "", "", fmt.Errorf("mailbox/acl: garbage after quoted identifier")
+			}
+			return b.String(), s[i+1:], nil
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return "", "", fmt.Errorf("mailbox/acl: unterminated quoted identifier")
 }
 
 // String returns the canonical wire/disk encoding of one entry
@@ -278,7 +350,13 @@ func (e Entry) String() string {
 	if e.Negative {
 		prefix = "-"
 	}
-	return prefix + e.Identifier.String() + " " + e.Rights.String()
+	id := prefix + e.Identifier.String()
+	// The reference's quoting: an identifier a plain split would misread is
+	// written as a backslash-escaped quoted string, sign inside the quotes.
+	if strings.ContainsAny(id, " \t\"\\") {
+		id = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(id) + `"`
+	}
+	return id + " " + e.Rights.String()
 }
 
 // ACL is the ordered set of entries from a yarilo-acl file. Order is

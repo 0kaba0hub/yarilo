@@ -191,6 +191,44 @@ func TestParseEntry(t *testing.T) {
 		{name: "too many fields", in: "user=eve lrs trailing", wantErr: true},
 		{name: "invalid right", in: "user=eve LRS", wantErr: true},
 		{name: "invalid identifier", in: "everyone lrs", wantErr: true},
+		// An identifier containing a space is a QUOTED string, the reference's
+		// own encoding -- a migrated file round-trips byte-compatibly, and an
+		// unquoted spaced identifier does not parse there or here (#1140 item 3).
+		{
+			name: "quoted spaced identifier with rights", in: `"user=John Smith" lrw`, wantOK: true,
+			want:     Entry{Identifier: Identifier{Type: IDUser, Name: "John Smith"}, Rights: "lrw"},
+			wantLine: `"user=John Smith" lrw`,
+		},
+		{
+			name: "quoted spaced identifier, explicit no rights", in: `"user=John Smith" `, wantOK: true,
+			want:     Entry{Identifier: Identifier{Type: IDUser, Name: "John Smith"}, Rights: ""},
+			wantLine: `"user=John Smith" `,
+		},
+		{
+			name: "negative sign inside the quotes", in: `"-user=John Smith" a`, wantOK: true,
+			want:     Entry{Identifier: Identifier{Type: IDUser, Name: "John Smith"}, Rights: "a", Negative: true},
+			wantLine: `"-user=John Smith" a`,
+		},
+		{
+			name: "escaped quote in quoted identifier", in: `"user=Jo\"hn" lr`, wantOK: true,
+			want:     Entry{Identifier: Identifier{Type: IDUser, Name: `Jo"hn`}, Rights: "lr"},
+			wantLine: `"user=Jo\"hn" lr`,
+		},
+		{name: "unquoted spaced identifier rejected", in: "user=John Smith lrw", wantErr: true},
+		{name: "rights-looking extra token rejected", in: "user=bob lr lrs", wantErr: true},
+		{name: "unterminated quote", in: `"user=John lrw`, wantErr: true},
+		{name: "garbage after closing quote", in: `"user=John"x lrw`, wantErr: true},
+		// anonymous is the reference's spelling of anyone; canonical output
+		// normalises it (#1140 item 4).
+		{
+			name: "anonymous is anyone", in: "anonymous lr", wantOK: true,
+			want:     Entry{Identifier: Identifier{Type: IDAnyone}, Rights: "lr"},
+			wantLine: "anyone lr",
+		},
+		// What the line-oriented format cannot carry is refused (#1140 item 2).
+		{name: "control character in identifier", in: "user=ev\x01l lr", wantErr: true},
+		{name: "newline smuggled into identifier", in: "user=a\nanyone lr", wantErr: true},
+		{name: "invalid UTF-8 identifier", in: "user=\xff\xfe lr", wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -629,5 +667,39 @@ func TestACL_EffectiveLadder(t *testing.T) {
 				t.Errorf("Effective = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestValidIdentifier(t *testing.T) {
+	long := strings.Repeat("a", 1025)
+	cases := []struct {
+		name string
+		in   string
+		ok   bool
+	}{
+		{"plain", "user=alice", true},
+		{"spaced", "user=John Smith", true},
+		{"utf8 name", "user=Ольга", true},
+		{"exactly 1024", "user=" + strings.Repeat("a", 1019), true},
+		{"over 1024", "user=" + long, false},
+		{"control char", "user=a\x01b", false},
+		{"tab", "user=a\tb", false},
+		{"del", "user=a\x7fb", false},
+		{"invalid utf8", "user=\xff", false},
+	}
+	for _, c := range cases {
+		if err := ValidIdentifier(c.in); (err == nil) != c.ok {
+			t.Errorf("%s: ValidIdentifier(%q) err=%v, want ok=%v", c.name, c.in, err, c.ok)
+		}
+	}
+}
+
+// One malformed line fails the whole file, deliberately: fail-closed beats
+// serving a partial ACL (docs/OWNER_SHARED_NS.md 7.7). Pinned so it is not
+// "fixed" later by someone matching the reference's log-and-keep.
+func TestParseACL_OneBadLineFailsClosed(t *testing.T) {
+	body := "user=alice lr\nuser=bob !!\nuser=carol lr\n"
+	if _, err := ParseACL(strings.NewReader(body)); err == nil {
+		t.Fatal("a file with one malformed line parsed; want fail-closed")
 	}
 }
