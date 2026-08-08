@@ -27,7 +27,7 @@ import (
 
 const testUser = "u@test.com"
 
-var testMbox = fts.MailboxRef{Name: "INBOX", UIDValidity: 1}
+var testMbox = fts.MailboxRef{Name: "INBOX", GUID: "g-inbox", UIDValidity: 1}
 
 func newTestService(t *testing.T) (*Service, mailbox.UserMailbox, mailbox.UserIndex) {
 	t.Helper()
@@ -359,8 +359,8 @@ func TestServiceAutoOptimize(t *testing.T) {
 	}
 	waitIndexed(t, svc, n)
 
-	sub := mailbox.FolderSubpath(info.Driver, testMbox.Name, testMbox.Name, mailbox.SepOrDefault(info.Separator))
-	dir := filepath.Join(svc.indexRoot(info), sub, flatcurve.Label)
+	// Keyed by the folder GUID, not the mail driver's layout (#1183).
+	dir := filepath.Join(svc.indexRoot(info), testMbox.GUID, flatcurve.Label)
 
 	// The background optimizer runs asynchronously, on its own worker
 	// goroutine — it may well have already collapsed the shards back to 1
