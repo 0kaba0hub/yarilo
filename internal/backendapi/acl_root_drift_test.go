@@ -38,17 +38,18 @@ func TestACL_RootReadDeleteAndListingMarker(t *testing.T) {
 		t.Fatalf("root get = %+v, want the bob entry", getResp)
 	}
 
-	// The listing names the root outright, not as a blank mailbox only.
+	// The empty mailbox is the root's one name in the listing -- no second
+	// field restating it (the two-fields-about-one-fact review point).
 	_, body = doJSON(t, ts, http.MethodPost, "/api/backend/acl/list", "", map[string]any{"user": user})
 	var listResp struct {
-		Entries []struct {
-			Mailbox string `json:"mailbox"`
-			Root    bool   `json:"root"`
-		} `json:"entries"`
+		Entries []map[string]any `json:"entries"`
 	}
 	decodeJSONBody(t, body, &listResp)
-	if len(listResp.Entries) != 1 || !listResp.Entries[0].Root || listResp.Entries[0].Mailbox != "" {
-		t.Fatalf("listing rows = %+v, want one root-marked row", listResp.Entries)
+	if len(listResp.Entries) != 1 || listResp.Entries[0]["mailbox"] != "" {
+		t.Fatalf("listing rows = %+v, want one row with the empty mailbox", listResp.Entries)
+	}
+	if _, dup := listResp.Entries[0]["root"]; dup {
+		t.Fatalf("listing row carries a root field duplicating mailbox == \"\": %+v", listResp.Entries[0])
 	}
 
 	// Single-identifier removal via apply, DELETEACL semantics.

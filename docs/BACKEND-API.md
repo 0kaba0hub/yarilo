@@ -309,11 +309,14 @@ CLI: `yarctl backend folder list <user> [--namespace NS]`
 > presuming the folder list the drifted index was supposed to provide.
 >
 > **The namespace root is a first-class address everywhere.** `"root": true`
-> works on `get`, `set`, `apply` and `delete` alike (CLI `--root` on each), and
-> the `list` reply marks the root's rows with `"root": true` alongside the
-> conventional empty `mailbox` — the row that inherits to every mailbox under it
-> is the most consequential one in the listing, and it should not be legible
-> only to readers who know the convention (#1163).
+> works on `get`, `set`, `apply` and `delete` alike (CLI `--root` on each). On
+> the request side it must be a field: after JSON decoding an absent `folder`
+> and `folder: ""` are the same empty string, so the intent has no other
+> spelling. On the reply side there is no such ambiguity — **an empty `mailbox`
+> (or `folder` in the drift report) IS the namespace root**: that is its name
+> in the store, no folder can be called `""`, and this sentence is its
+> definition (#1163). The root's rows are the ones that inherit to every
+> mailbox under them.
 
 ### `POST /api/backend/subscriptions/migrate`
 

@@ -423,16 +423,12 @@ func (s *Server) aclRebuildDryRun(w http.ResponseWriter, store *acl.Store, req *
 			}
 			return out
 		}
-		entry := map[string]any{
-			"folder":     folder,
+		drift = append(drift, map[string]any{
+			"folder":     folder, // "" is the namespace root, as everywhere
 			"missing":    rowsJSON(missing),
 			"stale":      rowsJSON(stale),
 			"mismatched": mismatched,
-		}
-		if folder == "" {
-			entry["root"] = true
-		}
-		drift = append(drift, entry)
+		})
 	}
 	sort.Slice(drift, func(i, j int) bool { return drift[i]["folder"].(string) < drift[j]["folder"].(string) })
 
@@ -751,19 +747,17 @@ func entriesToJSON(in []acl.ListEntry) []map[string]any {
 		if e.Negative {
 			id = "-" + id
 		}
-		row := map[string]any{
+		// The empty mailbox IS the namespace root -- that is its name in the
+		// store, no folder can be called "", and the API doc says so. A
+		// "root": true alongside would be the same fact computed twice; on
+		// the REQUEST side root stays a field, because there absence and ""
+		// decode alike and the intent has no other spelling (#1163).
+		out = append(out, map[string]any{
 			"mailbox":    e.Mailbox,
 			"identifier": id,
 			"rights":     e.Rights.String(),
 			"negative":   e.Negative,
-		}
-		// The namespace root is the row that inherits everywhere -- the most
-		// consequential one in the list. An empty mailbox is its only marker
-		// by convention; say it outright (#1163).
-		if e.Mailbox == "" {
-			row["root"] = true
-		}
-		out = append(out, row)
+		})
 	}
 	return out
 }
