@@ -95,7 +95,7 @@ func TestExclusionAppliesToAutoindexOnly(t *testing.T) {
 		exclude: NewExclusion([]string{`\Junk`}, map[string]string{"Junk": `\Junk`}, "/"),
 		queue:   newQueue(),
 	}
-	junk := fts.MailboxRef{Name: "Junk"}
+	junk := fts.MailboxRef{Name: "Junk", GUID: "g-junk", UIDValidity: 1}
 
 	if err := s.Index("u1", junk, 10, 0); err != nil {
 		t.Fatalf("Index: %v", err)
@@ -122,7 +122,7 @@ func TestUnexcludedMailboxStillAutoindexes(t *testing.T) {
 		exclude: NewExclusion([]string{`\Junk`}, map[string]string{"Junk": `\Junk`}, "/"),
 		queue:   newQueue(),
 	}
-	if err := s.Index("u1", fts.MailboxRef{Name: "INBOX"}, 10, 0); err != nil {
+	if err := s.Index("u1", fts.MailboxRef{Name: "INBOX", GUID: "g-inbox", UIDValidity: 1}, 10, 0); err != nil {
 		t.Fatalf("Index: %v", err)
 	}
 	if got := s.queue.depth(); got != 1 {

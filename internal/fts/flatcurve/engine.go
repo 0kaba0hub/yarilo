@@ -98,24 +98,30 @@ func (o Options) withDefaults() Options {
 	// RotateTime has no default here: 0 means "time-based rotation disabled".
 	// The positive default (5000ms) lives in pkg/config.DefaultConfig() only.
 	if o.MailboxDir == nil {
-		// Co-locate fts-flatcurve inside the mailbox's own per-folder index
-		// directory (the driver-aware layout fileindex and the ACL store share
-		// via mailbox.FolderSubpath), then append the label — e.g. mdbox INBOX
-		// → <root>/mailboxes/INBOX/dbox-Mails/fts-flatcurve. Matches where the
-		// real index data lives, not a flat <root>/<folder>/fts-flatcurve.
+		// Keyed by the folder's GUID, which is its identity: a rename keeps
+		// it and a driver migration does not change it, so neither orphans
+		// the index. The mail driver's layout is the mail tree's business and
+		// has none here -- the FTS root is its own tree (#1183).
 		o.MailboxDir = func(user fts.UserRef, mbox fts.MailboxRef) string {
-			sub := mailbox.FolderSubpathEscaped(user.Driver, mbox.Name, mbox.Name,
-				mailbox.SepOrDefault(user.Separator), user.EscapeChar)
-			return filepath.Join(user.IndexRoot, sub, Label)
+			return filepath.Join(user.IndexRoot, mbox.GUID, Label)
 		}
 	}
 	return o
 }
 
-// legacyMailboxDir is the old flat layout (<root>/<folder>/fts-flatcurve),
-// used only to migrate an existing index to the driver-aware path.
-func legacyMailboxDir(user fts.UserRef, mbox fts.MailboxRef) string {
-	return filepath.Join(user.IndexRoot, mbox.Name, Label)
+// legacyMailboxDirs are the layouts this engine has used before, newest
+// first: the driver-aware one, then the original flat one. Both are keyed by
+// the folder NAME, which is why a rename orphaned them.
+//
+// UserRef keeps Driver / Separator / EscapeChar for this: the GUID-keyed path
+// needs none of them, but reading where an older index sits does, and will
+// for as long as any deployment can still be carrying one.
+func legacyMailboxDirs(user fts.UserRef, mbox fts.MailboxRef) []string {
+	return []string{
+		filepath.Join(user.IndexRoot, mailbox.FolderSubpathEscaped(user.Driver, mbox.Name, mbox.Name,
+			mailbox.SepOrDefault(user.Separator), user.EscapeChar), Label),
+		filepath.Join(user.IndexRoot, mbox.Name, Label),
+	}
 }
 
 // Engine implements fts.Engine over Xapian.
@@ -258,15 +264,21 @@ func cleanStaleOptimizeTmp(dir string) {
 // a fresh index is built at newDir (self-heals via autoindex). The yarilo-fts
 // service is the sole writer, so no cross-process race. Caller holds u.mu.
 func (u *userIndex) migrateLegacyDir(mbox fts.MailboxRef, newDir string) {
-	legacy := legacyMailboxDir(u.user, mbox)
-	if legacy == newDir {
-		return // resolver already yields the flat path (or a custom override)
-	}
 	if _, err := os.Stat(newDir); err == nil {
 		return // target already present — nothing to migrate
 	}
-	if _, err := os.Stat(legacy); err != nil {
-		return // no legacy index — fresh mailbox
+	var legacy string
+	for _, cand := range legacyMailboxDirs(u.user, mbox) {
+		if cand == newDir {
+			continue // a custom resolver already yields this layout
+		}
+		if _, err := os.Stat(cand); err == nil {
+			legacy = cand
+			break
+		}
+	}
+	if legacy == "" {
+		return // no older index — fresh mailbox
 	}
 	slog.Debug("fts/flatcurve: legacy dir migration starting", "from", legacy, "to", newDir)
 	if err := os.MkdirAll(filepath.Dir(newDir), 0o700); err != nil {
@@ -279,7 +291,7 @@ func (u *userIndex) migrateLegacyDir(mbox fts.MailboxRef, newDir string) {
 			"from", legacy, "to", newDir, "err", err)
 		return
 	}
-	slog.Info("fts/flatcurve: migrated legacy FTS dir to driver-aware path",
+	slog.Info("fts/flatcurve: migrated legacy FTS dir to the GUID-keyed path",
 		"from", legacy, "to", newDir)
 }
 

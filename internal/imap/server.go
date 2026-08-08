@@ -608,11 +608,15 @@ var _ imapserver.SessionIMAP4rev2 = (*session)(nil)
 // emitMailboxChange is fire-and-forget: events are advisory wake-ups for
 // IDLE sessions on other pods, the authoritative state is already on disk.
 // A 1-second timeout keeps a slow locks server from stalling the command.
-func (s *session) emitMailboxChange(folder string, eventType locks.EventType, uid uint32) {
+// f identifies the folder for the FTS hook, which needs its GUID; the event
+// bus needs only the name, so a folder without a resolvable GUID still wakes
+// IDLE sessions (#1183).
+func (s *session) emitMailboxChange(f *mailbox.Folder, eventType locks.EventType, uid uint32) {
+	folder := f.Name
 	// delivered/expunged changes storage usage; runs before the Locker
 	// guard since it is independent of the event bus.
 	if eventType == locks.EventDelivered || eventType == locks.EventExpunged {
-		s.ftsNotify(folder, eventType == locks.EventExpunged, uid)
+		s.ftsNotify(f, eventType == locks.EventExpunged, uid)
 		s.quotaChanged()
 		// one post-commit read feeds both quota_warning crossing detection
 		// and the quota_clone mirror.
@@ -1401,9 +1405,9 @@ func (s *session) renameInbox(dest string) error {
 			_ = s.box.Remove(dest, newFilename)
 			return fmt.Errorf("imap/rename-inbox record: %w", err)
 		}
-		s.emitMailboxChange(dest, locks.EventDelivered, nm.UID)
+		s.emitMailboxChange(destFolder, locks.EventDelivered, nm.UID)
 		s.idx.ExpungeMessage(srcFolder.ID, m.UID) //nolint:errcheck
-		s.emitMailboxChange("INBOX", locks.EventExpunged, m.UID)
+		s.emitMailboxChange(srcFolder, locks.EventExpunged, m.UID)
 	}
 	srcFolder.Messages = 0
 	s.idx.SaveFolder(srcFolder) //nolint:errcheck
@@ -2124,11 +2128,11 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 			)
 		}
 	}
-	s.emitMailboxChange(name, locks.EventDelivered, m.UID)
+	s.emitMailboxChange(f, locks.EventDelivered, m.UID)
 
 	// imapsieve (RFC 6785): run scripts bound to this mailbox on the APPEND
 	// event; may refile, discard, or reflag the message just stored.
-	s.runImapSieveEvent("APPEND", name, rel, h, f.ID, f.GUID, m.UID, filename, m.AltTier, "", nil)
+	s.runImapSieveEvent("APPEND", name, rel, h, f, m.UID, filename, m.AltTier, "", nil)
 
 	return &imaplib.AppendData{UIDValidity: f.UIDValidity, UID: imaplib.UID(m.UID)}, nil
 }
@@ -2553,7 +2557,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename, "err", rerr)
 		}
 		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
-		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, m.UID)
+		s.emitMailboxChange(s.folder, locks.EventExpunged, m.UID)
 		s.statsExpunged++
 		expunge_count++
 		if err := w.WriteExpunge(seqNum); err != nil {
@@ -2934,7 +2938,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			if uerr := idx.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); uerr == nil {
 				m.Flags = newFlags
 				seenJustSet = true
-				s.emitMailboxChange(s.folder.Name, locks.EventChanged, m.UID)
+				s.emitMailboxChange(s.folder, locks.EventChanged, m.UID)
 			}
 		}
 		if opts.Flags || seenJustSet {
@@ -3176,7 +3180,7 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 		if err != nil {
 			return err
 		}
-		s.emitMailboxChange(s.folder.Name, locks.EventChanged, 0)
+		s.emitMailboxChange(s.folder, locks.EventChanged, 0)
 	}
 	slog.Debug("imap: store timing",
 		"user", s.userInfo.Username, "folder", s.folder.Name, "count", len(batchUpdates),
@@ -3232,7 +3236,7 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 				changed = append(changed, string(fl))
 			}
 			for _, p := range pending {
-				s.runImapSieveEvent("FLAG", s.folder.Name, s.folder.Name, s.folderNS, s.folder.ID, s.folder.GUID, p.uid, p.filename, p.altTier, "", changed)
+				s.runImapSieveEvent("FLAG", s.folder.Name, s.folder.Name, s.folderNS, s.folder, p.uid, p.filename, p.altTier, "", changed)
 			}
 		}
 	}
@@ -3323,7 +3327,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 		}
 		indexTotalMs += time.Since(tIndex).Milliseconds()
 		count++
-		s.emitMailboxChange(dest, locks.EventDelivered, nm.UID)
+		s.emitMailboxChange(destFolder, locks.EventDelivered, nm.UID)
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(nm.UID))
 		copied = append(copied, copiedMsg{uid: nm.UID, filename: newFilename})
@@ -3333,7 +3337,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 	// landing). Scripts may refile / discard / reflag the copy.
 	if s.srv.opts.SieveEngine != nil {
 		for _, cm := range copied {
-			s.runImapSieveEvent("COPY", dest, destRel, destH, destFolder.ID, destFolder.GUID, cm.uid, cm.filename, false, s.folder.Name, nil)
+			s.runImapSieveEvent("COPY", dest, destRel, destH, destFolder, cm.uid, cm.filename, false, s.folder.Name, nil)
 		}
 	}
 	slog.Debug("imap: copy timing",
@@ -3711,7 +3715,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			return fmt.Errorf("imap/move record: %w", err)
 		}
 		indexTotalMs += time.Since(tIndex).Milliseconds()
-		s.emitMailboxChange(dest, locks.EventDelivered, nm.UID)
+		s.emitMailboxChange(destFolder, locks.EventDelivered, nm.UID)
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(nm.UID))
 		hits = append(hits, matched{seqNum: seqNum, srcUID: m.UID, filename: m.Filename, destUID: nm.UID, destFile: newFilename, moved: srcBox == destH.box})
@@ -3736,7 +3740,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			srcBox.Remove(s.folder.Name, h.filename) //nolint:errcheck
 		}
 		srcIdx.ExpungeMessage(s.folder.ID, h.srcUID) //nolint:errcheck
-		s.emitMailboxChange(s.folder.Name, locks.EventExpunged, h.srcUID)
+		s.emitMailboxChange(s.folder, locks.EventExpunged, h.srcUID)
 		if err := w.WriteExpunge(h.seqNum); err != nil {
 			return err
 		}
@@ -3752,7 +3756,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	if s.srv.opts.SieveEngine != nil {
 		src := s.folder.Name
 		for _, h := range hits {
-			s.runImapSieveEvent("COPY", dest, destRel, destH, destFolder.ID, destFolder.GUID, h.destUID, h.destFile, false, src, nil)
+			s.runImapSieveEvent("COPY", dest, destRel, destH, destFolder, h.destUID, h.destFile, false, src, nil)
 		}
 	}
 	slog.Debug("imap: move timing",

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	imaplib "github.com/emersion/go-imap/v2"
@@ -68,6 +69,18 @@ type FTSOptions struct {
 }
 
 func (o FTSOptions) enabled() bool { return o.Client != nil && o.Chain != nil && o.SearchEnabled }
+
+// folderGUIDWarned dedupes the missing-GUID warning to one per folder per
+// process; the condition is a property of the folder, not of the message.
+var folderGUIDWarned sync.Map
+
+func warnFolderWithoutGUID(user, folder string) {
+	if _, seen := folderGUIDWarned.LoadOrStore(user+"\x00"+folder, struct{}{}); seen {
+		return
+	}
+	slog.Warn("imap: folder has no GUID; full-text indexing skipped for it",
+		"user", user, "folder", folder)
+}
 
 // ftsMailboxRef maps the selected folder to the wire mailbox identity.
 func ftsMailboxRef(f *mailbox.Folder) fts.MailboxRef {
@@ -300,16 +313,24 @@ func (s *session) buildFTSQuery(criteria *imaplib.SearchCriteria) (fts.Query, *i
 // ftsNotify fires the delivery/expunge hooks toward the yarilo-fts service —
 // best-effort and asynchronous: the index heals via rescan if a hook is lost.
 // Only the folder name travels; the service resolves the rest itself.
-func (s *session) ftsNotify(folderName string, expunged bool, uid uint32) {
+func (s *session) ftsNotify(f *mailbox.Folder, expunged bool, uid uint32) {
 	o := s.srv.opts.FTS
-	if o.Client == nil || s.userInfo == nil || folderName == "" {
+	if o.Client == nil || s.userInfo == nil || f == nil || f.Name == "" {
 		return
 	}
 	if !expunged && !o.Autoindex {
 		return
 	}
 	user := s.userInfo.Username
-	mbox := fts.MailboxRef{Name: folderName}
+	// The GUID is the folder's identity for the index, and it is what the
+	// index path is keyed by -- an empty one would name a path built from a
+	// value that is not there, so the hook is skipped instead (#1183). Said
+	// once per folder: per message it would drown the reason it matters.
+	mbox := ftsMailboxRef(f)
+	if mbox.GUID == "" {
+		warnFolderWithoutGUID(user, f.Name)
+		return
+	}
 	go func() {
 		var err error
 		if expunged {

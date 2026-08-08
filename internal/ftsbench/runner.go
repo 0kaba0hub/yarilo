@@ -26,7 +26,7 @@ import (
 
 const benchUser = "bench@example.com"
 
-var benchMbox = fts.MailboxRef{Name: "INBOX", UIDValidity: 1}
+var benchMbox = fts.MailboxRef{Name: "INBOX", GUID: "g-bench", UIDValidity: 1}
 
 // Config parameterises a run. Root is the mail root — point it at an NFS
 // volume in the sandbox to measure real-storage behaviour.

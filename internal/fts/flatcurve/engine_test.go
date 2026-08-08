@@ -559,27 +559,22 @@ func TestVersionMetadataWritten(t *testing.T) {
 // TestMailboxDirDriverAware locks the #654 layout: the fts-flatcurve directory
 // is co-located inside the mailbox's driver-aware per-folder index path (the
 // same FolderSubpath layout the fileindex uses), not a flat <root>/<folder>.
-func TestMailboxDirDriverAware(t *testing.T) {
+// The index path is keyed by the folder's GUID, and the mail driver does not
+// appear in it: the FTS tree is its own, so a driver migration moves the mail
+// and leaves the index where it is (#1183). Every driver, one path.
+func TestMailboxDirIsKeyedByGUIDNotDriver(t *testing.T) {
 	root := t.TempDir()
-	cases := []struct {
-		driver string
-		want   string
-	}{
-		{"mdbox", filepath.Join(root, "mailboxes", "INBOX", "dbox-Mails", Label)},
-		{"sdbox", filepath.Join(root, "mailboxes", "INBOX", "dbox-Mails", Label)},
-		{"maildir", filepath.Join(root, Label)},
-		{"", filepath.Join(root, Label)}, // empty driver → maildir default
-	}
-	for _, c := range cases {
-		user := fts.UserRef{Username: "u@test", IndexRoot: root, Driver: c.driver}
+	want := filepath.Join(root, inbox.GUID, Label)
+	for _, driver := range []string{"mdbox", "sdbox", "maildir", ""} {
+		user := fts.UserRef{Username: "u@test", IndexRoot: root, Driver: driver}
 		ui, err := New(Options{}).OpenUser(context.Background(), user)
 		if err != nil {
-			t.Fatalf("driver %q: OpenUser: %v", c.driver, err)
+			t.Fatalf("driver %q: OpenUser: %v", driver, err)
 		}
-		got := ui.(*userIndex).state(inbox).dir
-		if got != c.want {
-			t.Errorf("driver %q: dir = %q, want %q", c.driver, got, c.want)
+		if got := ui.(*userIndex).state(inbox).dir; got != want {
+			t.Errorf("driver %q: dir = %q, want %q", driver, got, want)
 		}
+		ui.Close() //nolint:errcheck
 	}
 }
 
@@ -605,7 +600,7 @@ func TestLegacyDirMigration(t *testing.T) {
 
 	// First access triggers the migration.
 	newDir := ui.(*userIndex).state(inbox).dir
-	wantNew := filepath.Join(root, "mailboxes", "INBOX", "dbox-Mails", Label)
+	wantNew := filepath.Join(root, inbox.GUID, Label)
 	if newDir != wantNew {
 		t.Fatalf("new dir = %q, want %q", newDir, wantNew)
 	}

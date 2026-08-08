@@ -325,7 +325,23 @@ func (s *Service) indexRoot(info *mailbox.UserInfo) string {
 
 /* --- ftsproto.Service ------------------------------------------------------ */
 
+// errNoMailboxGUID refuses a request whose mailbox carries no identity. The
+// index is keyed by the GUID, so an empty one would name a path built from a
+// value that is not there (#1183) -- the caller's bug, answered as one rather
+// than written to disk.
+var errNoMailboxGUID = errors.New("fts: mailbox GUID required")
+
+func requireGUID(mbox fts.MailboxRef) error {
+	if mbox.GUID == "" {
+		return fmt.Errorf("%w (folder %q)", errNoMailboxGUID, mbox.Name)
+	}
+	return nil
+}
+
 func (s *Service) Index(user string, mbox fts.MailboxRef, maxUID uint32, maxRecent int) error {
+	if err := requireGUID(mbox); err != nil {
+		return err
+	}
 	// Autoindex only. Rescan and the search catch-up (Prepend) enqueue
 	// directly, so an excluded mailbox stays searchable and stays rebuildable —
 	// it is not pre-indexed, which is a different thing from unsearchable.
@@ -350,6 +366,9 @@ func (s *Service) Prepend(user string, mbox fts.MailboxRef, maxUID uint32) error
 }
 
 func (s *Service) Expunge(user string, mbox fts.MailboxRef, uid uint32) error {
+	if err := requireGUID(mbox); err != nil {
+		return err
+	}
 	h, err := s.handle(user)
 	if err != nil {
 		return err
@@ -362,6 +381,9 @@ func (s *Service) Expunge(user string, mbox fts.MailboxRef, uid uint32) error {
 }
 
 func (s *Service) Lookup(user string, mbox fts.MailboxRef, q fts.Query) (fts.Result, error) {
+	if err := requireGUID(mbox); err != nil {
+		return fts.Result{}, err
+	}
 	metricLookupTotal.Inc()
 	h, err := s.handle(user)
 	if err != nil {
@@ -405,6 +427,9 @@ func (s *Service) Status(user string, mbox fts.MailboxRef) (uint32, uint32, erro
 }
 
 func (s *Service) Rescan(user string, mbox fts.MailboxRef) error {
+	if err := requireGUID(mbox); err != nil {
+		return err
+	}
 	h, err := s.handle(user)
 	if err != nil {
 		return err

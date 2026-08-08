@@ -37,19 +37,19 @@ func (s *session) imapSieveScriptName(h *nsHandle, rel string, guid [16]byte) st
 }
 
 // runImapSieveEvent runs imapsieve for one just-stored message and applies the
-// resulting actions. h/rel/folderID/guid identify the mailbox the event occurred
+// resulting actions. h/rel/folder identify the mailbox the event occurred
 // on; uid/filename/altTier the stored message. srcMailbox is the COPY/MOVE source
 // (empty for APPEND).
-func (s *session) runImapSieveEvent(cause, mailboxName, rel string, h *nsHandle, folderID uint64, guid [16]byte, uid uint32, filename string, altTier bool, srcMailbox string, changedFlags []string) {
+func (s *session) runImapSieveEvent(cause, mailboxName, rel string, h *nsHandle, folder *mailbox.Folder, uid uint32, filename string, altTier bool, srcMailbox string, changedFlags []string) {
 	eng := s.srv.opts.SieveEngine
 	if eng == nil {
 		return
 	}
-	scriptName := s.imapSieveScriptName(h, rel, guid)
+	scriptName := s.imapSieveScriptName(h, rel, folder.GUID)
 
 	rc, err := h.box.Fetch(rel, filename, altTier)
 	if err != nil {
-		s.flagCorruptOnRead(h.idx, folderID, rel, filename, uid, err)
+		s.flagCorruptOnRead(h.idx, folder.ID, rel, filename, uid, err)
 		slog.Warn("imapsieve: fetch stored message", "user", s.userInfo.Username, "folder", rel, "err", err)
 		return
 	}
@@ -73,7 +73,7 @@ func (s *session) runImapSieveEvent(cause, mailboxName, rel string, h *nsHandle,
 	if res == nil {
 		return
 	}
-	s.applyImapSieveResult(res, h, rel, folderID, uid, filename, raw)
+	s.applyImapSieveResult(res, h, rel, folder, uid, filename, raw)
 }
 
 // applyImapSieveResult applies imapsieve actions to the stored message. The
@@ -81,10 +81,10 @@ func (s *session) runImapSieveEvent(cause, mailboxName, rel string, h *nsHandle,
 // keep leaves it in place, fileinto copies it into the named mailbox (and, when
 // keep is cancelled, the original is expunged — a move), discard expunges it,
 // and imap4flags updates its flags.
-func (s *session) applyImapSieveResult(res *sieve.FilterResult, h *nsHandle, rel string, folderID uint64, uid uint32, filename string, raw []byte) {
+func (s *session) applyImapSieveResult(res *sieve.FilterResult, h *nsHandle, rel string, folder *mailbox.Folder, uid uint32, filename string, raw []byte) {
 	// discard: the script cancelled keep and filed nowhere.
 	if len(res.Deliveries) == 0 {
-		s.imapSieveExpunge(h, rel, folderID, uid, filename)
+		s.imapSieveExpunge(h, rel, folder, uid, filename)
 		return
 	}
 	keepInPlace := false
@@ -104,11 +104,11 @@ func (s *session) applyImapSieveResult(res *sieve.FilterResult, h *nsHandle, rel
 		s.imapSieveFileInto(d.Folder, raw, d.Flags, d.Create)
 	}
 	if !keepInPlace {
-		s.imapSieveExpunge(h, rel, folderID, uid, filename)
+		s.imapSieveExpunge(h, rel, folder, uid, filename)
 		return
 	}
 	if len(keepFlags) > 0 {
-		if err := h.idx.UpdateFlags(folderID, uid, keepFlags, nil); err != nil {
+		if err := h.idx.UpdateFlags(folder.ID, uid, keepFlags, nil); err != nil {
 			slog.Warn("imapsieve: update flags", "folder", rel, "uid", uid, "err", err)
 		}
 	}
@@ -153,15 +153,15 @@ func (s *session) imapSieveFileInto(name string, raw []byte, flags []string, cre
 		"file", newFilename,
 		"size", nm.Size,
 	)
-	s.emitMailboxChange(name, locks.EventDelivered, nm.UID)
+	s.emitMailboxChange(df, locks.EventDelivered, nm.UID)
 }
 
 // imapSieveExpunge removes the message from its current mailbox.
-func (s *session) imapSieveExpunge(h *nsHandle, rel string, folderID uint64, uid uint32, filename string) {
+func (s *session) imapSieveExpunge(h *nsHandle, rel string, folder *mailbox.Folder, uid uint32, filename string) {
 	_ = h.box.Remove(rel, filename)
-	if err := h.idx.ExpungeMessage(folderID, uid); err != nil {
+	if err := h.idx.ExpungeMessage(folder.ID, uid); err != nil {
 		slog.Warn("imapsieve: expunge", "folder", rel, "uid", uid, "err", err)
 		return
 	}
-	s.emitMailboxChange(rel, locks.EventExpunged, uid)
+	s.emitMailboxChange(folder, locks.EventExpunged, uid)
 }
