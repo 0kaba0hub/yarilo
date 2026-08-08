@@ -156,6 +156,11 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backend: dicts.metadata: %w", err)
 	}
+	// Owner-discovery registry (#1168); empty name resolves to nil = disabled.
+	sharedDict, err := buildDict(cfg.Dicts, cfg.ACL.SharedDict)
+	if err != nil {
+		return nil, fmt.Errorf("backend: dicts.%s (acl_shared_dict): %w", cfg.ACL.SharedDict, err)
+	}
 	// quota data goes to dicts only via the quota_clone mirror; enforcement
 	// reads the index
 	idxOpts := []file.Option{file.WithLocker(locker)}
@@ -292,6 +297,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Locker:               locker,
 			SpecialUseDefaults:   p.SpecialUseDefaults,
 			MetadataDict:         metadataDict,
+			SharedDict:           sharedDict,
 			SieveEngine:          sieveEngine,
 			IMAPQuota:            cfg.Protocol.IMAP.IMAPQuota,
 			MaildirSyncOnSelect:  cfg.Storage.MaildirSyncOnSelect,

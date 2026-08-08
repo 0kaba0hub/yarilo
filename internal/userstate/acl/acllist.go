@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -347,6 +348,18 @@ func (s *Store) writeListAtomicLocked(entries []ListEntry) error {
 	if err := os.Rename(tmp, s.ListPath()); err != nil {
 		os.Remove(tmp) //nolint:errcheck
 		return fmt.Errorf("userstate/acl: list rename: %w", err)
+	}
+	// The owner registry is a projection of this index -- synced here, in the
+	// same critical section every index write already holds, so there is one
+	// derivation chain (files -> index -> registry), not two independent ones
+	// from one source. The snapshot in hand is complete by construction. A
+	// dict failure does not fail the ACL write: the registry is discovery, not
+	// authority, and it is repairable (acl rebuild --all resyncs it).
+	if s.registry != nil {
+		if err := s.registry.SyncFromList(entries, true); err != nil {
+			slog.Warn("userstate/acl: owner registry sync failed; discovery may lag until rebuild",
+				"owner", s.owner, "err", err)
+		}
 	}
 	return nil
 }

@@ -317,6 +317,47 @@ the bare `user/`) name no mailbox. Three consequences, one answer each:
   registry of owners to enumerate. An owner that does not resolve and an
   owner whose space is hidden produce the same silence (7.1).
 
+### 3.9 Owner discovery: the shared-dict registry (#1168, B2 of #544)
+
+`LIST "" "user/*"` can only enumerate owners something has recorded — there
+is no registry to derive from the filesystem without walking every account.
+The registry is a dict in the reference's exact key space (so `dict_import`
+migrates mechanically):
+
+```
+shared/shared-boxes/user/<seer>/<owner>   = 1
+shared/shared-boxes/group/<group>/<owner> = 1
+shared/shared-boxes/anyone/<owner>        = 1
+shared/shared-user-boxes-rev/<owner>/...  = 1   # reverse layout, always written
+```
+
+Three decisions, each mirroring a validated reference behaviour:
+
+- **The registry is a projection of the index, not of the ACL write.** It is
+  synced where `yarilo-acl-list` is written, inside the same critical
+  section — one derivation chain (files → index → registry), not two
+  independent ones from one source (the #1147/#1152/#1160 shape). The
+  reference rebuilds its dict from the acllist rebuild for the same reason.
+  `acl rebuild --all` therefore resyncs the registry for free;
+  `acl registry rebuild` is the explicit form.
+- **Both layouts from the start.** The reference computes "what has this
+  owner granted so far" by scanning the whole key space, and gates the
+  reverse layout behind `acl_dict_index` for historical reasons. We have no
+  history: the reverse layout makes the diff a prefix scan, and the cost is
+  one extra set per grant. Not a switch.
+- **no_removes.** Removals happen only from a complete successful snapshot
+  AND a successful read of the current rows; partial knowledge only adds.
+  Deleting against partial data is how someone else's visible space goes
+  dark — the reference's comment says exactly this.
+
+Discovery never overrides the gate (7.1/#1138): a registry row is a hint,
+and each discovered owner still resolves through `ownerHandle` + ACL
+filtering — a stale row (revoked grant, unreconciled dict) and an invented
+owner produce byte-identical silence. Negative and empty-rights entries
+register nobody. Configured via `acl_shared_dict` naming a dict from the
+`dicts:` section; unset disables discovery and `user/*` lists nobody, as
+before.
+
 ## 4. Config schema
 
 ```yaml

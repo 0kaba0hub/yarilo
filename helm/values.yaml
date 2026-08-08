@@ -2672,6 +2672,14 @@ acl:
   ## file's mtime+size are re-validated. The acl_cache_ttl knob
   ## (default 30). 0 disables caching — every right check reads the file.
   acl_cache_ttl: 30
+  ## Owner-discovery registry: names a dict (from the top-level dicts:
+  ## section) that records who granted what to whom in owner-templated
+  ## namespaces, which is what lets LIST user/* enumerate the owners the
+  ## caller may see. Key space matches the reference's shared-boxes
+  ## layout, so a dict_import migration is mechanical. Unset disables
+  ## discovery — user/* then lists nobody, and grants are reachable only
+  ## by naming the owner (corresponds to acl_shared_dict).
+  # acl_shared_dict: "acl"
   ## Operator-configured global ACL rules, applied across all users and
   ## merged with each mailbox's own ACL (global takes precedence: global
   ## grants add, global negatives revoke, and a matching global entry

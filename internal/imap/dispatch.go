@@ -525,6 +525,11 @@ func (s *session) ownerHandle(spec NamespaceSpec, owner string) (*nsHandle, erro
 	// user. isOwner compares this against the session user (#1130).
 	h.owner = owner
 	h.location = ownerUI.MailPath
+	// Grants written through this handle feed owner discovery: the registry
+	// is synced where the yarilo-acl-list index is written, in the same
+	// critical section, so it is a projection of the index rather than a
+	// second derivation from the files (#1168).
+	h.acl.SetRegistry(acl.NewRegistry(s.srv.opts.SharedDict, owner))
 
 	if s.ownerHandles == nil {
 		s.ownerHandles = make(map[string]*nsHandle)

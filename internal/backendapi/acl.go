@@ -588,6 +588,11 @@ func (s *Server) openACLStore(w http.ResponseWriter, r *http.Request) (*acl.Stor
 		}
 	}
 	store := acl.New(bundle.folderHome(), bundle.info.MailPath, bundle.info.Driver, bundle.info.Separator, bundle.info.StorageEscapeChar, uc.info.Username, uc.lockOwner(), acl.Policy{}, s.opts.Locker)
+	// Admin grants feed owner discovery like IMAP ones: the registry hangs off
+	// the index write, so both surfaces sync it through the one chain (#1168).
+	if mailbox.PrefixIsOwnerTemplated(spec.Prefix) {
+		store.SetRegistry(acl.NewRegistry(s.opts.SharedDict, account))
+	}
 	return store, &req, present, adminNamespaceOwner(bundle.spec, account), nil
 }
 
