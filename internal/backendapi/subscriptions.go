@@ -15,6 +15,7 @@ func (s *Server) registerSubscriptionRoutes() {
 	s.mux.Handle("POST /api/backend/subscriptions/list", s.middleware(s.handleSubsList))
 	s.mux.Handle("POST /api/backend/subscriptions/add", s.middleware(s.handleSubsAdd))
 	s.mux.Handle("POST /api/backend/subscriptions/remove", s.middleware(s.handleSubsRemove))
+	s.mux.Handle("POST /api/backend/subscriptions/migrate", s.middleware(s.handleSubsMigrate))
 }
 
 type subsRequest struct {

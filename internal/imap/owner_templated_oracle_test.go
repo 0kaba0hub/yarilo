@@ -2,12 +2,17 @@ package imap_test
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 
 	imaplib "github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 
+	imapserver "github.com/yarilomail/yarilo/internal/imap"
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
 	aclstore "github.com/yarilomail/yarilo/internal/userstate/acl"
 	mailboxpkg "github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -99,20 +104,51 @@ func TestOwnerTemplated_OwnerStillWritesTheirOwnSpace(t *testing.T) {
 	}
 }
 
-// The per-namespace subscriptions file must be a FILE. The slug came from the
-// client-visible prefix, so "user/%u/" made "subscriptions-user/%u" -- a
-// directory named subscriptions-user holding a file named from an unexpanded
-// template (#1159).
-func TestOwnerTemplated_SubscriptionsFileIsAFileNotAPath(t *testing.T) {
-	root, dial := ownerTemplatedServer(t)
-	a := dial("alice")
-	if err := a.Subscribe("user/alice/INBOX").Wait(); err != nil {
-		t.Fatalf("owner subscribe: %v", err)
-	}
-	store := filepath.Join(root, "alice", "Maildir")
-	st, err := os.Stat(filepath.Join(store, "subscriptions-user"))
+// The per-namespace subscriptions file must be a FILE, for a namespace that
+// keeps one: the slug came from the client-visible prefix, so a prefix carrying
+// the separator made a directory where a file was intended (#1159). An
+// owner-templated namespace no longer keeps its own file at all -- subscriptions
+// follow the subscriber -- so the property is pinned on a fixed shared namespace
+// whose prefix has a separator in it.
+func TestNamespaceSubscriptionsFileIsAFileNotAPath(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "shared")
+	srv := imapserver.New(imapserver.Options{
+		Mailbox:  maildir.New(),
+		Index:    file.New(),
+		Resolver: &mailboxpkg.Resolver{Root: root, HomeTemplate: "%n"},
+		Auth:     &enforcePassdb{users: map[string]string{"alice": "pw"}},
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespaceShared, Prefix: "Team/Sub/", Separator: '/', List: true,
+				Location: "maildir:" + shared},
+		},
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("per-namespace subscriptions file missing: %v", err)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go srv.Serve(ln) //nolint:errcheck
+
+	conn, derr := net.Dial("tcp", ln.Addr().String())
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	t.Cleanup(func() { conn.Close() })
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Login("alice", "pw").Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Subscribe("Team/Sub/News").Wait(); err != nil {
+		t.Fatalf("subscribe in a namespace that keeps its own file: %v", err)
+	}
+	st, serr := os.Stat(filepath.Join(shared, "subscriptions-team-sub"))
+	if serr != nil {
+		t.Fatalf("per-namespace subscriptions file missing: %v", serr)
 	}
 	if st.IsDir() {
 		t.Error("the subscriptions slug was taken as a path: it created a directory where a file was intended (#1159)")

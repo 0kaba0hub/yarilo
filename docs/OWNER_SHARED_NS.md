@@ -467,6 +467,47 @@ needing its own patch — and it is why an unreadable ACL hides too: that failur
 is only reachable for an owner that resolved, so reporting it would answer the
 question the hiding refuses (it is logged instead).
 
+### 7.1a Subscriptions follow the subscriber
+
+A subscription is the subscriber's state, not the mailbox's. An owner-templated
+namespace kept its own subscription file **in the owner's store**, so a peer's
+SUBSCRIBE wrote a row into a stranger's file -- a row the peer could not remove
+and never saw, while the owner saw one they never made.
+
+Subscriptions for such a namespace now live in the namespace that keeps them --
+the subscriber's own, normally the personal one -- under the client-visible name
+(`user/alice/Sent`), which is what keeps them distinct from the subscriber's own
+`Sent`. The storing namespace is the one that keeps subscriptions and whose
+visible prefix is a prefix of the name; the key is the name minus that prefix.
+Where no such namespace exists (a personal namespace with a prefix of its own,
+addressed outside it) the command is refused rather than writing a key nothing
+would match.
+
+**Divergence, and it is narrower than it first looks.** 2.4 defaults
+`subscriptions` to *yes* for every namespace type, checks only that at least one
+namespace has it, and never inspects the type -- so a shared namespace with
+`subscriptions=yes` really does write into the owner's store there too, guarded
+only by filesystem permissions and `mail_control_path`. We have neither barrier:
+every process runs under one uid on a shared RWX volume. So:
+
+- fixed shared/public keep the reference default (**yes**) -- there a shared
+  subscription file is a real feature, a site-wide list, and an operator turns it
+  off deliberately;
+- owner-templated is the one place we refuse `yes` at startup, because its
+  storage is resolved per owner at runtime: "the namespace's own subscription
+  file" names no owner at all. That is a configuration without a meaning rather
+  than a dangerous one, which is why it is a startup error and not a policy.
+
+**Migration.** Authorship was never recorded in those files, so a peer's
+subscription cannot be given back to the peer. Every row in an owner's file
+names a mailbox in the owner's own space, so folding them into the owner's own
+file restores the owner's subscriptions exactly, and the only imprecision is
+that the owner inherits rows a peer created -- all pointing at mailboxes the
+owner already sees. Deleting the files instead would have removed the owner's
+own subscriptions silently, with folders vanishing from their client and no
+trace: the one outcome with no signal. `yarctl backend subscriptions migrate
+<user> --namespace NS` folds them, dry run unless `--apply`.
+
 ### 7.2 The bootstrap grant — why `k` alone leaves a namespace nobody can clean up
 
 A shared namespace starts empty and grantable only at its root: nobody can

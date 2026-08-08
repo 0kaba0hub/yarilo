@@ -567,7 +567,9 @@ data:
         prefix: {{ .prefix | default "" | quote }}
         separator: {{ .separator | default "." | quote }}
         list: {{ .list | default false }}
-        subscriptions: {{ .subscriptions | default false }}
+        {{- if hasKey . "subscriptions" }}
+        subscriptions: {{ .subscriptions }}
+        {{- end }}
         inbox: {{ .inbox | default false }}
         acl_ignore: {{ .acl_ignore | default false }}
         {{- with .location }}

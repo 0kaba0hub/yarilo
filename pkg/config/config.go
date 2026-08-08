@@ -231,8 +231,10 @@ type NamespaceConfig struct {
 	List bool `koanf:"list"`
 	// Hidden hides matching mailboxes from LIST "" "*". Reserved for NS-1b.
 	Hidden bool `koanf:"hidden"`
-	// Subscriptions: whether SUBSCRIBE state is tracked here. Default true.
-	Subscriptions bool `koanf:"subscriptions"`
+	// Subscriptions: whether this namespace keeps its own subscription file.
+	// Unset (nil) takes the default for the namespace kind -- see
+	// KeepsSubscriptions, which is the one place that decides it.
+	Subscriptions *bool `koanf:"subscriptions"`
 	// Inbox marks the namespace owning "INBOX". MUST be set on exactly one
 	// namespace. Reserved for NS-1b.
 	Inbox bool `koanf:"inbox"`
@@ -2560,6 +2562,24 @@ func validateNamespaceFileSlugs(namespaces []NamespaceConfig) error {
 	return nil
 }
 
+// KeepsSubscriptions reports whether this namespace stores subscriptions for the
+// mailboxes under it, or delegates them to the namespace that does (the
+// subscriber's own, normally the personal one).
+//
+//   - personal: always keeps them. It is the store of last resort, so a
+//     deployment always has at least one namespace that can hold a subscription.
+//   - owner-templated: never keeps them. Its storage is resolved per owner at
+//     runtime, so "the namespace's own subscription file" names no owner at all
+//     -- a configuration without a meaning rather than a dangerous one. Asking
+//     for one fails at startup rather than picking an owner silently.
+//   - fixed shared/public: keeps them unless told otherwise. That is both the
+//     current behaviour and the reference default, and a shared subscription
+//     file is a real feature there (a site-wide list). An operator can delegate
+//     them deliberately with subscriptions: false.
+func (ns NamespaceConfig) KeepsSubscriptions() bool {
+	return mailbox.NamespaceKeepsSubscriptions(ns.Type, ns.Prefix, ns.Subscriptions)
+}
+
 // validateOwnerTemplatedNamespace fails startup, loudly, on a misconfigured
 // owner-templated namespace -- a prefix carrying the owner variable (%u).
 //
@@ -2590,6 +2610,11 @@ func validateOwnerTemplatedNamespace(i int, ns NamespaceConfig) error {
 	sep := strings.TrimSpace(ns.Separator)
 	if sep == "" {
 		sep = "/"
+	}
+	if ns.Subscriptions != nil && *ns.Subscriptions {
+		return fmt.Errorf("config: namespace %d (prefix %q) is owner-templated and cannot keep its own "+
+			"subscription file: its storage is resolved per owner at runtime, so the file would name no "+
+			"owner; remove subscriptions: true and they follow the subscriber", i, ns.Prefix)
 	}
 	_, after, _ := strings.Cut(ns.Prefix, mailbox.OwnerVar)
 	if after != "" && after != sep {

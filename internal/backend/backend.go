@@ -1274,12 +1274,13 @@ func buildNamespaces(cfg []config.NamespaceConfig) []imapsvr.NamespaceSpec {
 				"index", i, "separator", ns.Separator)
 		}
 		out = append(out, imapsvr.NamespaceSpec{
-			Type:      nsType,
-			Prefix:    ns.Prefix,
-			Separator: sep,
-			List:      ns.List,
-			Location:  ns.Location,
-			IgnoreACL: ns.IgnoreACL,
+			Type:          nsType,
+			Prefix:        ns.Prefix,
+			Separator:     sep,
+			List:          ns.List,
+			Location:      ns.Location,
+			IgnoreACL:     ns.IgnoreACL,
+			Subscriptions: ns.Subscriptions,
 		})
 	}
 	return out

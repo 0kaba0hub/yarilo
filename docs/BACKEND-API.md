@@ -299,6 +299,28 @@ CLI: `yarctl backend folder list <user> [--namespace NS]`
 > cleared, which is the maximal orphan case and precisely the repair. Blanking on
 > a *failed* enumeration would be the hazard, and that answers `500` first.
 
+### `POST /api/backend/subscriptions/migrate`
+
+Folds a namespace's old per-namespace subscription file into the subscriber's
+own, for a namespace that no longer keeps one (`subscriptions: false`, and always
+so for an owner-templated namespace). Dry run unless `"apply": true`.
+
+Those rows were written into the **owner's** store, and every one names a mailbox
+in the owner's own space, so folding restores the owner's subscriptions exactly;
+the owner also inherits any a peer created, all pointing at mailboxes they
+already see. Authorship was never recorded, so a peer's subscription cannot be
+returned to the peer — peers re-subscribe themselves. Deleting the file instead
+would have removed the owner's own subscriptions silently.
+
+Idempotent: the sources are removed only after every row is in the destination,
+so a failure leaves the run repeatable, and a second run finds nothing. Both
+historical names are read — the current one and the pre-#1159 path form.
+
+Reply: `sources` (files read), `folded` (keys added), `already` (keys the
+destination held).
+
+CLI: `yarctl backend subscriptions migrate <user> --namespace NS [--apply]`
+
 ### `POST /api/backend/folder/info`
 
 Folder metadata. `guid` is the 16-byte rename-stable identifier

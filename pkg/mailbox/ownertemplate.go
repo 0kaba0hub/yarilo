@@ -162,3 +162,34 @@ func NamespaceSubsFile(prefix, separator, nsType string) string {
 	}
 	return "subscriptions-" + NamespaceFileSlug(prefix, separator, nsType)
 }
+
+// NamespaceKeepsSubscriptions decides whether a namespace stores subscriptions
+// for the mailboxes under it, or delegates them to the namespace that does --
+// the subscriber's own, normally the personal one. explicit is the operator's
+// setting, nil when unset.
+//
+//   - personal: always keeps them, so a deployment always has one namespace that
+//     can hold a subscription.
+//   - owner-templated: never. Its storage resolves per owner at runtime, so "the
+//     namespace's own subscription file" names no owner at all -- a
+//     configuration without a meaning rather than a dangerous one. Asking for
+//     one fails at startup (pkg/config) instead of picking an owner silently.
+//   - fixed shared/public: keeps them unless told otherwise. That is the current
+//     behaviour and the reference default, and a shared subscription file is a
+//     real feature there (a site-wide list); an operator delegates deliberately
+//     with subscriptions: false.
+//
+// One rule, one implementation: config resolves it for the wire and IMAP for the
+// session, and both ask this.
+func NamespaceKeepsSubscriptions(nsType, prefix string, explicit *bool) bool {
+	if strings.EqualFold(strings.TrimSpace(nsType), "personal") {
+		return true
+	}
+	if PrefixIsOwnerTemplated(prefix) {
+		return false
+	}
+	if explicit == nil {
+		return true
+	}
+	return *explicit
+}
