@@ -145,3 +145,20 @@ func NamespaceFileSlug(prefix, separator, nsType string) string {
 	}
 	return name
 }
+
+// NamespaceSubsFile is the filename holding a namespace's subscription state,
+// and the one producer of it. The personal namespace keeps the bare
+// "subscriptions" so an upgrade does not orphan state already on disk; every
+// other namespace gets a "subscriptions-<slug>" sibling.
+//
+// One producer because the rule had been written out at each site that needed
+// it -- and the one that did not know about the personal case rejected a valid
+// config, reporting a collision between files that are not the same file
+// (#1159). A caller comparing or building these names must use this, not
+// "subscriptions-" + NamespaceFileSlug.
+func NamespaceSubsFile(prefix, separator, nsType string) string {
+	if strings.EqualFold(strings.TrimSpace(nsType), "personal") {
+		return "subscriptions"
+	}
+	return "subscriptions-" + NamespaceFileSlug(prefix, separator, nsType)
+}

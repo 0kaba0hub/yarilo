@@ -2550,7 +2550,7 @@ func ValidateNamespaceTypes(namespaces []NamespaceConfig) error {
 func validateNamespaceFileSlugs(namespaces []NamespaceConfig) error {
 	seen := make(map[string]int, len(namespaces))
 	for i, ns := range namespaces {
-		slug := mailbox.NamespaceFileSlug(ns.Prefix, ns.Separator, ns.Type)
+		slug := mailbox.NamespaceSubsFile(ns.Prefix, ns.Separator, ns.Type)
 		if j, dup := seen[slug]; dup {
 			return fmt.Errorf("config: namespaces %d (prefix %q) and %d (prefix %q) both use the on-disk name %q "+
 				"for their per-namespace state; give one a distinct prefix", j, namespaces[j].Prefix, i, ns.Prefix, slug)

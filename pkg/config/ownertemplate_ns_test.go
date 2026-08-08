@@ -55,6 +55,23 @@ func TestValidateNamespaceTypes_RejectsCollidingFileSlugs(t *testing.T) {
 	if !strings.Contains(err.Error(), "public-team") {
 		t.Errorf("error does not name the collision: %v", err)
 	}
+	// A personal namespace and a shared "Personal/" are NOT a collision: the
+	// personal one keeps the bare "subscriptions" file. Comparing slugs instead
+	// of filenames rejected this valid config (#1159 review).
+	if err := ValidateNamespaceTypes([]NamespaceConfig{
+		{Type: "personal", Prefix: "", Separator: "/"},
+		{Type: "shared", Prefix: "Personal/", Separator: "/"},
+	}); err != nil {
+		t.Errorf("personal + shared Personal/ rejected, but their files differ: %v", err)
+	}
+	// Two personal namespaces DO collide -- both want the bare file.
+	if err := ValidateNamespaceTypes([]NamespaceConfig{
+		{Type: "personal", Prefix: "", Separator: "/"},
+		{Type: "personal", Prefix: "Other/", Separator: "/"},
+	}); err == nil {
+		t.Error("two personal namespaces share the subscriptions file; want a startup error")
+	}
+
 	// Distinct names still pass.
 	if err := ValidateNamespaceTypes([]NamespaceConfig{
 		{Type: "shared", Prefix: "Public/", Separator: "/"},

@@ -81,7 +81,7 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 	for _, spec := range specs {
 		switch spec.Type {
 		case NamespacePersonal:
-			h, err := s.openHandle(spec, "personal", personalUI, owner, "subscriptions")
+			h, err := s.openHandle(spec, "personal", personalUI, owner, mailbox.NamespaceSubsFile(spec.Prefix, string(spec.Separator), string(spec.Type)))
 			if err != nil {
 				return nil, nil, fmt.Errorf("imap: open personal namespace: %w", err)
 			}
@@ -111,7 +111,7 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 			if !ok {
 				continue
 			}
-			subsFile := "subscriptions-" + mailbox.NamespaceFileSlug(spec.Prefix, string(spec.Separator), string(spec.Type))
+			subsFile := mailbox.NamespaceSubsFile(spec.Prefix, string(spec.Separator), string(spec.Type))
 			// MailPath as well as Home, plus driver and modifiers, so the
 			// mailbox backend, fileindex and ACL store resolve to one root;
 			// otherwise the ACL store (falls back to Home) and a maildir
@@ -135,7 +135,7 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 		// No personal namespace configured: fall back to a single
 		// empty-prefix personal namespace.
 		fallback := NamespaceSpec{Type: NamespacePersonal, Prefix: "", Separator: '.', List: true}
-		h, err := s.openHandle(fallback, "personal", personalUI, owner, "subscriptions")
+		h, err := s.openHandle(fallback, "personal", personalUI, owner, mailbox.NamespaceSubsFile(fallback.Prefix, string(fallback.Separator), string(fallback.Type)))
 		if err != nil {
 			return nil, nil, fmt.Errorf("imap: open fallback personal namespace: %w", err)
 		}
@@ -218,6 +218,11 @@ func (s *session) mailboxBackendFor(spec NamespaceSpec, ui *mailbox.UserInfo) ma
 
 // nsSlug returns a short identifier for a namespace spec, used in
 // per-namespace filenames (subscriptions-<slug>) and log fields.
+// nsSlug is an in-memory identifier for a namespace (handle name, log field).
+// It is NOT a filename: it keeps the prefix as the client sees it, separator and
+// template variable intact. Anything that names a file must go through
+// mailbox.NamespaceSubsFile / NamespaceFileSlug, which produce one path segment
+// (#1159).
 func nsSlug(spec NamespaceSpec) string {
 	if name := strings.TrimSuffix(spec.Prefix, "/"); name != "" {
 		return strings.ToLower(name)
@@ -412,7 +417,7 @@ func (s *session) ownerHandle(spec NamespaceSpec, owner string) (*nsHandle, erro
 	if err != nil {
 		return nil, err
 	}
-	subsFile := "subscriptions-" + mailbox.NamespaceFileSlug(spec.Prefix, string(spec.Separator), string(spec.Type))
+	subsFile := mailbox.NamespaceSubsFile(spec.Prefix, string(spec.Separator), string(spec.Type))
 	h, err := s.openHandle(spec, nsSlug(spec), ownerUI, s.owner(ownerUI.Username), subsFile)
 	if err != nil {
 		return nil, err
