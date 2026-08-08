@@ -879,9 +879,12 @@ line the parser then refuses to read back.
   ownership for any non-private namespace (acl-backend.c) -- nobody owns
   `shared/alice/*` there, alice included; her implicit rights come back only
   through the ACL default. Ours resolves the owner of an owner-templated
-  instance and gives them the owner tier. Interaction with `acl_ignore`
-  (IgnoreACL) is the open edge to watch: those are exactly the lines the
-  reference's clearing disables.
+  instance and gives them the owner tier. The `acl_ignore` (IgnoreACL)
+  interaction is pinned by test: with it set, rights are checked for nobody --
+  owner or peer -- and an on-disk entry, negative included, is inert; the
+  owner tier changes nothing there because nothing is left for it to
+  short-circuit. Remove the flag and the peer's answers flip while the
+  owner's do not (TestIgnoreACL_* in internal/imap).
 - **`--root` / `"root": true` on the admin request.** Not a semantic
   divergence but a workaround for two format limits: the reference's admin
   CLI takes the mailbox as a positional argument, so the namespace root
