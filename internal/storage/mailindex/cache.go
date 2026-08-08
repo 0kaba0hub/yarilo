@@ -7,8 +7,16 @@
 // (mail-cache-private.h), full eleven-field header included: the field table
 // lives inside the file at field_header_offset, which is what makes a field
 // id meaningful outside the process that assigned it, and compat_sizeof_uoff_t
-// guards against an implementation the file cannot serve. Compatibility is
-// real in both directions or it is not claimed at all.
+// guards against an implementation the file cannot serve.
+//
+// What byte compatibility buys is INSPECTABILITY -- our cache reads with the
+// reference's tooling and vice versa -- and deliberately does NOT buy data
+// reuse: cached values are parsing results, and the producer is part of
+// their identity. A file written by the reference carries producer byte 0
+// and is rejected at open exactly like any other producer mismatch, then
+// rebuilt; the cache is derived, so nothing is lost. Do not "fix" the
+// generation check to accept 0 for migration's sake -- that silently
+// restores trust in a foreign parser.
 //
 // The cache has no vote on its own validity. Four levels, all owned by the
 // index or the producing code:
