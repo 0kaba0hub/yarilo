@@ -32,6 +32,13 @@ func TestTemplatedNamespace_NoTemplateNode(t *testing.T) {
 	if strings.Contains(ns, "%u") {
 		t.Errorf("NAMESPACE leaks the unexpanded template:\n%s", ns)
 	}
+
+	// A client walking down from the advertised prefix finds a container
+	// node, not a hole: the truncated head is listed the way the reference
+	// lists its truncated node.
+	if out := a.cmd(`LIST "" "user"`); !strings.Contains(out, `(\Noselect \HasChildren) "/" "user"`) {
+		t.Errorf("LIST should present the truncated head as a container, got:\n%s", out)
+	}
 }
 
 // An explicit owner in the pattern materialises that owner's namespace: the

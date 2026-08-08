@@ -301,7 +301,10 @@ the bare `user/`) name no mailbox. Three consequences, one answer each:
   (shared-storage.c) -- its `list = children` still shows a prefix node that
   has children (mailbox-list-iter.c) and hides it only when it has none. Our
   `children` never lists the node. Same wire result for the templated
-  namespace, honest to record that it is not the same rule.
+  namespace, honest to record that it is not the same rule. The literal head
+  of the prefix (`user`) IS presented, as `\Noselect \HasChildren` -- a
+  client walking down from the advertised prefix finds a container, not a
+  hole, and `\HasChildren` is truthful: the caller's own space always exists.
 - **NAMESPACE** advertises the prefix truncated at the variable: `user/`, not
   `user/%u/` -- the same truncation the reference applies (#1171). RFC 2342
   defines the prefix as what the client prepends to a mailbox name; a client
