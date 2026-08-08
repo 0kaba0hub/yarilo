@@ -111,3 +111,31 @@ func TestNamespaceKeepsSubscriptions(t *testing.T) {
 		}
 	}
 }
+
+func TestNamespaceListMode(t *testing.T) {
+	cases := []struct {
+		prefix, raw string
+		want        string
+		ok          bool
+	}{
+		// Unset takes the kind default: the template node is not a mailbox.
+		{"", "", "yes", true},
+		{"Public/", "", "yes", true},
+		{"user/%u/", "", "children", true},
+		// Bool spellings stay accepted; the key used to be a boolean.
+		{"Public/", "true", "yes", true},
+		{"Public/", "1", "yes", true},
+		{"Public/", "false", "no", true},
+		{"Public/", "0", "no", true},
+		{"user/%u/", "yes", "yes", true},
+		{"Public/", "children", "children", true},
+		{"Public/", "CHILDREN", "children", true},
+		{"Public/", "maybe", "", false},
+	}
+	for _, c := range cases {
+		got, ok := NamespaceListMode(c.prefix, c.raw)
+		if got != c.want || ok != c.ok {
+			t.Errorf("NamespaceListMode(%q, %q) = %q,%v want %q,%v", c.prefix, c.raw, got, ok, c.want, c.ok)
+		}
+	}
+}

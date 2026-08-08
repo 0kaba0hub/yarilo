@@ -49,8 +49,8 @@ func ownerTemplatedServer(t *testing.T) (root string, dial func(user string) *im
 		ACLEnabled:   true,
 		UserdbLookup: lookup,
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "user/%u/", Separator: '/', List: true, Location: "maildir:%h/Maildir"},
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "user/%u/", Separator: '/', List: imapserver.ListChildren, Location: "maildir:%h/Maildir"},
 		},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

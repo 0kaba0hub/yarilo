@@ -2695,7 +2695,13 @@ namespaces: []
 #                                 # deployments typically use "/". Each backend
 #                                 # converts it to its on-disk layout (maildir
 #                                 # flat ".A.B", dbox nested "mailboxes/A/B").
-#     list: true                  # show in NAMESPACE response
+#     list: "yes"                 # LIST exposure: yes (node + children),
+#                                 # children (only the children -- the node is
+#                                 # not a mailbox), no (addressable, not
+#                                 # advertised). Bool spellings accepted. Unset
+#                                 # defaults to children for an owner-templated
+#                                 # prefix (user/%u names nothing until an owner
+#                                 # is filled in), yes otherwise.
 #     subscriptions: true         # does THIS namespace keep its own subscription
 #                                 # file? Omit to take the default for its kind:
 #                                 # personal always keeps one; a fixed

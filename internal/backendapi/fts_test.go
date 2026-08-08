@@ -76,7 +76,7 @@ func TestFtsExpungeInvalidatesDroppedUIDs(t *testing.T) {
 		Index:    file.New(),
 		Resolver: &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"},
 		Namespaces: []config.NamespaceConfig{
-			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
+			{Type: "personal", Prefix: "", Separator: "/", List: "yes", Inbox: true},
 		},
 		MetadataDict: d,
 		FTSClient:    fake,
@@ -122,7 +122,7 @@ func ftsTestServer(t *testing.T) (*httptest.Server, *fakeFTS, string) {
 		Index:    file.New(),
 		Resolver: &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"},
 		Namespaces: []config.NamespaceConfig{
-			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
+			{Type: "personal", Prefix: "", Separator: "/", List: "yes", Inbox: true},
 		},
 		MetadataDict: d,
 		FTSClient:    fake,

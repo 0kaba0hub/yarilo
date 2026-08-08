@@ -57,10 +57,13 @@ func (h *nsHandle) implemented() bool { return h != nil && h.box != nil && h.idx
 // fullName returns the wire-protocol mailbox name for a folder in this
 // namespace. Inverse of dispatch().
 func (h *nsHandle) fullName(relName string) string {
-	if h.spec.Prefix == "" {
+	// visiblePrefix, not spec.Prefix: an owner-templated instance is addressed
+	// with the owner expanded, and a client never sees the template.
+	p := h.visiblePrefix()
+	if p == "" {
 		return relName
 	}
-	return h.spec.Prefix + relName
+	return p + relName
 }
 
 // visiblePrefix is this namespace's prefix as the client sees it: for an
@@ -232,7 +235,7 @@ func (s *session) openHandles(personalUI *mailbox.UserInfo) (map[string]*nsHandl
 	if primary == nil {
 		// No personal namespace configured: fall back to a single
 		// empty-prefix personal namespace.
-		fallback := NamespaceSpec{Type: NamespacePersonal, Prefix: "", Separator: '.', List: true}
+		fallback := NamespaceSpec{Type: NamespacePersonal, Prefix: "", Separator: '.', List: ListYes}
 		h, err := s.openHandle(fallback, "personal", personalUI, owner, mailbox.NamespaceSubsFile(fallback.Prefix, string(fallback.Separator), string(fallback.Type)))
 		if err != nil {
 			return nil, nil, fmt.Errorf("imap: open fallback personal namespace: %w", err)

@@ -211,7 +211,7 @@ type NamespaceSpec struct {
 	Type      NamespaceType
 	Prefix    string
 	Separator rune
-	List      bool
+	List      ListMode
 	Location  string
 	// IgnoreACL bypasses ACL enforcement for this namespace (rights not
 	// checked, no lookup-right LIST hiding) even when ACL is enabled.
@@ -227,6 +227,26 @@ type NamespaceSpec struct {
 func (spec NamespaceSpec) keepsSubscriptions() bool {
 	return mailbox.NamespaceKeepsSubscriptions(string(spec.Type), spec.Prefix, spec.Subscriptions)
 }
+
+// ListMode is the namespace's LIST exposure. "yes" lists the namespace node
+// and its children; "children" lists only the children -- the node itself is
+// not a mailbox, which is what an owner-templated prefix needs: user/%u names
+// nothing until an owner is filled in, so it must not appear as a row.
+// "no" keeps the namespace addressable without advertising it.
+type ListMode string
+
+const (
+	ListYes      ListMode = "yes"
+	ListChildren ListMode = "children"
+	ListNo       ListMode = "no"
+)
+
+// listed reports whether the namespace appears in NAMESPACE and contributes
+// rows to LIST at all.
+func (m ListMode) listed() bool { return m == ListYes || m == ListChildren }
+
+// listsSelf reports whether the namespace's own node is a LIST row.
+func (m ListMode) listsSelf() bool { return m == ListYes }
 
 // NamespaceType is the NAMESPACE response slot: Personal / Other / Shared.
 type NamespaceType string
@@ -244,10 +264,17 @@ func New(opts Options) *Server {
 	// SELECT user/... would fail at runtime with an internals message. Fail at
 	// startup instead, with the reason named -- the pod crashes loudly rather
 	// than serving a namespace it can never open (docs/OWNER_SHARED_NS.md 3.3).
-	for _, ns := range opts.Namespaces {
+	for i, ns := range opts.Namespaces {
 		if mailbox.PrefixIsOwnerTemplated(ns.Prefix) && opts.UserdbLookup == nil {
 			panic(fmt.Sprintf("imap: namespace %q is owner-templated but no userdb lookup is wired; "+
 				"owner-templated namespaces need a configured auth master to resolve the owner", ns.Prefix))
+		}
+		// An unset list mode takes the kind default here, once, so every
+		// consumer reads a resolved value (children for owner-templated,
+		// yes otherwise -- one rule with config, pkg/mailbox holds it).
+		if ns.List == "" {
+			mode, _ := mailbox.NamespaceListMode(ns.Prefix, "")
+			opts.Namespaces[i].List = ListMode(mode)
 		}
 	}
 
@@ -1437,6 +1464,17 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 		}
 	}
 
+	// A pattern naming an owner-templated space with the owner written out
+	// (user/alice/*) materialises that owner's namespace and lists it like
+	// any other; a wildcard in the owner segment enumerates nobody -- there
+	// is no registry of owners to enumerate (#1139). An owner that does not
+	// resolve and an owner whose space is ACL-hidden both yield the same
+	// silence, so the #1138 oracle stays closed.
+	materialised, err := s.listMaterialisedOwners(w, ref, patterns, opts)
+	if err != nil {
+		return err
+	}
+
 	// Owner-templated subscriptions: their namespace opens no handle until
 	// referenced, so the loop above never sees them. The rows are the
 	// caller's own list and are always shown; the resolver's visibility
@@ -1444,7 +1482,7 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 	// never whether the row appears -- hiding here would recreate the
 	// invisible-and-unremovable trap UNSUBSCRIBE just escaped.
 	if opts != nil && opts.SelectSubscribed {
-		if err := s.listTemplatedSubscriptions(w, ref, patterns, opts); err != nil {
+		if err := s.listTemplatedSubscriptions(w, materialised, ref, patterns, opts); err != nil {
 			return err
 		}
 	}
@@ -1453,7 +1491,7 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 	// \HasChildren) so a top-level LIST shows the namespace even before
 	// any sub-folder exists.
 	for _, spec := range s.namespaceSpecsForList() {
-		if spec.Type == NamespacePersonal || !spec.List {
+		if spec.Type == NamespacePersonal || !spec.List.listsSelf() {
 			continue
 		}
 		// declared-only namespaces get a \Noselect entry; SELECT under
@@ -1682,12 +1720,48 @@ func (s *session) listNamespaceOrphans(w *imapserver.ListWriter, h *nsHandle, ex
 	return nil
 }
 
+// listMaterialisedOwners opens the owner namespaces that patterns name with an
+// explicit owner and lists each through the regular per-namespace path, ACL
+// filtering included. Returns the visible prefixes it listed so the
+// subscription pass does not emit their rows twice.
+func (s *session) listMaterialisedOwners(w *imapserver.ListWriter, ref string, patterns []string, opts *imaplib.ListOptions) (map[string]bool, error) {
+	done := make(map[string]bool)
+	for _, spec := range s.namespaceSpecsForList() {
+		if !isOwnerTemplated(spec) || !spec.List.listed() {
+			continue
+		}
+		for _, p := range refPatterns(ref, patterns) {
+			owner, _, ok := extractOwner(spec, p)
+			if !ok || strings.ContainsAny(owner, "*%") {
+				continue
+			}
+			prefix := strings.Replace(spec.Prefix, mailbox.OwnerVar, owner, 1)
+			if done[prefix] {
+				continue
+			}
+			h, err := s.ownerHandle(spec, owner)
+			if err != nil {
+				// Unresolvable owner: the same nothing an ACL-hidden
+				// space produces below, so the two cannot be told apart.
+				continue
+			}
+			done[prefix] = true
+			if err := s.listNamespace(w, h, ref, patterns, opts); err != nil {
+				return done, err
+			}
+		}
+	}
+	return done, nil
+}
+
 // listTemplatedSubscriptions emits rows for subscriptions naming an
 // owner-templated namespace. Resolution goes through dispatch like any verb:
 // its visibility answer decides only whether the mailbox may be called
 // existing -- a hidden or unresolvable owner renders the same orphan row as a
 // deleted mailbox, so the #1138 oracle stays closed and the row stays visible.
-func (s *session) listTemplatedSubscriptions(w *imapserver.ListWriter, ref string, patterns []string, opts *imaplib.ListOptions) error {
+// Rows under a prefix in materialised were already listed (orphans included)
+// by the regular per-namespace path and are skipped here.
+func (s *session) listTemplatedSubscriptions(w *imapserver.ListWriter, materialised map[string]bool, ref string, patterns []string, opts *imaplib.ListOptions) error {
 	store, keyPrefix, err := s.subsView(s.primary)
 	if err != nil {
 		return nil
@@ -1712,10 +1786,15 @@ func (s *session) listTemplatedSubscriptions(w *imapserver.ListWriter, ref strin
 			if !isOwnerTemplated(spec) {
 				continue
 			}
-			if _, _, tok := extractOwner(spec, rel); tok {
-				rows = append(rows, row{name: rel, sep: spec.Separator})
+			owner, _, tok := extractOwner(spec, rel)
+			if !tok {
+				continue
+			}
+			if materialised[strings.Replace(spec.Prefix, mailbox.OwnerVar, owner, 1)] {
 				break
 			}
+			rows = append(rows, row{name: rel, sep: spec.Separator})
+			break
 		}
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
@@ -3199,7 +3278,7 @@ func (s *session) Namespace() (*imaplib.NamespaceData, error) {
 	}
 	var data imaplib.NamespaceData
 	for _, ns := range specs {
-		if !ns.List {
+		if !ns.List.listed() {
 			continue
 		}
 		desc := imaplib.NamespaceDescriptor{Prefix: ns.Prefix, Delim: ns.Separator}
@@ -3219,7 +3298,7 @@ func (s *session) Namespace() (*imaplib.NamespaceData, error) {
 // Options.Namespaces is empty: a single personal namespace with the
 // "/" separator, matching pre-v1.20 single-namespace behaviour.
 var defaultNamespaces = []NamespaceSpec{
-	{Type: NamespacePersonal, Prefix: "", Separator: '.', List: true},
+	{Type: NamespacePersonal, Prefix: "", Separator: '.', List: ListYes},
 }
 
 // GetMetadata implements RFC 5464 GETMETADATA. mailbox == "" requests

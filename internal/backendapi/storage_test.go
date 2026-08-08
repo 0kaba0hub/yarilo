@@ -44,7 +44,7 @@ func storageTestServer(t *testing.T) (*httptest.Server, string) {
 			HomeTemplate: "%d/%n",
 		},
 		Namespaces: []config.NamespaceConfig{
-			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
+			{Type: "personal", Prefix: "", Separator: "/", List: "yes", Inbox: true},
 		},
 		SpecialUseDefaults: map[string]string{
 			"Sent":   `\Sent`,
@@ -241,7 +241,7 @@ func TestSubscriptions_LiveAtMailRoot(t *testing.T) {
 			DefaultMailPath: "%h/Maildir",
 		},
 		Namespaces: []config.NamespaceConfig{
-			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
+			{Type: "personal", Prefix: "", Separator: "/", List: "yes", Inbox: true},
 		},
 	})
 	ts := httptest.NewServer(s.Handler())
@@ -439,7 +439,7 @@ func storageTestServerMdbox(t *testing.T) (*httptest.Server, string) {
 			HomeTemplate: "%d/%n",
 		},
 		Namespaces: []config.NamespaceConfig{
-			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
+			{Type: "personal", Prefix: "", Separator: "/", List: "yes", Inbox: true},
 		},
 		MetadataDict: d,
 	})

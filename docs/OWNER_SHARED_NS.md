@@ -288,6 +288,27 @@ refusal.
 
 ---
 
+### 3.8 An unexpanded template is not a mailbox
+
+Recorded once so #1138 and #1139 stop deciding it separately: `user/%u` (and
+the bare `user/`) name no mailbox. Three consequences, one answer each:
+
+- **LIST/LSUB** never emit the template as a row. This is not a
+  template-specific rule: the namespace's `list` mode defaults to `children`
+  for an owner-templated prefix, so the node disappears because the namespace
+  is declared children-only -- the same mechanism an operator can set on any
+  namespace. The reference implements the identical split (its prefix node
+  vs children iteration flags), with its shared namespace documented as
+  `list = children`.
+- **NAMESPACE** advertises the prefix verbatim, template included. Per
+  RFC 2342 a prefix is what the client prepends to a name; the reference
+  prints its namespace prefixes unexpanded the same way. Parity, not a lie.
+- **A pattern with the owner written out** (`user/alice/*`) materialises that
+  owner's namespace and lists it like any other, ACL filtering included; a
+  wildcard in the owner segment enumerates nobody, because there is no
+  registry of owners to enumerate. An owner that does not resolve and an
+  owner whose space is hidden produce the same silence (7.1).
+
 ## 4. Config schema
 
 ```yaml
@@ -295,7 +316,8 @@ namespaces:
   - type: shared                 # or "other" for the Other Users NAMESPACE slot
     prefix: "user/%u/"           # %u in prefix ⇒ owner-templated
     separator: "/"
-    list: true                   # NS-4 will drive per-owner LIST enumeration
+    list: children               # yes | children | no; unset defaults to
+                                 # children for an owner-templated prefix
     subscriptions: false
     location: "maildir:%h"       # %h/%u/%n/%d ⇒ the OWNER's storage
     acl_ignore: false

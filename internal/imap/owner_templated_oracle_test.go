@@ -119,8 +119,8 @@ func TestNamespaceSubscriptionsFileIsAFileNotAPath(t *testing.T) {
 		Resolver: &mailboxpkg.Resolver{Root: root, HomeTemplate: "%n"},
 		Auth:     &enforcePassdb{users: map[string]string{"alice": "pw"}},
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Team/Sub/", Separator: '/', List: true,
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "Team/Sub/", Separator: '/', List: imapserver.ListYes,
 				Location: "maildir:" + shared},
 		},
 	})

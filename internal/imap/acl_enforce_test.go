@@ -223,8 +223,8 @@ func enforceServerWithSharedGroups(t *testing.T, groups map[string][]string) (al
 		Auth:       passdb,
 		ACLEnabled: true,
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: true},
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: imapserver.ListYes},
 		},
 	})
 
@@ -712,8 +712,8 @@ func sharedServerDial(t *testing.T, defaultsFromInbox bool) (aliceHome string, d
 		ACLDefaultsFromInbox: defaultsFromInbox,
 		MetadataDict:         md,
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: true},
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: imapserver.ListYes},
 		},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -812,8 +812,8 @@ func TestACLEnforce_GlobalGrant(t *testing.T) {
 		ACLEnabled: true,
 		ACLGlobal:  global,
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: true},
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: imapserver.ListYes},
 		},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1006,8 +1006,8 @@ func TestACLEnforce_IgnoreACLBypasses(t *testing.T) {
 		Auth:       passdb,
 		ACLEnabled: true,
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Open/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: true, IgnoreACL: true},
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "Open/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: imapserver.ListYes, IgnoreACL: true},
 		},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

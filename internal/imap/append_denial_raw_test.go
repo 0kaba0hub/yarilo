@@ -31,8 +31,8 @@ func rawSharedServer(t *testing.T) (aliceHome, addr string) {
 		Auth:       &enforcePassdb{users: map[string]string{"alice": "pw", "bob": "pw"}},
 		ACLEnabled: true,
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: true},
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', Location: "maildir:" + filepath.Join(root, "alice", "Maildir"), List: imapserver.ListYes},
 		},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -184,7 +184,7 @@ func rawPersonalServer(t *testing.T, mb mailboxpkg.MailboxBackend) (addr, home s
 		Auth:       &enforcePassdb{users: map[string]string{"alice": "pw"}},
 		ACLEnabled: true,
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
 		},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

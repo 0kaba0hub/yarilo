@@ -104,7 +104,7 @@ func authTestServer(t *testing.T, userdb protocol.Userdb) (*httptest.Server, str
 			HomeTemplate: "%d/%n",
 		},
 		Namespaces: []config.NamespaceConfig{
-			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
+			{Type: "personal", Prefix: "", Separator: "/", List: "yes", Inbox: true},
 		},
 		MetadataDict: d,
 		AuthClient:   spawnAuthMaster(t, userdb),
@@ -211,7 +211,7 @@ func TestUserInfo_UserdbErrorReturns503(t *testing.T) {
 			HomeTemplate: "%d/%n",
 		},
 		Namespaces: []config.NamespaceConfig{
-			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
+			{Type: "personal", Prefix: "", Separator: "/", List: "yes", Inbox: true},
 		},
 		MetadataDict: d,
 		AuthClient:   cl, // closed — every call returns ErrClosed

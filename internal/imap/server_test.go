@@ -1350,9 +1350,9 @@ func TestNamespaceDefaultPersonalOnly(t *testing.T) {
 
 func TestNamespaceAllThreeDeclared(t *testing.T) {
 	c := startNamespaceClient(t, []imapserver.NamespaceSpec{
-		{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-		{Type: imapserver.NamespaceOther, Prefix: "user/", Separator: '/', List: true},
-		{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true},
+		{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+		{Type: imapserver.NamespaceOther, Prefix: "user/", Separator: '/', List: imapserver.ListYes},
+		{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: imapserver.ListYes},
 	})
 	defer func() { c.Logout().Wait() }() //nolint:errcheck
 
@@ -1378,8 +1378,8 @@ func TestNamespaceAllThreeDeclared(t *testing.T) {
 func TestNamespacePerNamespaceSeparator(t *testing.T) {
 	// Verify the wire shape carries each per-namespace separator verbatim.
 	c := startNamespaceClient(t, []imapserver.NamespaceSpec{
-		{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '.', List: true},
-		{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true},
+		{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '.', List: imapserver.ListYes},
+		{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: imapserver.ListYes},
 	})
 	defer func() { c.Logout().Wait() }() //nolint:errcheck
 
@@ -1400,8 +1400,8 @@ func TestNamespaceListFalseHidesFromResponse(t *testing.T) {
 	// storage routing will respect this) but it must NOT appear in
 	// the wire-protocol NAMESPACE response.
 	c := startNamespaceClient(t, []imapserver.NamespaceSpec{
-		{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-		{Type: imapserver.NamespaceShared, Prefix: "Hidden/", Separator: '/', List: false},
+		{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+		{Type: imapserver.NamespaceShared, Prefix: "Hidden/", Separator: '/', List: imapserver.ListNo},
 	})
 	defer func() { c.Logout().Wait() }() //nolint:errcheck
 
@@ -1443,9 +1443,9 @@ func startSharedClient(t *testing.T, user, pass string) (*imapclient.Client, str
 		Auth:         &stubPassdb{user: user, pass: pass},
 		MetadataDict: md,
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true, Location: "maildir:" + sharedRoot},
-			{Type: imapserver.NamespaceOther, Prefix: "user/", Separator: '/', List: true},
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: imapserver.ListYes, Location: "maildir:" + sharedRoot},
+			{Type: imapserver.NamespaceOther, Prefix: "user/", Separator: '/', List: imapserver.ListYes},
 		},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1607,8 +1607,8 @@ func TestSharedMetadataPrivIsPerAccessingUser(t *testing.T) {
 		Auth:         auth,
 		MetadataDict: md,
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true, Location: "maildir:" + sharedRoot},
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: imapserver.ListYes, Location: "maildir:" + sharedRoot},
 		},
 	})
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
@@ -1753,8 +1753,8 @@ func TestPerNamespaceMailboxOverrideRoutesToCorrectBackend(t *testing.T) {
 		Resolver: resolver,
 		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true, Location: "maildir:" + sharedRoot},
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: imapserver.ListYes, Location: "maildir:" + sharedRoot},
 		},
 		NamespaceMailboxes: map[string]mailbox.MailboxBackend{
 			"Shared/": sharedRec,
@@ -1809,8 +1809,8 @@ func TestPerNamespaceNoOverrideFallsBackToGlobal(t *testing.T) {
 		Resolver: resolver,
 		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
 		Namespaces: []imapserver.NamespaceSpec{
-			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true, Location: "maildir:" + sharedRoot},
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "Shared/", Separator: '/', List: imapserver.ListYes, Location: "maildir:" + sharedRoot},
 		},
 		// NamespaceMailboxes intentionally nil.
 	})

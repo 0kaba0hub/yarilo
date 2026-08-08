@@ -25,62 +25,62 @@ func TestBuildNamespaces(t *testing.T) {
 		{
 			name: "personal + shared + other_users alias",
 			in: []config.NamespaceConfig{
-				{Type: "personal", Prefix: "", Separator: "/", List: true},
-				{Type: "shared", Prefix: "Shared/", Separator: "/", List: true},
-				{Type: "other_users", Prefix: "user/", Separator: "/", List: true},
+				{Type: "personal", Prefix: "", Separator: "/", List: "yes"},
+				{Type: "shared", Prefix: "Shared/", Separator: "/", List: "yes"},
+				{Type: "other_users", Prefix: "user/", Separator: "/", List: "yes"},
 			},
 			want: []imapsvr.NamespaceSpec{
-				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '/', List: true},
-				{Type: imapsvr.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true},
-				{Type: imapsvr.NamespaceOther, Prefix: "user/", Separator: '/', List: true},
+				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '/', List: imapsvr.ListYes},
+				{Type: imapsvr.NamespaceShared, Prefix: "Shared/", Separator: '/', List: imapsvr.ListYes},
+				{Type: imapsvr.NamespaceOther, Prefix: "user/", Separator: '/', List: imapsvr.ListYes},
 			},
 		},
 		{
 			name: "per-namespace separator preserved",
 			in: []config.NamespaceConfig{
-				{Type: "personal", Prefix: "", Separator: ".", List: true},
-				{Type: "shared", Prefix: "Shared/", Separator: "/", List: true},
+				{Type: "personal", Prefix: "", Separator: ".", List: "yes"},
+				{Type: "shared", Prefix: "Shared/", Separator: "/", List: "yes"},
 			},
 			want: []imapsvr.NamespaceSpec{
-				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '.', List: true},
-				{Type: imapsvr.NamespaceShared, Prefix: "Shared/", Separator: '/', List: true},
+				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '.', List: imapsvr.ListYes},
+				{Type: imapsvr.NamespaceShared, Prefix: "Shared/", Separator: '/', List: imapsvr.ListYes},
 			},
 		},
 		{
 			name: "missing separator defaults to .",
 			in: []config.NamespaceConfig{
-				{Type: "personal", Prefix: "", List: true},
+				{Type: "personal", Prefix: "", List: "yes"},
 			},
 			want: []imapsvr.NamespaceSpec{
-				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '.', List: true},
+				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '.', List: imapsvr.ListYes},
 			},
 		},
 		{
 			name: "multi-character separator falls back to . with a warning",
 			in: []config.NamespaceConfig{
-				{Type: "personal", Prefix: "", Separator: "//", List: true},
+				{Type: "personal", Prefix: "", Separator: "//", List: "yes"},
 			},
 			want: []imapsvr.NamespaceSpec{
-				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '.', List: true},
+				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '.', List: imapsvr.ListYes},
 			},
 		},
 		{
 			name: "unknown type is skipped",
 			in: []config.NamespaceConfig{
-				{Type: "personal", Prefix: "", Separator: "/", List: true},
-				{Type: "bogus", Prefix: "X/", Separator: "/", List: true},
+				{Type: "personal", Prefix: "", Separator: "/", List: "yes"},
+				{Type: "bogus", Prefix: "X/", Separator: "/", List: "yes"},
 			},
 			want: []imapsvr.NamespaceSpec{
-				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '/', List: true},
+				{Type: imapsvr.NamespacePersonal, Prefix: "", Separator: '/', List: imapsvr.ListYes},
 			},
 		},
 		{
 			name: "list=false preserved (server still excludes from response)",
 			in: []config.NamespaceConfig{
-				{Type: "shared", Prefix: "Hidden/", Separator: "/", List: false},
+				{Type: "shared", Prefix: "Hidden/", Separator: "/", List: "no"},
 			},
 			want: []imapsvr.NamespaceSpec{
-				{Type: imapsvr.NamespaceShared, Prefix: "Hidden/", Separator: '/', List: false},
+				{Type: imapsvr.NamespaceShared, Prefix: "Hidden/", Separator: '/', List: "no"},
 			},
 		},
 	}
@@ -118,8 +118,8 @@ func TestBuildNamespaceMailboxes(t *testing.T) {
 			name:         "all match global driver — no overrides built",
 			globalDriver: "maildir",
 			namespaces: []config.NamespaceConfig{
-				{Type: "personal", Prefix: "", Separator: "/", List: true},
-				{Type: "shared", Prefix: "Shared/", Separator: "/", List: true, Location: "maildir:/var/yarilo/shared"},
+				{Type: "personal", Prefix: "", Separator: "/", List: "yes"},
+				{Type: "shared", Prefix: "Shared/", Separator: "/", List: "yes", Location: "maildir:/var/yarilo/shared"},
 			},
 			wantPrefixes: nil,
 		},
@@ -127,8 +127,8 @@ func TestBuildNamespaceMailboxes(t *testing.T) {
 			name:         "shared mdbox overrides global maildir",
 			globalDriver: "maildir",
 			namespaces: []config.NamespaceConfig{
-				{Type: "personal", Prefix: "", Separator: "/", List: true},
-				{Type: "shared", Prefix: "Shared/", Separator: "/", List: true, Location: "mdbox:/var/yarilo/shared"},
+				{Type: "personal", Prefix: "", Separator: "/", List: "yes"},
+				{Type: "shared", Prefix: "Shared/", Separator: "/", List: "yes", Location: "mdbox:/var/yarilo/shared"},
 			},
 			wantPrefixes: []string{"Shared/"},
 			wantTypeForPrefix: map[string]any{
@@ -139,9 +139,9 @@ func TestBuildNamespaceMailboxes(t *testing.T) {
 			name:         "two namespaces same non-default driver share one backend instance",
 			globalDriver: "maildir",
 			namespaces: []config.NamespaceConfig{
-				{Type: "personal", Prefix: "", Separator: "/", List: true},
-				{Type: "shared", Prefix: "Shared/", Separator: "/", List: true, Location: "mdbox:/var/yarilo/shared"},
-				{Type: "shared", Prefix: "Public/", Separator: "/", List: true, Location: "mdbox:/var/yarilo/public"},
+				{Type: "personal", Prefix: "", Separator: "/", List: "yes"},
+				{Type: "shared", Prefix: "Shared/", Separator: "/", List: "yes", Location: "mdbox:/var/yarilo/shared"},
+				{Type: "shared", Prefix: "Public/", Separator: "/", List: "yes", Location: "mdbox:/var/yarilo/public"},
 			},
 			wantPrefixes: []string{"Shared/", "Public/"},
 		},
@@ -149,8 +149,8 @@ func TestBuildNamespaceMailboxes(t *testing.T) {
 			name:         "personal global mdbox, shared maildir override",
 			globalDriver: "mdbox",
 			namespaces: []config.NamespaceConfig{
-				{Type: "personal", Prefix: "", Separator: "/", List: true},
-				{Type: "shared", Prefix: "Shared/", Separator: "/", List: true, Location: "maildir:/var/yarilo/shared"},
+				{Type: "personal", Prefix: "", Separator: "/", List: "yes"},
+				{Type: "shared", Prefix: "Shared/", Separator: "/", List: "yes", Location: "maildir:/var/yarilo/shared"},
 			},
 			wantPrefixes: []string{"Shared/"},
 			wantTypeForPrefix: map[string]any{
@@ -161,7 +161,7 @@ func TestBuildNamespaceMailboxes(t *testing.T) {
 			name:         "dbox override",
 			globalDriver: "maildir",
 			namespaces: []config.NamespaceConfig{
-				{Type: "shared", Prefix: "Shared/", Separator: "/", List: true, Location: "dbox:/var/yarilo/shared"},
+				{Type: "shared", Prefix: "Shared/", Separator: "/", List: "yes", Location: "dbox:/var/yarilo/shared"},
 			},
 			wantPrefixes: []string{"Shared/"},
 			wantTypeForPrefix: map[string]any{
@@ -172,7 +172,7 @@ func TestBuildNamespaceMailboxes(t *testing.T) {
 			name:         "ns without location is skipped",
 			globalDriver: "maildir",
 			namespaces: []config.NamespaceConfig{
-				{Type: "other", Prefix: "user/", Separator: "/", List: true}, // no location:
+				{Type: "other", Prefix: "user/", Separator: "/", List: "yes"}, // no location:
 			},
 			wantPrefixes: nil,
 		},
@@ -180,7 +180,7 @@ func TestBuildNamespaceMailboxes(t *testing.T) {
 			name:         "missing colon in location errors",
 			globalDriver: "maildir",
 			namespaces: []config.NamespaceConfig{
-				{Type: "shared", Prefix: "Shared/", Separator: "/", List: true, Location: "maildir-no-colon"},
+				{Type: "shared", Prefix: "Shared/", Separator: "/", List: "yes", Location: "maildir-no-colon"},
 			},
 			wantErr: true,
 		},
@@ -236,8 +236,8 @@ func TestBuildNamespaceMailboxesSharesPerDriverInstance(t *testing.T) {
 	// (hostname/pid/counter) consistent and avoid duplicate locker
 	// registrations.
 	got, err := buildNamespaceMailboxes([]config.NamespaceConfig{
-		{Type: "shared", Prefix: "Shared/", Separator: "/", List: true, Location: "mdbox:/var/a"},
-		{Type: "shared", Prefix: "Public/", Separator: "/", List: true, Location: "mdbox:/var/b"},
+		{Type: "shared", Prefix: "Shared/", Separator: "/", List: "yes", Location: "mdbox:/var/a"},
+		{Type: "shared", Prefix: "Public/", Separator: "/", List: "yes", Location: "mdbox:/var/b"},
 	}, "maildir", config.StorageConfig{}, nil)
 	if err != nil {
 		t.Fatalf("build: %v", err)
