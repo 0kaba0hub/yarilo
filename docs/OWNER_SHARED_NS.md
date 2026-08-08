@@ -817,10 +817,19 @@ store owner.
 Three defects with three different causes shared one consequence: stored ACL
 state could not be read back by the same path that wrote it. #1109 -- the admin
 API read the wrong store, so shared-namespace folders were invisible to it.
-#1145 -- `GETACL` never listed negative entries (a pre-#1141 surfacing), so the
-listing overstated the rights in force. #1147 -- IMAP `SETACL`/`DELETEACL`
-updated the per-mailbox file but not the `yarilo-acl-list` index, so `yarctl acl
-list` named grants that were changed or removed.
+#1144 -- the admin API and IMAP resolved the same mailbox name to two different
+stores, so each surface read back its own write and the two still disagreed
+with each other: agreement with the evaluator is necessary, and not sufficient
+unless the surfaces also resolve the same state. #1147 -- IMAP
+`SETACL`/`DELETEACL` updated the per-mailbox file but not the
+`yarilo-acl-list` index, so `yarctl acl list` named grants that were changed
+or removed.
+
+(An earlier revision cited #1145 -- `GETACL` hiding negative entries -- as the
+third case; that report was retracted as invalid: the reproduction used
+`SETACL <mailbox> <id> -w`, which is RFC 4314 rights *removal*, not a negative
+identifier, so nothing negative was ever stored. GETACL lists negative entries
+correctly.)
 
 The absent invariant, stated once:
 
