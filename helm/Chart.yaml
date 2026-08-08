@@ -4,7 +4,7 @@ description: Production-grade IMAP/POP3/Submission mail server
 type: application
 
 version: 2.3.87
-appVersion: "2.3.98"
+appVersion: "2.3.99"
 
 keywords:
   - imap

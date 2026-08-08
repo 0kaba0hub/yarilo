@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1436,6 +1437,18 @@ func (s *session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 		}
 	}
 
+	// Owner-templated subscriptions: their namespace opens no handle until
+	// referenced, so the loop above never sees them. The rows are the
+	// caller's own list and are always shown; the resolver's visibility
+	// answer (#1158) decides only what may be said about the mailbox,
+	// never whether the row appears -- hiding here would recreate the
+	// invisible-and-unremovable trap UNSUBSCRIBE just escaped.
+	if opts != nil && opts.SelectSubscribed {
+		if err := s.listTemplatedSubscriptions(w, ref, patterns, opts); err != nil {
+			return err
+		}
+	}
+
 	// emit namespace-root entries for shared/public (\Noselect
 	// \HasChildren) so a top-level LIST shows the namespace even before
 	// any sub-folder exists.
@@ -1597,6 +1610,133 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 			}
 		}
 		if err := w.WriteList(data); err != nil {
+			return err
+		}
+	}
+
+	// Subscriptions whose mailbox is gone are still rows in the caller's own
+	// list; dropping them here would leave state that can be seen nowhere and
+	// removed only blind.
+	if opts != nil && opts.SelectSubscribed && subs != nil {
+		existing := make(map[string]bool, len(entries))
+		for _, entry := range entries {
+			existing[entry.Name] = true
+		}
+		if err := s.listNamespaceOrphans(w, h, existing, subs, subsKeyPrefix, ref, patterns, opts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// orphanAttrs renders a subscribed name whose mailbox does not exist, per
+// command form (RFC 5258 §3.1): extended LIST carries \NonExistent, a
+// non-extended LIST can only say \Noselect, LSUB says nothing at all.
+func orphanAttrs(opts *imaplib.ListOptions) []imaplib.MailboxAttr {
+	switch {
+	case opts.Lsub:
+		return nil
+	case opts.SelectSubscribed:
+		attrs := []imaplib.MailboxAttr{imaplib.MailboxAttrNonExistent}
+		if opts.ReturnSubscribed {
+			attrs = append(attrs, imaplib.MailboxAttrSubscribed)
+		}
+		return attrs
+	default:
+		return []imaplib.MailboxAttr{imaplib.MailboxAttrNoSelect}
+	}
+}
+
+// listNamespaceOrphans emits rows for subscriptions in h's view whose mailbox
+// is not in the listing. The row is the caller's own state, so it is never
+// hidden; existence is judged against the same (ACL-filtered) listing the
+// regular rows came from, so an ACL-hidden mailbox reads as nonexistent --
+// the answer #1158 already gives, not a new distinguisher.
+func (s *session) listNamespaceOrphans(w *imapserver.ListWriter, h *nsHandle, existing map[string]bool, subs map[string]struct{}, subsKeyPrefix, ref string, patterns []string, opts *imaplib.ListOptions) error {
+	orphans := make([]string, 0)
+	for key := range subs {
+		rel, ok := strings.CutPrefix(key, subsKeyPrefix)
+		if !ok || rel == "" {
+			continue
+		}
+		// The personal view holds every delegated row too; another
+		// namespace's visible name is not a personal folder (B1).
+		if h == s.primary && !s.namesPrimaryFolder(rel) {
+			continue
+		}
+		if existing[rel] {
+			continue
+		}
+		full := h.fullName(rel)
+		if !listMatch(full, refPatterns(ref, patterns), byte(h.spec.Separator)) {
+			continue
+		}
+		orphans = append(orphans, full)
+	}
+	sort.Strings(orphans)
+	for _, full := range orphans {
+		if err := w.WriteList(&imaplib.ListData{Mailbox: full, Delim: h.spec.Separator, Attrs: orphanAttrs(opts)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// listTemplatedSubscriptions emits rows for subscriptions naming an
+// owner-templated namespace. Resolution goes through dispatch like any verb:
+// its visibility answer decides only whether the mailbox may be called
+// existing -- a hidden or unresolvable owner renders the same orphan row as a
+// deleted mailbox, so the #1138 oracle stays closed and the row stays visible.
+func (s *session) listTemplatedSubscriptions(w *imapserver.ListWriter, ref string, patterns []string, opts *imaplib.ListOptions) error {
+	store, keyPrefix, err := s.subsView(s.primary)
+	if err != nil {
+		return nil
+	}
+	snap, err := store.Snapshot()
+	if err != nil {
+		slog.Warn("imap: subscription snapshot failed", "ns", "personal", "err", err)
+		return nil
+	}
+	specs := s.namespaceSpecsForList()
+	type row struct {
+		name string
+		sep  rune
+	}
+	rows := make([]row, 0)
+	for key := range snap {
+		rel, ok := strings.CutPrefix(key, keyPrefix)
+		if !ok || rel == "" {
+			continue
+		}
+		for _, spec := range specs {
+			if !isOwnerTemplated(spec) {
+				continue
+			}
+			if _, _, tok := extractOwner(spec, rel); tok {
+				rows = append(rows, row{name: rel, sep: spec.Separator})
+				break
+			}
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
+	for _, r := range rows {
+		if !listMatch(r.name, refPatterns(ref, patterns), byte(r.sep)) {
+			continue
+		}
+		exists := false
+		if h, hrel, derr := s.dispatch(r.name); derr == nil {
+			if ex, ferr := h.box.FolderExists(hrel); ferr == nil {
+				exists = ex
+			}
+		}
+		attrs := orphanAttrs(opts)
+		if exists {
+			attrs = nil
+			if opts.ReturnSubscribed && !opts.Lsub {
+				attrs = []imaplib.MailboxAttr{imaplib.MailboxAttrSubscribed}
+			}
+		}
+		if err := w.WriteList(&imaplib.ListData{Mailbox: r.name, Delim: r.sep, Attrs: attrs}); err != nil {
 			return err
 		}
 	}
