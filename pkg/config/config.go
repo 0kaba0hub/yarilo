@@ -2572,10 +2572,10 @@ func validateNamespaceFileSlugs(namespaces []NamespaceConfig) error {
 //     runtime, so "the namespace's own subscription file" names no owner at all
 //     -- a configuration without a meaning rather than a dangerous one. Asking
 //     for one fails at startup rather than picking an owner silently.
-//   - fixed shared/public: keeps them unless told otherwise. That is both the
-//     current behaviour and the reference default, and a shared subscription
-//     file is a real feature there (a site-wide list). An operator can delegate
-//     them deliberately with subscriptions: false.
+//   - fixed shared/public: delegates by default; explicit subscriptions: true
+//     keeps a shared file (a site-wide list). The reference default is true,
+//     guarded by filesystem permissions and per-user control paths -- absent
+//     here, where every process shares one uid on an RWX volume.
 func (ns NamespaceConfig) KeepsSubscriptions() bool {
 	return mailbox.NamespaceKeepsSubscriptions(ns.Type, ns.Prefix, ns.Subscriptions)
 }

@@ -109,10 +109,12 @@ func TestOwnerTemplated_OwnerStillWritesTheirOwnSpace(t *testing.T) {
 // the separator made a directory where a file was intended (#1159). An
 // owner-templated namespace no longer keeps its own file at all -- subscriptions
 // follow the subscriber -- so the property is pinned on a fixed shared namespace
-// whose prefix has a separator in it.
+// whose prefix has a separator in it, opted in with explicit subscriptions: true
+// (the default there is to delegate).
 func TestNamespaceSubscriptionsFileIsAFileNotAPath(t *testing.T) {
 	root := t.TempDir()
 	shared := filepath.Join(root, "shared")
+	subsYes := true
 	srv := imapserver.New(imapserver.Options{
 		Mailbox:  maildir.New(),
 		Index:    file.New(),
@@ -121,7 +123,7 @@ func TestNamespaceSubscriptionsFileIsAFileNotAPath(t *testing.T) {
 		Namespaces: []imapserver.NamespaceSpec{
 			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: true},
 			{Type: imapserver.NamespaceShared, Prefix: "Team/Sub/", Separator: '/', List: true,
-				Location: "maildir:" + shared},
+				Location: "maildir:" + shared, Subscriptions: &subsYes},
 		},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

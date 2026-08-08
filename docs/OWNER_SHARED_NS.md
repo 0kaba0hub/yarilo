@@ -483,16 +483,21 @@ Where no such namespace exists (a personal namespace with a prefix of its own,
 addressed outside it) the command is refused rather than writing a key nothing
 would match.
 
-**Divergence, and it is narrower than it first looks.** 2.4 defaults
-`subscriptions` to *yes* for every namespace type, checks only that at least one
-namespace has it, and never inspects the type -- so a shared namespace with
-`subscriptions=yes` really does write into the owner's store there too, guarded
-only by filesystem permissions and `mail_control_path`. We have neither barrier:
-every process runs under one uid on a shared RWX volume. So:
+**Divergence.** 2.4 defaults `subscriptions` to *yes* for every namespace type,
+checks only a lower bound (at least one namespace with `subscriptions=yes`), and
+never inspects the type -- so a shared namespace with `subscriptions=yes` really
+does write into the owner's store there too, guarded only by filesystem
+permissions and `mail_control_path`. We have neither barrier: every process runs
+under one uid on a shared RWX volume, so the reference's protection simply does
+not exist here. So:
 
-- fixed shared/public keep the reference default (**yes**) -- there a shared
-  subscription file is a real feature, a site-wide list, and an operator turns it
-  off deliberately;
+- personal always keeps its own subscriptions -- a deployment always has one
+  namespace that can hold a subscription;
+- fixed shared/public **default to no** and delegate to the subscriber. This is
+  the deliberate divergence: without the reference's filesystem barrier, a
+  default-shared subscription file is an unguarded shared write surface.
+  Explicit `subscriptions: true` stays available -- a site-wide shared list is a
+  real feature there, opted into knowingly;
 - owner-templated is the one place we refuse `yes` at startup, because its
   storage is resolved per owner at runtime: "the namespace's own subscription
   file" names no owner at all. That is a configuration without a meaning rather

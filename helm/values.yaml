@@ -2699,14 +2699,15 @@ namespaces: []
 #     subscriptions: true         # does THIS namespace keep its own subscription
 #                                 # file? Omit to take the default for its kind:
 #                                 # personal always keeps one; a fixed
-#                                 # shared/public namespace keeps one (a
-#                                 # site-wide list); an owner-templated one never
-#                                 # does -- its storage resolves per owner, so
-#                                 # such a file would name no owner, and asking
-#                                 # for one fails at startup. Setting false
-#                                 # delegates: subscriptions then follow the
-#                                 # SUBSCRIBER, kept in their own namespace under
-#                                 # the client-visible name.
+#                                 # shared/public namespace delegates unless set
+#                                 # true (opt in for a site-wide shared list);
+#                                 # an owner-templated one never does -- its
+#                                 # storage resolves per owner, so such a file
+#                                 # would name no owner, and asking for one
+#                                 # fails at startup. When delegating,
+#                                 # subscriptions follow the SUBSCRIBER, kept in
+#                                 # their own namespace under the client-visible
+#                                 # name.
 #     inbox: true                 # owns the magic "INBOX" (set on exactly one)
 #     # personal inherits storage from cfg.Storage.MailHomeTemplate;
 #     # leave `location:` unset.

@@ -80,3 +80,32 @@ func TestNamespaceFileSlug(t *testing.T) {
 		}
 	}
 }
+
+func TestNamespaceKeepsSubscriptions(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name     string
+		nsType   string
+		prefix   string
+		explicit *bool
+		want     bool
+	}{
+		// Personal keeps its own file regardless of the setting.
+		{"personal default", "personal", "", nil, true},
+		{"personal explicit false still keeps", "personal", "", &no, true},
+		// Fixed shared/public delegate by default; explicit true opts in.
+		{"shared default delegates", "shared", "Shared/", nil, false},
+		{"public default delegates", "public", "Public/", nil, false},
+		{"shared explicit true keeps", "shared", "Shared/", &yes, true},
+		{"shared explicit false delegates", "shared", "Shared/", &no, false},
+		// Owner-templated never keeps one; explicit true is refused at
+		// startup by pkg/config, so it must not flip the answer here.
+		{"owner-templated default", "shared", "user/%u/", nil, false},
+		{"owner-templated explicit true still no", "shared", "user/%u/", &yes, false},
+	}
+	for _, c := range cases {
+		if got := NamespaceKeepsSubscriptions(c.nsType, c.prefix, c.explicit); got != c.want {
+			t.Errorf("%s: NamespaceKeepsSubscriptions(%q, %q) = %v, want %v", c.name, c.nsType, c.prefix, got, c.want)
+		}
+	}
+}
