@@ -89,6 +89,16 @@ handle. On the shared NFS every per-user Xapian dir then has exactly one writer 
 the same "1 user = 1 pod" invariant that fixes #788 gives FTS single-writer for
 free, so `replicas > N` is safe (indexing load follows the users on each pod).
 
+**The NFS export must be `sync`.** This is a server setting no code path can
+compensate for. NFSv3/v4 require metadata operations (`RENAME`, `REMOVE`,
+`RMDIR`) to be committed to stable storage before the reply, and every atomic
+write in yarilo — index and cache tmp+rename, maildir delivery, FTS shard
+compaction — rests on that. An `async` export answers before committing, so a
+crash can lose a rename the client was told had succeeded; a client-side
+`fsync` cannot repair it (there is no commit-a-directory operation, and
+`fsync` on a directory is a no-op over NFS). The cost of `async` is paid in
+silently rolled-back metadata, not in a visible error (#1176).
+
 **Login proxies are not needed inside the backend** — it accepts plain TCP from the director
 with auth state in the YARILO preamble. The login pods (`yarilo-imap-login`, …,
 `yarilo-sasl-login`) live in the **director deployment** (see
