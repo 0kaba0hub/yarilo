@@ -80,7 +80,7 @@ namespaces:
   - type: shared
     prefix: "user/%u/"
     separator: "/"
-    list: true
+    list: children
     subscriptions: false
     location: "maildir:%h/Maildir"
 
