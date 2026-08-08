@@ -61,7 +61,7 @@ namespaces:
   - type: personal
     prefix: ""
     separator: "/"
-    list: true
+    list: "yes"
     subscriptions: true
     inbox: true
   # A public namespace is declared as type: shared with a public prefix and
@@ -70,7 +70,7 @@ namespaces:
   - type: shared
     prefix: "Public/"
     separator: "/"
-    list: true
+    list: "yes"
     subscriptions: false
     location: "maildir:/var/mail/vhosts/public"
   # Owner-templated shared namespace (B1): user/<owner>/ resolves the owner via

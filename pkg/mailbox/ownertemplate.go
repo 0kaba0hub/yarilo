@@ -180,12 +180,13 @@ func AdvertisedPrefix(prefix string) string {
 }
 
 // NamespaceListMode normalises the operator's `list` setting to yes /
-// children / no. Bool spellings are accepted because the key used to be a
-// boolean ("true"/"1" -> yes, "false"/"0" -> no). Unset takes the default for
-// the kind: an owner-templated namespace defaults to children -- its node is a
-// template that names no mailbox until an owner is filled in, so only the
-// materialised children are rows; everything else defaults to yes. An unknown
-// value is reported by config validation, not decided here.
+// children / no -- one vocabulary, no bool spellings: with three states,
+// "true" would have to mean yes forever, a second dictionary over the same
+// key. Unset takes the default for the kind: an owner-templated namespace
+// defaults to children -- its node is a template that names no mailbox until
+// an owner is filled in, so only the materialised children are rows;
+// everything else defaults to yes. An unknown value is reported by config
+// validation, not decided here.
 func NamespaceListMode(prefix, raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "":
@@ -193,11 +194,11 @@ func NamespaceListMode(prefix, raw string) (string, bool) {
 			return "children", true
 		}
 		return "yes", true
-	case "yes", "true", "1":
+	case "yes":
 		return "yes", true
 	case "children":
 		return "children", true
-	case "no", "false", "0":
+	case "no":
 		return "no", true
 	}
 	return "", false

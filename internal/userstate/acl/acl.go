@@ -461,9 +461,6 @@ func (s *Store) loadLocked(folder string) (mailbox.ACL, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if legacy := s.legacyRootPath(folder); legacy != "" {
-				return s.loadFrom(legacy)
-			}
 			return nil, nil
 		}
 		return nil, fmt.Errorf("userstate/acl: open %s: %w", path, err)
@@ -527,46 +524,4 @@ func (s *Store) withLock(folder string, fn func() error) error {
 	}
 	defer func() { _ = s.locker.Unlock(ctx, lk.ID) }()
 	return fn()
-}
-
-// legacyRootPath is where a namespace-root ACL written before RootFileName
-// existed would be, or "" when there is nothing to fall back to.
-//
-// The root used to share the per-folder file name, so on the dbox layouts it
-// lived at mailboxes/dbox-Mails/yarilo-acl -- a real file, with real grants, in
-// any deployment that used a shared namespace before this change. Reading the
-// new name and finding nothing would drop those grants silently, and the
-// symptom (everyone in the shared namespace loses access after an upgrade)
-// points nowhere near the cause.
-//
-// Not applied on maildir: there the old path is INBOX's own file, and reading
-// it as the root default is exactly the confusion RootFileName removes. The
-// equality check is what keeps the two apart, so this cannot resurrect it.
-func (s *Store) legacyRootPath(folder string) string {
-	if folder != "" {
-		return ""
-	}
-	legacy := filepath.Join(s.mailRoot,
-		mailbox.FolderSubpathEscaped(s.driver, "", "", s.separator, s.escapeChar), FileName)
-	if legacy == s.Path("INBOX") {
-		return ""
-	}
-	return legacy
-}
-
-// loadFrom parses one ACL file, treating absence as no ACL.
-func (s *Store) loadFrom(path string) (mailbox.ACL, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("userstate/acl: open %s: %w", path, err)
-	}
-	defer f.Close()
-	acl, err := mailbox.ParseACL(f)
-	if err != nil {
-		return nil, fmt.Errorf("userstate/acl: parse %s: %w: %w", path, errACLFileCorrupt, err)
-	}
-	return acl, nil
 }
