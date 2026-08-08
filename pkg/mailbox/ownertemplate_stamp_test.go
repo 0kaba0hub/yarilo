@@ -93,9 +93,11 @@ func TestNamespaceKeepsSubscriptions(t *testing.T) {
 		// Personal keeps its own file regardless of the setting.
 		{"personal default", "personal", "", nil, true},
 		{"personal explicit false still keeps", "personal", "", &no, true},
-		// Fixed shared/public delegate by default; explicit true opts in.
-		{"shared default delegates", "shared", "Shared/", nil, false},
-		{"public default delegates", "public", "Public/", nil, false},
+		// Fixed shared/public keep their own file unless the operator
+		// delegates: an upgrade must move nothing, and a site-wide file has
+		// no correct per-user migration.
+		{"shared default keeps", "shared", "Shared/", nil, true},
+		{"public default keeps", "public", "Public/", nil, true},
 		{"shared explicit true keeps", "shared", "Shared/", &yes, true},
 		{"shared explicit false delegates", "shared", "Shared/", &no, false},
 		// Owner-templated never keeps one; explicit true is refused at

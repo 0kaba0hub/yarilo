@@ -174,12 +174,12 @@ func NamespaceSubsFile(prefix, separator, nsType string) string {
 //     namespace's own subscription file" names no owner at all -- a
 //     configuration without a meaning rather than a dangerous one. Asking for
 //     one fails at startup (pkg/config) instead of picking an owner silently.
-//   - fixed shared/public: delegates by default, keeps them only on explicit
-//     subscriptions: true. The reference implementation defaults to true and
-//     leans on filesystem permissions and a per-user control path as the
-//     barrier; our processes share one uid on an RWX volume, so that barrier
-//     does not exist -- a deliberate divergence. A shared subscription file (a
-//     site-wide list) stays available as an opt-in.
+//   - fixed shared/public: keeps them unless told otherwise. That matches both
+//     the current behaviour of every deployed fixed namespace and the reference
+//     default, so an upgrade moves nothing -- there is no correct migration for
+//     a site-wide file: folding it per user hands everyone a stranger's rows,
+//     folding it once hands them to whoever runs first. Delegation is the
+//     operator's explicit subscriptions: false.
 //
 // One rule, one implementation: config resolves it for the wire and IMAP for the
 // session, and both ask this.
@@ -191,7 +191,7 @@ func NamespaceKeepsSubscriptions(nsType, prefix string, explicit *bool) bool {
 		return false
 	}
 	if explicit == nil {
-		return false
+		return true
 	}
 	return *explicit
 }

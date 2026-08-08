@@ -302,10 +302,8 @@ CLI: `yarctl backend folder list <user> [--namespace NS]`
 ### `POST /api/backend/subscriptions/migrate`
 
 Folds a namespace's old per-namespace subscription file into the subscriber's
-own, for a namespace that no longer keeps one (the default for every
-non-personal namespace unless `subscriptions: true` is set on a fixed
-shared/public one; always so for an owner-templated namespace). Dry run unless
-`"apply": true`.
+own, for a namespace that no longer keeps one (`subscriptions: false`, and always
+so for an owner-templated namespace). Dry run unless `"apply": true`.
 
 Those rows were written into the **owner's** store, and every one names a mailbox
 in the owner's own space, so folding restores the owner's subscriptions exactly;
