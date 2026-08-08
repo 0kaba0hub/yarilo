@@ -34,8 +34,8 @@ func migrateServer(t *testing.T, root string) *httptest.Server {
 		Index:    fileindex.New(),
 		Resolver: &mailbox.Resolver{Root: root, HomeTemplate: "%n"},
 		Namespaces: []config.NamespaceConfig{
-			{Type: "personal", Prefix: "", Separator: "/", List: true, Inbox: true},
-			{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:%h/Maildir", List: true},
+			{Type: "personal", Prefix: "", Separator: "/", List: "yes", Inbox: true},
+			{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:%h/Maildir", List: "yes"},
 		},
 		MetadataDict: d,
 		AuthClient:   spawnAuthMaster(t, udb),

@@ -163,6 +163,30 @@ func NamespaceSubsFile(prefix, separator, nsType string) string {
 	return "subscriptions-" + NamespaceFileSlug(prefix, separator, nsType)
 }
 
+// NamespaceListMode normalises the operator's `list` setting to yes /
+// children / no. Bool spellings are accepted because the key used to be a
+// boolean ("true"/"1" -> yes, "false"/"0" -> no). Unset takes the default for
+// the kind: an owner-templated namespace defaults to children -- its node is a
+// template that names no mailbox until an owner is filled in, so only the
+// materialised children are rows; everything else defaults to yes. An unknown
+// value is reported by config validation, not decided here.
+func NamespaceListMode(prefix, raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		if PrefixIsOwnerTemplated(prefix) {
+			return "children", true
+		}
+		return "yes", true
+	case "yes", "true", "1":
+		return "yes", true
+	case "children":
+		return "children", true
+	case "no", "false", "0":
+		return "no", true
+	}
+	return "", false
+}
+
 // NamespaceKeepsSubscriptions decides whether a namespace stores subscriptions
 // for the mailboxes under it, or delegates them to the namespace that does --
 // the subscriber's own, normally the personal one. explicit is the operator's

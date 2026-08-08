@@ -1246,6 +1246,16 @@ func personalSeparator(cfg []config.NamespaceConfig) string {
 	return "."
 }
 
+// nsListMode resolves the operator's list setting.
+func nsListMode(ns config.NamespaceConfig) imapsvr.ListMode {
+	mode, ok := mailbox.NamespaceListMode(ns.Prefix, ns.List)
+	if !ok {
+		// Unreachable: pkg/config rejects unknown values at startup.
+		mode, _ = mailbox.NamespaceListMode(ns.Prefix, "")
+	}
+	return imapsvr.ListMode(mode)
+}
+
 func buildNamespaces(cfg []config.NamespaceConfig) []imapsvr.NamespaceSpec {
 	if len(cfg) == 0 {
 		return nil
@@ -1277,7 +1287,7 @@ func buildNamespaces(cfg []config.NamespaceConfig) []imapsvr.NamespaceSpec {
 			Type:          nsType,
 			Prefix:        ns.Prefix,
 			Separator:     sep,
-			List:          ns.List,
+			List:          nsListMode(ns),
 			Location:      ns.Location,
 			IgnoreACL:     ns.IgnoreACL,
 			Subscriptions: ns.Subscriptions,

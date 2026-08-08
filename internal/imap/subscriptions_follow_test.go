@@ -109,8 +109,8 @@ func TestSubscriptions_NoStoringNamespaceRefuses(t *testing.T) {
 		Auth:     &enforcePassdb{users: map[string]string{"alice": "pw"}},
 		Namespaces: []imapserver.NamespaceSpec{
 			// The personal namespace does not cover the whole name space.
-			{Type: imapserver.NamespacePersonal, Prefix: "Mail/", Separator: '/', List: true},
-			{Type: imapserver.NamespaceShared, Prefix: "Team/", Separator: '/', List: true,
+			{Type: imapserver.NamespacePersonal, Prefix: "Mail/", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "Team/", Separator: '/', List: imapserver.ListYes,
 				Location: "maildir:" + filepath.Join(root, "team"), Subscriptions: boolPtr(false)},
 		},
 	})

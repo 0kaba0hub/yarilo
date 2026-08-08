@@ -21,6 +21,14 @@ func TestValidateOwnerTemplatedNamespace(t *testing.T) {
 		{"templated, no location", NamespaceConfig{Type: "shared", Prefix: "user/%u/", Separator: "/"}, "no location"},
 		{"templated, fixed location", NamespaceConfig{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:/srv/shared"}, "no per-owner variable"},
 		{"templated, bad prefix shape", NamespaceConfig{Type: "shared", Prefix: "user/%u/mail/", Separator: "/", Location: "maildir:%h"}, "after the owner variable"},
+		// list: yes would put the unexpanded template back into LIST -- the
+		// exact #1139 defect, reachable by configuration. Same shape as the
+		// subscriptions: true refusal: the two keys answer alike.
+		{"templated, list yes", NamespaceConfig{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:%h", List: "yes"}, "not a mailbox"},
+		{"templated, list true", NamespaceConfig{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:%h", List: "true"}, "not a mailbox"},
+		{"templated, list children accepted", NamespaceConfig{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:%h", List: "children"}, ""},
+		{"templated, list no accepted", NamespaceConfig{Type: "shared", Prefix: "user/%u/", Separator: "/", Location: "maildir:%h", List: "no"}, ""},
+		{"fixed, list yes accepted", NamespaceConfig{Type: "shared", Prefix: "Public/", Separator: "/", Location: "maildir:/srv/public", List: "yes"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

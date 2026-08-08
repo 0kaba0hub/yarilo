@@ -31,9 +31,9 @@ func TestExpandNotifySpec_SubscribedKeepsOnlyPersonalNames(t *testing.T) {
 	}
 
 	off := false
-	personalSpec := NamespaceSpec{Type: NamespacePersonal, Prefix: "", Separator: '/', List: true}
-	templSpec := NamespaceSpec{Type: NamespaceShared, Prefix: "user/%u/", Separator: '/', List: true}
-	publicSpec := NamespaceSpec{Type: NamespaceShared, Prefix: "Public/", Separator: '/', List: true, Subscriptions: &off}
+	personalSpec := NamespaceSpec{Type: NamespacePersonal, Prefix: "", Separator: '/', List: ListYes}
+	templSpec := NamespaceSpec{Type: NamespaceShared, Prefix: "user/%u/", Separator: '/', List: ListYes}
+	publicSpec := NamespaceSpec{Type: NamespaceShared, Prefix: "Public/", Separator: '/', List: ListYes, Subscriptions: &off}
 
 	primary := &nsHandle{name: "personal", spec: personalSpec, subs: store}
 	s := &session{
@@ -54,9 +54,9 @@ func TestExpandNotifySpec_SubscribedKeepsOnlyPersonalNames(t *testing.T) {
 }
 
 func TestNamesPrimaryFolder(t *testing.T) {
-	personalSpec := NamespaceSpec{Type: NamespacePersonal, Prefix: "", Separator: '/', List: true}
-	templSpec := NamespaceSpec{Type: NamespaceShared, Prefix: "user/%u/", Separator: '/', List: true}
-	publicSpec := NamespaceSpec{Type: NamespaceShared, Prefix: "Public/", Separator: '/', List: true}
+	personalSpec := NamespaceSpec{Type: NamespacePersonal, Prefix: "", Separator: '/', List: ListYes}
+	templSpec := NamespaceSpec{Type: NamespaceShared, Prefix: "user/%u/", Separator: '/', List: ListYes}
+	publicSpec := NamespaceSpec{Type: NamespaceShared, Prefix: "Public/", Separator: '/', List: ListYes}
 
 	primary := &nsHandle{name: "personal", spec: personalSpec}
 	s := &session{

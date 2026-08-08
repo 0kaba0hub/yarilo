@@ -226,9 +226,11 @@ type NamespaceConfig struct {
 	Prefix string `koanf:"prefix"`
 	// Separator is the hierarchy delimiter; may differ per namespace.
 	Separator string `koanf:"separator"`
-	// List exposes the namespace in the NAMESPACE response. False keeps it
-	// addressable internally without advertising it.
-	List bool `koanf:"list"`
+	// List is the LIST exposure: yes (node + children), children (only the
+	// children -- the node itself is not a mailbox), no (addressable but not
+	// advertised). Bool spellings are accepted for compatibility. Unset takes
+	// the kind default: children for an owner-templated prefix, yes otherwise.
+	List string `koanf:"list"`
 	// Hidden hides matching mailboxes from LIST "" "*". Reserved for NS-1b.
 	Hidden bool `koanf:"hidden"`
 	// Subscriptions: whether this namespace keeps its own subscription file.
@@ -2536,6 +2538,10 @@ func ValidateNamespaceTypes(namespaces []NamespaceConfig) error {
 				"valid types are personal, shared and other -- a public namespace is "+
 				"type: shared with its own prefix and location", i, ns.Prefix, ns.Type)
 		}
+		if _, ok := mailbox.NamespaceListMode(ns.Prefix, ns.List); !ok {
+			return fmt.Errorf("config: namespace %d (prefix %q) has unknown list mode %q; "+
+				"valid values are yes, children and no", i, ns.Prefix, ns.List)
+		}
 		if err := validateOwnerTemplatedNamespace(i, ns); err != nil {
 			return err
 		}
@@ -2615,6 +2621,11 @@ func validateOwnerTemplatedNamespace(i int, ns NamespaceConfig) error {
 		return fmt.Errorf("config: namespace %d (prefix %q) is owner-templated and cannot keep its own "+
 			"subscription file: its storage is resolved per owner at runtime, so the file would name no "+
 			"owner; remove subscriptions: true and they follow the subscriber", i, ns.Prefix)
+	}
+	if mode, ok := mailbox.NamespaceListMode(ns.Prefix, ns.List); ok && mode == "yes" && strings.TrimSpace(ns.List) != "" {
+		return fmt.Errorf("config: namespace %d (prefix %q) is owner-templated and cannot list its own "+
+			"node: the unexpanded template is not a mailbox and cannot become one; remove list: yes and "+
+			"the children list themselves (list: children)", i, ns.Prefix)
 	}
 	_, after, _ := strings.Cut(ns.Prefix, mailbox.OwnerVar)
 	if after != "" && after != sep {

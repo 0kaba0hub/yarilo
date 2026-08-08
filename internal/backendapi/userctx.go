@@ -82,7 +82,7 @@ func (s *Server) openUserContextInner(username string, readOnly bool) (*userCont
 
 	personalSpec, ok := s.personalSpec()
 	if !ok {
-		personalSpec = config.NamespaceConfig{Type: "personal", Prefix: "", Separator: "/", List: true}
+		personalSpec = config.NamespaceConfig{Type: "personal", Prefix: "", Separator: "/", List: "yes"}
 	}
 	personalMB := s.mailboxForUser(pui)
 	var bundle *nsBundle
@@ -282,7 +282,7 @@ func (s *Server) namespaceByName(name string) (config.NamespaceConfig, bool) {
 		}
 	}
 	if name == "personal" {
-		return config.NamespaceConfig{Type: "personal", Prefix: "", Separator: "/", List: true}, true
+		return config.NamespaceConfig{Type: "personal", Prefix: "", Separator: "/", List: "yes"}, true
 	}
 	return config.NamespaceConfig{}, false
 }
