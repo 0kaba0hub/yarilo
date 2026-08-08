@@ -39,7 +39,12 @@ var cachePathMu sync.Map // path -> *sync.Mutex
 
 func lockCachePath(path string) func() {
 	mu, _ := cachePathMu.LoadOrStore(path, &sync.Mutex{})
-	m := mu.(*sync.Mutex)
+	m, ok := mu.(*sync.Mutex)
+	if !ok {
+		// Unreachable: this map only ever stores *sync.Mutex. Failing open
+		// would silently drop the in-process tier, so fail loud instead.
+		panic("imap: cache mutex map holds a foreign type")
+	}
 	m.Lock()
 	return m.Unlock
 }
