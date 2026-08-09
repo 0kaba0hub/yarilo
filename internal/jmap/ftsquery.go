@@ -76,9 +76,23 @@ type ftsEvaluator struct {
 	user string
 	box  mailbox.UserMailbox
 
+	// deadline bounds the whole request's waiting, not each folder's: with a
+	// fan-out the size of the ceiling, a per-folder budget would multiply into
+	// minutes with the client holding the line and half the pool held.
+	deadline time.Time
+
 	mu sync.Mutex
 	// byFolder is what prepare resolved, per folder id.
 	byFolder map[uint64]*folderMatches
+}
+
+// startRequest opens the shared waiting budget for one query.
+func (e *ftsEvaluator) startRequest() {
+	timeout := e.fts.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	e.deadline = time.Now().Add(timeout)
 }
 
 // folderMatches is one folder's lookup outcome. verify holds the UIDs the
@@ -91,12 +105,20 @@ type folderMatches struct {
 	terms []verifyTerm
 }
 
-// verifyTerm is one condition in the form the confirmation uses: a header name
-// (empty for body text) and the string that must appear.
+// verifyTerm is one condition in the form the confirmation uses: where the
+// string may appear, and the string itself. A condition matches when ANY of
+// its places contains it -- "text" spans the address headers, the subject and
+// the body (RFC 8621 §4.4.1), so confirming it against the body alone would
+// drop a message whose only hit is in the subject.
 type verifyTerm struct {
-	header string
-	want   string
+	headers []string
+	body    bool
+	want    string
 }
+
+// textHeaders are the header fields the "text" condition covers besides the
+// body, per RFC 8621 §4.4.1.
+var textHeaders = []string{"from", "to", "cc", "bcc", "subject"}
 
 func (s *Server) newFTSEvaluator(h *userHandle) *ftsEvaluator {
 	return &ftsEvaluator{
@@ -166,9 +188,6 @@ func (e *ftsEvaluator) prepare(h *userHandle, sf scopeFolder, f *jmapcore.EmailF
 // only honest ending is "retry" -- a result computed from a half-indexed folder
 // would be missing mail and say nothing about it.
 func (e *ftsEvaluator) catchUp(h *userHandle, sf scopeFolder) error {
-	if e.fts.AddMissing == "" {
-		return nil
-	}
 	metas, err := h.idx.GetMessages(sf.id, mailbox.SeqSet{{From: 1, To: 0}})
 	if err != nil || len(metas) == 0 {
 		return nil
@@ -183,15 +202,18 @@ func (e *ftsEvaluator) catchUp(h *userHandle, sf scopeFolder) error {
 	if err != nil {
 		return fmt.Errorf("jmap: fts status %q: %w", sf.name, err)
 	}
+	// Queuing the folder needs the knob; noticing that the index is behind does
+	// not. Without it there is nothing to wait for, so the query says so at
+	// once instead of searching a folder it knows is half-indexed.
+	if e.fts.AddMissing == "" {
+		slog.Warn("jmap: fts index behind and fts_search_add_missing is unset",
+			"user", e.user, "folder", sf.name, "indexed", last, "want", maxUID)
+		return errIndexLagging
+	}
 	if perr := e.fts.Client.Prepend(e.user, mbox, maxUID); perr != nil {
 		return fmt.Errorf("jmap: fts prepend %q: %w", sf.name, perr)
 	}
-	timeout := e.fts.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	for time.Now().Before(e.deadline) {
 		time.Sleep(250 * time.Millisecond)
 		cur, _, serr := e.fts.Client.Status(e.user, mbox)
 		if serr != nil {
@@ -253,15 +275,28 @@ func (e *ftsEvaluator) confirm(sf scopeFolder, m *mailbox.MessageMeta, terms []v
 		return false
 	}
 	for _, t := range terms {
-		hay := body
-		if t.header != "" {
-			hay = hdr.Get(t.header)
-		}
-		if !strings.Contains(strings.ToLower(hay), strings.ToLower(t.want)) {
+		if !t.matches(hdr, body) {
 			return false
 		}
 	}
 	return true
+}
+
+// matches reports whether the condition is satisfied anywhere it may appear.
+// Header values are decoded first: the index matched the decoded form, and the
+// client sent what it reads, so comparing against a raw encoded word would
+// reject the hit the engine legitimately proposed.
+func (t verifyTerm) matches(hdr message.Header, body string) bool {
+	want := strings.ToLower(t.want)
+	if t.body && strings.Contains(strings.ToLower(body), want) {
+		return true
+	}
+	for _, name := range t.headers {
+		if strings.Contains(strings.ToLower(decodeWord(hdr.Get(name))), want) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *ftsEvaluator) readMessage(sf scopeFolder, m *mailbox.MessageMeta) (message.Header, string, error) {
@@ -295,7 +330,7 @@ func (e *ftsEvaluator) buildQuery(f *jmapcore.EmailFilter) (fts.Query, []verifyT
 	var verify []verifyTerm
 	impossible := false
 
-	add := func(exp expander, field fts.FieldKind, hdrName, value string) {
+	add := func(exp expander, field fts.FieldKind, hdrName, value string, where verifyTerm) {
 		if value == "" {
 			return
 		}
@@ -309,7 +344,8 @@ func (e *ftsEvaluator) buildQuery(f *jmapcore.EmailFilter) (fts.Query, []verifyT
 			t.Phrase = value
 		}
 		terms = append(terms, t)
-		verify = append(verify, verifyTerm{header: hdrName, want: value})
+		where.want = value
+		verify = append(verify, where)
 	}
 
 	str := func(p *string) string {
@@ -318,13 +354,13 @@ func (e *ftsEvaluator) buildQuery(f *jmapcore.EmailFilter) (fts.Query, []verifyT
 		}
 		return *p
 	}
-	add(e.fts.Chain, fts.FieldText, "", str(f.Text))
-	add(e.fts.Chain, fts.FieldBody, "", str(f.Body))
+	add(e.fts.Chain, fts.FieldText, "", str(f.Text), verifyTerm{headers: textHeaders, body: true})
+	add(e.fts.Chain, fts.FieldBody, "", str(f.Body), verifyTerm{body: true})
 	for name, value := range map[string]string{
 		"subject": str(f.Subject), "from": str(f.From), "to": str(f.To),
 		"cc": str(f.Cc), "bcc": str(f.Bcc),
 	} {
-		add(headerDataChain, fts.FieldHeader, name, value)
+		add(headerDataChain, fts.FieldHeader, name, value, verifyTerm{headers: []string{name}})
 	}
 	if len(f.Header) > 0 {
 		name := strings.ToLower(f.Header[0])
@@ -332,7 +368,7 @@ func (e *ftsEvaluator) buildQuery(f *jmapcore.EmailFilter) (fts.Query, []verifyT
 			// Presence only: the header exists, whatever it holds.
 			terms = append(terms, fts.Term{Field: fts.FieldHeader, HdrName: name})
 		} else {
-			add(headerDataChain, fts.FieldHeader, name, f.Header[1])
+			add(headerDataChain, fts.FieldHeader, name, f.Header[1], verifyTerm{headers: []string{name}})
 		}
 	}
 	return fts.Query{Terms: terms, AndTerms: true}, verify, impossible
@@ -396,6 +432,9 @@ func (s *Server) prepareScope(h *userHandle, eval filterEvaluator, scope *queryS
 	width := 1
 	if s.opts.FTS != nil {
 		width = s.opts.FTS.requestConcurrency()
+	}
+	if fe, ok := eval.(*ftsEvaluator); ok {
+		fe.startRequest()
 	}
 	sem := make(chan struct{}, width)
 	errs := make([]error, len(scope.folders))

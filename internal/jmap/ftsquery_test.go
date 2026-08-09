@@ -37,7 +37,9 @@ type stubFTS struct {
 	delay map[string]time.Duration
 
 	// statusUID is what the index reports as indexed; prepends counts the
-	// priority-index requests a lagging folder triggered.
+	// priority-index requests a lagging folder triggered. Zero means the index
+	// is behind every message, so a fixture that is not about lagging must say
+	// so -- searching a stale index is refused now, not answered.
 	statusUID uint32
 	prepends  int32
 
@@ -168,7 +170,7 @@ func folderSet(n int, body string) map[string]string {
 func TestEmailQueryFolderCeiling(t *testing.T) {
 	const n = 4
 	t.Run("at the limit the query runs", func(t *testing.T) {
-		stub := &stubFTS{byFolder: map[string]fts.Result{}}
+		stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{}}
 		s := searchServer(t, stub, 4, n, folderSet(n, "hello"))
 		got := emailQuery(t, s, `{"accountId":"u1@example.com","filter":{"text":"hello"}}`)
 		if got["queryState"] == nil {
@@ -177,7 +179,7 @@ func TestEmailQueryFolderCeiling(t *testing.T) {
 	})
 
 	t.Run("one folder over the limit is refused", func(t *testing.T) {
-		stub := &stubFTS{byFolder: map[string]fts.Result{}}
+		stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{}}
 		s := searchServer(t, stub, 4, n-1, folderSet(n, "hello"))
 		err := emailQueryError(t, s, `{"accountId":"u1@example.com","filter":{"text":"hello"}}`)
 		if err["type"] != "invalidArguments" {
@@ -195,7 +197,7 @@ func TestEmailQueryFolderCeiling(t *testing.T) {
 	// Without a text condition there is no fan-out, so the ceiling has nothing
 	// to bound -- otherwise this test would be pinning the folder count.
 	t.Run("a query with no text condition ignores the ceiling", func(t *testing.T) {
-		stub := &stubFTS{byFolder: map[string]fts.Result{}}
+		stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{}}
 		s := searchServer(t, stub, 4, 1, folderSet(n, "hello"))
 		got := emailQuery(t, s, `{"accountId":"u1@example.com"}`)
 		if got["queryState"] == nil {
@@ -217,7 +219,7 @@ func TestEmailQueryVerifiesMaybeResults(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			stub := &stubFTS{byFolder: map[string]fts.Result{"INBOX": {Maybe: []uint32{1}}}}
+			stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{"INBOX": {Maybe: []uint32{1}}}}
 			s := searchServer(t, stub, 4, 8, map[string]string{"INBOX": tc.body})
 			got := emailQuery(t, s, `{"accountId":"u1@example.com","filter":{"text":"needle"}}`)
 			ids := idsOf(t, got)
@@ -231,11 +233,45 @@ func TestEmailQueryVerifiesMaybeResults(t *testing.T) {
 	}
 }
 
+// "text" spans the address headers and the subject as well as the body (RFC
+// 8621 4.4.1), and the index matched the decoded header -- so a candidate
+// whose only hit is an encoded subject is a legitimate one. Confirming against
+// the raw body alone would drop it, and the loss would be silent.
+func TestEmailQueryVerifiesTextConditionsBeyondTheBody(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers string
+		body    string
+		want    string
+		wantHit bool
+	}{
+		{"the hit is in the subject", "Subject: about the needle\r\nFrom: alice@example.com\r\n", "nothing here", "needle", true},
+		{"the hit is in an encoded subject",
+			"Subject: =?utf-8?B?0L3QsNC50YLQuNC90LrQsA==?=\r\nFrom: alice@example.com\r\n", "nothing here", "\u043d\u0430\u0439\u0442\u0438\u043d\u043a\u0430", true},
+		{"the hit is in the from address", "Subject: hi\r\nFrom: needle@example.com\r\n", "nothing here", "needle", true},
+		{"nowhere at all", "Subject: hi\r\nFrom: alice@example.com\r\n", "nothing here", "needle", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{"INBOX": {Maybe: []uint32{1}}}}
+			s := rawMessageServer(t, stub, tc.headers+"\r\n"+tc.body+"\r\n")
+			got := emailQuery(t, s, `{"accountId":"u1@example.com","filter":{"text":"`+tc.want+`"}}`)
+			ids := idsOf(t, got)
+			if tc.wantHit && len(ids) != 1 {
+				t.Errorf("ids = %v, want the candidate confirmed", ids)
+			}
+			if !tc.wantHit && len(ids) != 0 {
+				t.Errorf("ids = %v, want none", ids)
+			}
+		})
+	}
+}
+
 // A Definite needs no message read, so it is answered even when the message is
 // unreadable -- and that is what makes the Maybe case above about verification
 // rather than about reading files.
 func TestEmailQueryTrustsDefiniteResults(t *testing.T) {
-	stub := &stubFTS{byFolder: map[string]fts.Result{"INBOX": {Definite: []uint32{1}}}}
+	stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{"INBOX": {Definite: []uint32{1}}}}
 	s := searchServer(t, stub, 4, 8, map[string]string{"INBOX": "no such word"})
 	got := emailQuery(t, s, `{"accountId":"u1@example.com","filter":{"text":"needle"}}`)
 	if ids := idsOf(t, got); len(ids) != 1 {
@@ -247,7 +283,7 @@ func TestEmailQueryTrustsDefiniteResults(t *testing.T) {
 // connections left rather than being refused by a queue of our own making.
 func TestEmailQueryFanOutIsBounded(t *testing.T) {
 	const folders = 8
-	stub := &stubFTS{byFolder: map[string]fts.Result{}, hold: make(chan struct{})}
+	stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{}, hold: make(chan struct{})}
 	s := searchServer(t, stub, 4, folders, folderSet(folders, "hello"))
 
 	done := make(chan struct{})
@@ -273,8 +309,9 @@ func TestEmailQueryFanOutIsBounded(t *testing.T) {
 func TestEmailQueryOrderIndependentOfAnswerOrder(t *testing.T) {
 	bodies := folderSet(3, "hello")
 	stub := &stubFTS{
-		byFolder: map[string]fts.Result{},
-		delay:    map[string]time.Duration{"INBOX": 40 * time.Millisecond},
+		statusUID: 1,
+		byFolder:  map[string]fts.Result{},
+		delay:     map[string]time.Duration{"INBOX": 40 * time.Millisecond},
 	}
 	for name := range bodies {
 		stub.byFolder[name] = fts.Result{Definite: []uint32{1}}
@@ -296,7 +333,7 @@ func TestEmailQueryOrderIndependentOfAnswerOrder(t *testing.T) {
 // and fix the request. Only the last is the client's fault.
 func TestEmailQueryFailureTypes(t *testing.T) {
 	t.Run("a lookup failure is final", func(t *testing.T) {
-		stub := &stubFTS{byFolder: map[string]fts.Result{}, err: errors.New("engine down")}
+		stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{}, err: errors.New("engine down")}
 		s := searchServer(t, stub, 4, 8, map[string]string{"INBOX": "hello"})
 		err := emailQueryError(t, s, `{"accountId":"u1@example.com","filter":{"text":"hello"}}`)
 		if err["type"] != "serverFail" {
@@ -307,7 +344,7 @@ func TestEmailQueryFailureTypes(t *testing.T) {
 	// An exhausted pool is our own queue, not a broken service: telling the
 	// client it is final would show an empty result as the answer.
 	t.Run("an exhausted pool is transient", func(t *testing.T) {
-		stub := &stubFTS{byFolder: map[string]fts.Result{}, err: ftsproto.ErrPoolExhausted}
+		stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{}, err: ftsproto.ErrPoolExhausted}
 		s := searchServer(t, stub, 4, 8, map[string]string{"INBOX": "hello"})
 		err := emailQueryError(t, s, `{"accountId":"u1@example.com","filter":{"text":"hello"}}`)
 		if err["type"] != "serverUnavailable" {
@@ -361,7 +398,7 @@ func emailQueryError(t *testing.T, s *Server, args string) map[string]any {
 // half-indexed folder.
 func TestEmailQueryWaitsForALaggingIndexThenAsksForARetry(t *testing.T) {
 	t.Run("still behind when the budget runs out", func(t *testing.T) {
-		stub := &stubFTS{byFolder: map[string]fts.Result{"INBOX": {Definite: []uint32{1}}}, statusUID: 0}
+		stub := &stubFTS{byFolder: map[string]fts.Result{"INBOX": {Definite: []uint32{1}}}}
 		s := searchServer(t, stub, 4, 8, map[string]string{"INBOX": "needle here"})
 		s.opts.FTS.AddMissing = "priority"
 		s.opts.FTS.Timeout = 300 * time.Millisecond
@@ -375,10 +412,27 @@ func TestEmailQueryWaitsForALaggingIndexThenAsksForARetry(t *testing.T) {
 		}
 	})
 
+	// Without fts_search_add_missing there is nothing to queue -- but noticing
+	// the lag needs no knob, and searching a folder known to be half-indexed
+	// would answer with less mail than the account holds.
+	t.Run("behind with no add-missing knob refuses at once", func(t *testing.T) {
+		stub := &stubFTS{byFolder: map[string]fts.Result{"INBOX": {Definite: []uint32{1}}}}
+		s := searchServer(t, stub, 4, 8, map[string]string{"INBOX": "needle here"})
+		s.opts.FTS.AddMissing = ""
+
+		err := emailQueryError(t, s, `{"accountId":"u1@example.com","filter":{"text":"needle"}}`)
+		if err["type"] != "serverUnavailable" {
+			t.Errorf("type = %v, want serverUnavailable", err["type"])
+		}
+		if n := atomic.LoadInt32(&stub.prepends); n != 0 {
+			t.Errorf("queued %d indexing requests without the knob, want 0", n)
+		}
+	})
+
 	// Caught up in time: the same wiring must then answer normally, or the
 	// case above would pass with a catch-up that never succeeds.
 	t.Run("caught up in time", func(t *testing.T) {
-		stub := &stubFTS{byFolder: map[string]fts.Result{"INBOX": {Definite: []uint32{1}}}, statusUID: 1}
+		stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{"INBOX": {Definite: []uint32{1}}}}
 		s := searchServer(t, stub, 4, 8, map[string]string{"INBOX": "needle here"})
 		s.opts.FTS.AddMissing = "priority"
 		s.opts.FTS.Timeout = 300 * time.Millisecond
@@ -390,13 +444,38 @@ func TestEmailQueryWaitsForALaggingIndexThenAsksForARetry(t *testing.T) {
 	})
 }
 
+// The waiting budget belongs to the request, not to each folder: a per-folder
+// one multiplies by the fan-out, so a query at the ceiling would hold the
+// client and half the pool for minutes.
+func TestLaggingIndexBudgetIsPerRequest(t *testing.T) {
+	const folders, timeout = 8, 200 * time.Millisecond
+	stub := &stubFTS{byFolder: map[string]fts.Result{}} // statusUID 0: every folder is behind
+	s := searchServer(t, stub, 4, folders, folderSet(folders, "needle"))
+	s.opts.FTS.AddMissing = "priority"
+	s.opts.FTS.Timeout = timeout
+
+	start := time.Now()
+	err := emailQueryError(t, s, `{"accountId":"u1@example.com","filter":{"text":"needle"}}`)
+	elapsed := time.Since(start)
+
+	if err["type"] != "serverUnavailable" {
+		t.Errorf("type = %v, want serverUnavailable", err["type"])
+	}
+	// Two at a time over eight folders is four waves; a per-folder budget would
+	// spend four timeouts, a shared one spends about one.
+	if max := 2 * timeout; elapsed > max {
+		t.Errorf("waited %v for %d lagging folders, want under %v: the budget is per folder, not per request",
+			elapsed, folders, max)
+	}
+}
+
 // A folder with no GUID cannot be searched: the index is keyed by it (#1183).
 // Skipping such a folder would answer from part of the account while looking
 // like the whole of it, so the query refuses -- and as serverFail, not
 // invalidArguments: the client named nothing wrong and cannot see which folder
 // to exclude.
 func TestFolderWithoutGUIDRefusesRatherThanSkips(t *testing.T) {
-	stub := &stubFTS{byFolder: map[string]fts.Result{}}
+	stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{}}
 	s := searchServer(t, stub, 4, 8, map[string]string{"INBOX": "hello"})
 	eval := s.newFTSEvaluator(&userHandle{info: &mailbox.UserInfo{Username: testUser}})
 
@@ -437,4 +516,55 @@ func TestPrepareErrorsCarryTheirRetryability(t *testing.T) {
 			}
 		})
 	}
+}
+
+// rawMessageServer is searchServer with one INBOX message written verbatim, so
+// a test can put the searchable text where it means to.
+func rawMessageServer(t *testing.T, stub *stubFTS, raw string) *Server {
+	t.Helper()
+	home := t.TempDir()
+	info := &mailbox.UserInfo{Username: testUser, Home: home, Separator: "/"}
+
+	mb := maildir.New()
+	box := mb.OpenUser(info)
+	t.Cleanup(func() { box.Close() }) //nolint:errcheck
+	if err := box.Init(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	locker := &testLocker{}
+	idx := file.New(file.WithLocker(locker))
+	ui := idx.OpenUser(info)
+
+	fname, vsize, guid, err := box.Save("INBOX", strings.NewReader(raw), 1, int64(len(raw)), nil, [16]byte{})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	f, err := ui.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("open INBOX: %v", err)
+	}
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{
+		UID: 1, Filename: fname, Size: uint32(len(raw)), VSize: vsize, GUID: guid, InternalDate: time.Now(),
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := ui.Close(); err != nil {
+		t.Fatalf("index close: %v", err)
+	}
+
+	chain, err := language.NewMultiChain([]string{"english"}, nil, nil, 0, 0, 0)
+	if err != nil {
+		t.Fatalf("chain: %v", err)
+	}
+	return New(Options{
+		Trust:  ResolveTrust(false, true, []*net.IPNet{mustCIDR(t, "192.0.2.0/24")}),
+		Limits: testLimits(),
+		FTS:    &FTS{Client: stub, Chain: chain, MaxConns: 4, MaxFolders: 8},
+		Storage: &Storage{
+			Mailbox:     maildir.New(),
+			Index:       file.New(file.WithLocker(locker)),
+			ResolveUser: func(string) (*mailbox.UserInfo, error) { return info, nil },
+			Locker:      locker,
+		},
+	})
 }

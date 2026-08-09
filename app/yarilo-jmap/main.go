@@ -128,6 +128,9 @@ func main() {
 		slog.Error("fts client", "err", err)
 		os.Exit(1)
 	}
+	if ftsClient != nil {
+		defer ftsClient.Close() //nolint:errcheck
+	}
 	var ftsOpts *jmap.FTS
 	if ftsClient != nil && cfg.FTS.Search {
 		ftsOpts = &jmap.FTS{
