@@ -1,6 +1,10 @@
 package mailbox
 
-import "sync"
+import (
+	"fmt"
+	"strings"
+	"sync"
+)
 
 // MemoizeByDriver wraps a backend builder so each driver is built once and the
 // instance -- and its write semaphore (max_concurrent_writes) -- is shared for
@@ -93,4 +97,29 @@ func SelectPersonalBackend(global MailboxBackend, byDriver func(string) MailboxB
 		}
 	}
 	return global
+}
+
+// StampDriver applies an explicit per-user storage driver — the userdb
+// mail_driver / mailbox_format field — over whatever the mail_location prefix
+// stamped. Call it after StampLocation: a field the operator wrote out is more
+// specific than a prefix embedded in a location string, and that ordering has
+// to be the same everywhere or moving a userdb from one spelling to the other
+// would change which one wins.
+//
+// An unrecognised name is an error and leaves ui untouched. The alternative is
+// opening the user's mail with a driver they did not ask for, which reads their
+// mailbox as a format it is not.
+func StampDriver(ui *UserInfo, driver string) error {
+	if driver == "" {
+		return nil
+	}
+	d := strings.ToLower(strings.TrimSpace(driver))
+	if !recognisedDriver(d) {
+		return fmt.Errorf("mailbox: unknown storage driver %q", driver)
+	}
+	if d == "dbox" {
+		d = "sdbox"
+	}
+	ui.Driver = d
+	return nil
 }

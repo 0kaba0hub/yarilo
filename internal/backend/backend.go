@@ -1144,6 +1144,10 @@ func ResolveUserInfo(resolver *mailbox.Resolver, username string, ui *protocol.U
 		slog.Warn("backend: mail_location parse failed; using global mailbox backend",
 			"user", username, "mail_location", ui.MailLocation, "err", err)
 	}
+	if err := mailbox.StampDriver(mbi, ui.MailboxFormat); err != nil {
+		slog.Warn("backend: userdb named a storage driver we do not have; using the one from mail_location",
+			"user", username, "mail_driver", ui.MailboxFormat, "err", err)
+	}
 	return mbi
 }
 

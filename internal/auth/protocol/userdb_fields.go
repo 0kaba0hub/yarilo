@@ -122,7 +122,7 @@ func AssignField(info *UserInfo, key, value string) error {
 			return err
 		}
 		info.MailGID = uint32(n)
-	case "mailbox_format":
+	case "mailbox_format", "mail_driver":
 		info.MailboxFormat = value
 	case "mail_attribute_dict":
 		info.MailAttributeDict = value

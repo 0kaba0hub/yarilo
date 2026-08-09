@@ -442,6 +442,7 @@ func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver
 			QuotaRules:    pc.QuotaRules,
 			QuotaOverFlag: pc.QuotaOverFlag,
 			VolatileDir:   pc.VolatileDir,
+			MailboxFormat: pc.MailboxFormat,
 			IndexDir:      pc.IndexDir,
 			ControlDir:    pc.ControlDir,
 			AltDir:        pc.AltDir,
@@ -987,6 +988,10 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	if err := mailbox.StampLocation(userInfo, res.MailLoc); err != nil {
 		slog.Warn("imap: mail_location parse failed; using global mailbox backend",
 			"user", userInfo.Username, "mail_location", res.MailLoc, "err", err)
+	}
+	if err := mailbox.StampDriver(userInfo, res.MailboxFormat); err != nil {
+		slog.Warn("imap: userdb named a storage driver we do not have; using the one from mail_location",
+			"user", userInfo.Username, "mail_driver", res.MailboxFormat, "err", err)
 	}
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {

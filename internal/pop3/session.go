@@ -598,6 +598,10 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 
 	// honour the per-user mail_location driver; otherwise dbox users are
 	// opened through the global maildir backend and see 0 messages
+	if err := mailbox.StampDriver(userInfo, res.MailboxFormat); err != nil {
+		slog.Warn("pop3: userdb named a storage driver we do not have; using the one from mail_location",
+			"user", userInfo.Username, "mail_driver", res.MailboxFormat, "err", err)
+	}
 	if err := mailbox.StampLocation(userInfo, res.MailLoc); err != nil {
 		slog.Warn("pop3: mail_location parse failed; using global mailbox backend",
 			"user", userInfo.Username, "mail_location", res.MailLoc, "err", err)

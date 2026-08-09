@@ -89,3 +89,18 @@ func TestExplicitFieldWinsOverTheModifierInBothSpellings(t *testing.T) {
 		}
 	}
 }
+
+// mailbox_format was parsed and carried and then used by nothing: a userdb
+// could say mdbox and get maildir, silently. It selects the driver now, and
+// mail_driver is the same field under the reference's name for it.
+func TestDriverFieldIsAcceptedUnderBothNames(t *testing.T) {
+	for _, key := range []string{"mailbox_format", "mail_driver"} {
+		var info UserInfo
+		if err := AssignField(&info, key, "mdbox"); err != nil {
+			t.Fatalf("AssignField(%q): %v", key, err)
+		}
+		if info.MailboxFormat != "mdbox" {
+			t.Errorf("%s=mdbox landed as %q", key, info.MailboxFormat)
+		}
+	}
+}
