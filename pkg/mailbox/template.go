@@ -47,6 +47,16 @@ func expandTemplate(tmpl string, vars TemplateVars, keepHome bool) (string, erro
 	if tmpl == "" {
 		return "", nil
 	}
+	// "~" is the home directory, the same value %h and %{home} name. It is a
+	// third spelling of one thing, so it belongs here rather than in a separate
+	// pass that half the call sites remember to run.
+	if !keepHome {
+		if tmpl == "~" {
+			tmpl = vars.Home
+		} else if strings.HasPrefix(tmpl, "~/") {
+			tmpl = vars.Home + tmpl[1:]
+		}
+	}
 	local, domain := splitUser(vars.User)
 	var b strings.Builder
 	b.Grow(len(tmpl))

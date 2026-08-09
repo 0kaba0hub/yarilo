@@ -140,3 +140,30 @@ func TestValidateTemplateAcceptsWhatWeShip(t *testing.T) {
 		}
 	}
 }
+
+// "~" is a third spelling of the home directory, alongside %h and %{home}. All
+// three have to produce the same path, or a config that uses one convention
+// silently builds a different tree than one that uses another.
+func TestTildeIsTheHomeVariable(t *testing.T) {
+	vars := TemplateVars{User: "alice@example.com", Home: "/srv/mail/alice"}
+	tests := []struct {
+		tmpl string
+		want string
+	}{
+		{"~", "/srv/mail/alice"},
+		{"~/index", "/srv/mail/alice/index"},
+		{"%h/index", "/srv/mail/alice/index"},
+		{"%{home}/index", "/srv/mail/alice/index"},
+		{"~/index/%{user | domain}", "/srv/mail/alice/index/example.com"},
+		{"/var/~/index", "/var/~/index"}, // only a leading ~ is the home
+	}
+	for _, tc := range tests {
+		got, err := ExpandTemplate(tc.tmpl, vars)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.tmpl, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s -> %q, want %q", tc.tmpl, got, tc.want)
+		}
+	}
+}
