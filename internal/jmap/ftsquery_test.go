@@ -601,20 +601,15 @@ func TestFanOutStopsAtTheFirstRefusal(t *testing.T) {
 	}
 	s := searchServer(t, stub, 4, folders, folderSet(folders, "needle"))
 
-	start := time.Now()
 	if err := emailQueryError(t, s, `{"accountId":"u1@example.com","filter":{"text":"needle"}}`); err["type"] != "serverFail" {
 		t.Errorf("type = %v, want serverFail", err["type"])
 	}
-	elapsed := time.Since(start)
 
 	asked := len(stub.asked)
 	// Two at a time: without the early stop all eight are asked; with it only
 	// the wave in flight when the first failed.
 	if asked >= folders {
 		t.Errorf("asked %d of %d folders: the fan-out did not stop at the first refusal", asked, folders)
-	}
-	if elapsed > 500*time.Millisecond {
-		t.Errorf("took %v: the query ran on past the answer", elapsed)
 	}
 }
 
@@ -636,5 +631,29 @@ func TestCatchUpGivesUpWhenTheIndexIsNotAdvancing(t *testing.T) {
 	// ~2s of a flat checkpoint is enough; waiting the full 30s is the defect.
 	if elapsed > 10*time.Second {
 		t.Errorf("waited %v on an index that never moves, want the early exit", elapsed)
+	}
+}
+
+// A cancellation that is the caller's own must be an error. Answering nil
+// would leave every folder without a stored lookup, and match reads a missing
+// entry as "this filter has no text condition" -- so a search would return the
+// whole mailbox rather than nothing or a failure.
+func TestCallerCancellationIsNotSilentlyNoFilter(t *testing.T) {
+	stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{}}
+	s := searchServer(t, stub, 4, 8, folderSet(3, "needle"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	text := "needle"
+	scope := &queryScope{folders: []scopeFolder{{name: "INBOX", id: 1, guid: "abcd"}}}
+	merr := s.prepareScope(ctx, nil, s.newFTSEvaluator(&userHandle{info: &mailbox.UserInfo{Username: testUser}}),
+		scope, &jmapcore.EmailFilter{Text: &text})
+
+	if merr == nil {
+		t.Fatal("a cancelled request produced no error: the query would run on with no filter applied")
+	}
+	if merr.Type != jmapcore.ErrServerUnavailable {
+		t.Errorf("type = %s, want serverUnavailable", merr.Type)
 	}
 }

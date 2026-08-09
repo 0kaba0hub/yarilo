@@ -505,7 +505,12 @@ func (s *Server) prepareScope(ctx context.Context, h *userHandle, eval filterEva
 		}
 		return queryPrepareError(scope.folders[i].name, err)
 	}
-	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+	// Any cancellation, including a plain one. Reaching here means no folder
+	// reported a real failure, so a cancelled context is the caller's own --
+	// and answering it with nil would leave every folder without a stored
+	// lookup, which match reads as "this filter has no text condition" and
+	// passes every message. A search would answer with the whole mailbox.
+	if err := ctx.Err(); err != nil {
 		return &jmapcore.MethodError{Type: jmapcore.ErrServerUnavailable, Description: err.Error()}
 	}
 	return nil

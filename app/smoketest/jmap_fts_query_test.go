@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/yarilomail/yarilo/internal/fts/language"
 )
 
 // ftsQueryStub answers Email/query from hits(text) and Email/get from
@@ -185,7 +187,10 @@ func TestJMAPFTSQueryRefusesTheWrongAnswers(t *testing.T) {
 // markers sharing a longer prefix collapse to one term. That is what made the
 // gate report a hit for a marker nobody ever delivered (#1213).
 func TestProbeMarkersSurviveTokenisation(t *testing.T) {
-	const tokenMaxLen = 30 // language.DefaultTokenMaxLen
+	// The engine's own constant, not a copy: it is configurable, and a copy
+	// would keep this test green while a lower cap merged the markers back
+	// into one term -- the silence this whole check exists against.
+	tokenMaxLen := language.DefaultTokenMaxLen
 
 	marker, absent, _ := ftsProbeMarkers()
 	for _, m := range []string{marker, absent} {
