@@ -16,7 +16,7 @@ import (
 var (
 	saveSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "mailbox_save_seconds",
-		Help:    "Time to store one message, whole, by driver.",
+		Help:    "Time to store one message, whole, by driver. Failures are included: a save that fails is a cost the storage paid, and it reports fewer parts than a successful one -- so a remainder computed over a window with failures in it is larger than the unnamed cost.",
 		Buckets: prometheus.ExponentialBuckets(0.00001, 4, 11), // 10us .. ~10s
 	}, []string{"driver"})
 
@@ -36,12 +36,4 @@ func ObserveSave(driver string, d time.Duration) {
 // have a given step simply never reports it.
 func ObserveSavePart(driver, part string, d time.Duration) {
 	savePartSeconds.WithLabelValues(driver, part).Observe(d.Seconds())
-}
-
-// TimeSavePart runs fn and records how long it took.
-func TimeSavePart(driver, part string, fn func() error) error {
-	start := time.Now()
-	err := fn()
-	ObserveSavePart(driver, part, time.Since(start))
-	return err
 }

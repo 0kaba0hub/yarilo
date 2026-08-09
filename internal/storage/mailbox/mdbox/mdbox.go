@@ -477,6 +477,10 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 	return entries, nil
 }
 
+// driverName labels this driver in the metrics shared with the others: the
+// question a save timing answers is comparative.
+const driverName = "mdbox"
+
 // Save writes the message body into the user-wide multi-message store and
 // records its location in the mdboxmap. Returns the assigned map_uid as a
 // decimal string; the caller stores it in MessageMeta.Filename.
@@ -494,10 +498,6 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 // The folder-level lock is not taken here; concurrent Save peers are serialised
 // by the map X lock alone. The uid parameter (per-folder UID from the external
 // fileindex) is ignored: the filename is the map_uid.
-// driverName labels this driver in the metrics shared with the others: the
-// question a save timing answers is comparative.
-const driverName = "mdbox"
-
 func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string, guid [16]byte) (string, uint32, [16]byte, error) {
 	var noGUID [16]byte
 	whole := time.Now()
