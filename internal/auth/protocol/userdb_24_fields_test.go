@@ -19,6 +19,10 @@ func TestUserdbAcceptsBothSpellingsOfThePathFields(t *testing.T) {
 		{"2.4 index field", "mail_index_path", "/idx/alice", func(u *UserInfo) string { return u.IndexDir }},
 		{"our volatile field", "volatile_dir", "/tmp/v/alice", func(u *UserInfo) string { return u.VolatileDir }},
 		{"2.4 volatile field", "mail_volatile_path", "/tmp/v/alice", func(u *UserInfo) string { return u.VolatileDir }},
+		{"our control field", "control_dir", "/ctl/alice", func(u *UserInfo) string { return u.ControlDir }},
+		{"2.4 control field", "mail_control_path", "/ctl/alice", func(u *UserInfo) string { return u.ControlDir }},
+		{"our alt field", "alt_dir", "/cold/alice", func(u *UserInfo) string { return u.AltDir }},
+		{"2.4 alt field", "mail_alt_path", "/cold/alice", func(u *UserInfo) string { return u.AltDir }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -38,12 +42,17 @@ func TestUserdbAcceptsBothSpellingsOfThePathFields(t *testing.T) {
 func TestMailLocationModifiersMatchTheFields(t *testing.T) {
 	var viaMods UserInfo
 	if err := AssignField(&viaMods, "mail_location",
-		"maildir:/srv/alice/Maildir:INDEX=/idx/alice:VOLATILEDIR=/tmp/v/alice"); err != nil {
+		"maildir:/srv/alice/Maildir:INDEX=/idx/alice:VOLATILEDIR=/tmp/v/alice:CONTROL=/ctl/alice:ALT=/cold/alice"); err != nil {
 		t.Fatalf("mail_location: %v", err)
 	}
 
 	var viaFields UserInfo
-	for k, v := range map[string]string{"mail_index_path": "/idx/alice", "mail_volatile_path": "/tmp/v/alice"} {
+	for k, v := range map[string]string{
+		"mail_index_path":    "/idx/alice",
+		"mail_volatile_path": "/tmp/v/alice",
+		"mail_control_path":  "/ctl/alice",
+		"mail_alt_path":      "/cold/alice",
+	} {
 		if err := AssignField(&viaFields, k, v); err != nil {
 			t.Fatalf("AssignField(%q): %v", k, err)
 		}
@@ -54,6 +63,12 @@ func TestMailLocationModifiersMatchTheFields(t *testing.T) {
 	}
 	if viaMods.VolatileDir != viaFields.VolatileDir {
 		t.Errorf("VOLATILEDIR= gave %q, mail_volatile_path gave %q", viaMods.VolatileDir, viaFields.VolatileDir)
+	}
+	if viaMods.ControlDir != viaFields.ControlDir {
+		t.Errorf("CONTROL= gave %q, mail_control_path gave %q", viaMods.ControlDir, viaFields.ControlDir)
+	}
+	if viaMods.AltDir != viaFields.AltDir {
+		t.Errorf("ALT= gave %q, mail_alt_path gave %q", viaMods.AltDir, viaFields.AltDir)
 	}
 }
 
