@@ -10,43 +10,40 @@ import (
 // never asked for (#1197). And -require-all is what makes the report
 // load-bearing -- without it the honest line lands in output nobody reads.
 func TestRunChecksReportsSkipsAndHonoursRequireAll(t *testing.T) {
-	ran := map[string]bool{}
-	newSet := func() []check {
-		return []check{
-			{name: "configured ok", fn: func() error { ran["ok"] = true; return nil }},
-			{name: "configured failing", fn: func() error { ran["bad"] = true; return errors.New("boom") }},
-			{name: "not configured", skip: "needs -envelope-user"},
+	assert := func(t *testing.T, got summary, want summary) {
+		t.Helper()
+		if got != want {
+			t.Errorf("summary = %+v, want %+v", got, want)
 		}
 	}
 
-	t.Run("a skip is not a pass and does not run", func(t *testing.T) {
-		ran = map[string]bool{}
-		if failed := runChecks(newSet(), false); !failed {
-			t.Error("a failing check did not fail the run")
+	t.Run("a skip is reported, is not a pass, and does not run", func(t *testing.T) {
+		ran := false
+		// The skipped item carries an fn that would record its own execution,
+		// so "did not run" is a claim the case can fail.
+		set := []check{
+			{name: "configured ok", fn: func() error { return nil }},
+			{name: "configured failing", fn: func() error { return errors.New("boom") }},
+			{name: "not configured", skip: "needs -envelope-user", fn: func() error { ran = true; return nil }},
 		}
-		if ran["skip"] {
+		assert(t, runChecks(set, false), summary{total: 3, passed: 1, failed: 1, skipped: 1})
+		if ran {
 			t.Error("a skipped check was executed")
 		}
 	})
 
 	t.Run("a skip alone does not fail the run", func(t *testing.T) {
 		only := []check{{name: "not configured", skip: "needs -fts-user"}}
-		if failed := runChecks(only, false); failed {
-			t.Error("a skipped check failed the run without -require-all")
-		}
+		assert(t, runChecks(only, false), summary{total: 1, passed: 0, failed: 0, skipped: 1})
 	})
 
 	t.Run("require-all turns a skip into a failure", func(t *testing.T) {
 		only := []check{{name: "not configured", skip: "needs -fts-user"}}
-		if failed := runChecks(only, true); !failed {
-			t.Error("-require-all did not fail on an unconfigured check")
-		}
+		assert(t, runChecks(only, true), summary{total: 1, passed: 0, failed: 1, skipped: 1})
 	})
 
 	t.Run("a fully configured green run still passes under require-all", func(t *testing.T) {
 		green := []check{{name: "configured ok", fn: func() error { return nil }}}
-		if failed := runChecks(green, true); failed {
-			t.Error("-require-all failed a run with nothing skipped")
-		}
+		assert(t, runChecks(green, true), summary{total: 1, passed: 1, failed: 0, skipped: 0})
 	})
 }

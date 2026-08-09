@@ -89,13 +89,19 @@ var (
 	flagDirectorAPIToken = flag.String("director-api-token", "", "director admin API bearer token (defaults to env DIRECTOR_API_TOKEN / YARILO_ADMIN_TOKEN)")
 )
 
-// check is one gate item. fn == nil means the deployment did not configure
-// it: the item stays in the list so the summary describes the intended gate,
-// with skip naming the flag that would enable it (#1197).
+// check is one gate item. A non-empty skip means the deployment did not
+// configure it: the item stays in the list so the summary describes the
+// intended gate, with skip naming the flag that would enable it (#1197).
 type check struct {
 	name string
 	fn   func() error
 	skip string
+}
+
+// summary is the reported gate. Returned rather than only logged so the
+// counts are assertable.
+type summary struct {
+	total, passed, failed, skipped int
 }
 
 type result struct {
@@ -183,23 +189,26 @@ func main() {
 	want(jmap, "jmap Mailbox/query + back-referenced get", "needs -jmap", checkJMAPMailboxQuery)
 	want(jmap, "jmap Email/query -> Email/get -> download", "needs -jmap", checkJMAPEmailDiscovery)
 	want(jmap, "jmap download refuses another account's blob", "needs -jmap", checkJMAPDownloadIsolation)
+	// Gated on credentials, not on cost: components.jmap ships disabled, so a
+	// deployment that never enabled JMAP would fail smoke over a service it
+	// does not run.
 	want(jmap && *flagJMAPUser != "", "jmap header:* forms, headers, projection and property validation",
 		"needs -jmap and -jmap-user", checkJMAPHeaderForms)
 
-	if failed := runChecks(checks, *flagRequireAll); failed {
+	if s := runChecks(checks, *flagRequireAll); s.failed > 0 {
 		os.Exit(1)
 	}
 }
 
 // runChecks runs the gate and reports it whole: what ran, what failed, and
-// what the deployment never asked for. Returns true when the run must fail.
-func runChecks(checks []check, requireAll bool) bool {
+// what the deployment never asked for.
+func runChecks(checks []check, requireAll bool) summary {
 	slog.Info("smoke: start", "total", len(checks))
 	var failures []result
 	var skipped []check
 	passed := 0
 	for i, c := range checks {
-		if c.fn == nil {
+		if c.skip != "" {
 			skipped = append(skipped, c)
 			if requireAll {
 				slog.Error("smoke: SKIP", "n", i+1, "total", len(checks), "check", c.name, "reason", c.skip)
@@ -233,9 +242,8 @@ func runChecks(checks []check, requireAll bool) bool {
 		for _, f := range failures {
 			fmt.Fprintf(os.Stderr, "  - %s: %v\n", f.name, f.err)
 		}
-		return true
 	}
-	return false
+	return summary{total: len(checks), passed: passed, failed: len(failures), skipped: len(skipped)}
 }
 
 // ---- IMAP login (passdb drivers) -----------------------------------------
