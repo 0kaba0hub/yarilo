@@ -152,6 +152,11 @@ storage:
   maildir_root: /var/mail/vhosts
   mail_home_template: "%d/%u"
   index: fileindex
+  ## On-disk format of the per-user mdbox map index. v2 is fixed-width and
+  ## sorted by map_uid, so an open parses nothing; v1 is the older format, kept
+  ## because it is what an older image can still read. Changing this converts
+  ## the map on the next open, either way, preserving every map_uid.
+  mdbox_map_format: v2
   ## maildir_sync_on_select: true          # reconcile the index with cur/ and new/ on SELECT so MDA/second-MUA deliveries appear without a rebuild (maildir only)
   ## dbox_reactive_rebuild: true           # sdbox: on a missing/corrupt message read, flag the folder and heal its index (expunge vanished records) on the next open
   ## mail_path: ""                            # mail storage root (empty = same as home); supports ~/ and %u/%d/%n/%h
@@ -159,7 +164,6 @@ storage:
   ## mdbox_alt_storage_path: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
   ## mdbox_rotate_size: 10M               # max size per m.<N> before rolling (e.g. 10M, 1G, or a raw byte count; 0 = default 10 MiB)
   ## mdbox_rotate_interval: 0             # roll the append file once older than this (e.g. 30s, 5m, 1h, or raw seconds; 0 = disabled)
-  ## mdbox_map_format: v2                 # on-disk map index format: v2 (fixed-width, cheap open) or v1 (older format, readable by an older binary); converted on next open either way
   ## mdbox_preallocate_space: false       # fallocate() new m.<N> files up front (Linux only)
   ## index_dir: "/var/yarilo-index/%d/%n"     # redirect per-folder index files to a faster disk
   ## control_dir: "/var/yarilo-control/%d/%n" # redirect yarilo-uidlist and subscriptions files

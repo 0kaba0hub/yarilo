@@ -90,6 +90,9 @@ namespaces:
 
 storage:
   volatileDir: "/tmp/yarilo-volatile/%d/%n"
+  ## On-disk format of the per-user mdbox map index. Declared, not inherited:
+  ## the value decides what an older image can still open.
+  mdbox_map_format: v2
   persistence:
     enabled: true
     accessMode: ReadWriteOnce

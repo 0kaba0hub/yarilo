@@ -620,6 +620,9 @@ data:
       {{- if $storage.max_concurrent_writes }}
       max_concurrent_writes: {{ $storage.max_concurrent_writes }}
       {{- end }}
+      {{- if $storage.mdbox_map_format }}
+      mdbox_map_format: {{ $storage.mdbox_map_format | quote }}
+      {{- end }}
       {{- if $storage.mdbox_rotate_size }}
       mdbox_rotate_size: {{ $storage.mdbox_rotate_size | quote }}
       {{- end }}
