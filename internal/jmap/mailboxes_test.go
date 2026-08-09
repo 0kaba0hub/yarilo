@@ -336,12 +336,32 @@ func keysOf(m map[string]map[string]any) []string {
 	return out
 }
 
-// testLocker is an in-process stand-in: the control-file reads only need the
-// lock to be taken and released, and a real one would need a server.
-type testLocker struct{ mu sync.Mutex }
+// testLocker is an in-process stand-in. It locks per resource and reports what
+// it holds, because that is the contract the code depends on: the mail index
+// re-enters MailboxKey while the message cache holds it, and the real client
+// answers HoldsResource rather than blocking on itself.
+type testLocker struct {
+	mu    sync.Mutex
+	holds map[string]int
+	// taken counts acquisitions, so a caller that opens per message instead of
+	// per folder is visible rather than merely slower.
+	taken int
+}
+
+func (l *testLocker) acquisitions() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.taken
+}
 
 func (l *testLocker) Lock(_ context.Context, resource, owner string, _ time.Duration) (locks.Lock, error) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.holds == nil {
+		l.holds = map[string]int{}
+	}
+	l.holds[resource]++
+	l.taken++
 	return locks.Lock{ID: resource, Resource: resource, Owner: owner}, nil
 }
 
@@ -349,8 +369,12 @@ func (l *testLocker) LockShared(ctx context.Context, resource, owner string, ttl
 	return l.Lock(ctx, resource, owner, ttl)
 }
 
-func (l *testLocker) Unlock(context.Context, string) error {
-	l.mu.Unlock()
+func (l *testLocker) Unlock(_ context.Context, id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.holds[id]--; l.holds[id] <= 0 {
+		delete(l.holds, id)
+	}
 	return nil
 }
 
@@ -361,7 +385,11 @@ func (l *testLocker) Subscribe(context.Context, string) (<-chan locks.Event, err
 }
 
 func (l *testLocker) Emit(context.Context, string, locks.EventType, string) error { return nil }
-func (l *testLocker) HoldsResource(string) bool                                   { return false }
+func (l *testLocker) HoldsResource(resource string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.holds[resource] > 0
+}
 
 func (l *testLocker) IncrementCounter(context.Context, string, int64) (int64, error) { return 0, nil }
 func (l *testLocker) Close() error                                                   { return nil }

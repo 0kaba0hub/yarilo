@@ -9,9 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-message"
 	_ "github.com/emersion/go-message/charset" // registers the charset decoders
 
+	"github.com/yarilomail/yarilo/internal/msgcache"
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -80,7 +82,7 @@ func (s *Server) findMessages(h *userHandle, want map[string]bool) (map[string]m
 // buildEmail renders one Email. Bodies are read only when a body value or a
 // structural property was actually asked for: an Email/get for envelope fields
 // must not touch the message at all.
-func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGetRequest, ceiling uint32) (jmapcore.Email, map[string]any, error) {
+func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGetRequest, ceiling uint32, caches *envelopeCaches) (jmapcore.Email, map[string]any, error) {
 	var headerFields map[string]any
 	m := ref.meta
 	email := jmapcore.Email{
@@ -98,6 +100,20 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 	// index-backed properties never opens the message.
 	if !req.NeedsMessage() {
 		return email, headerFields, nil
+	}
+
+	// A listing asks for subject and sender on every row, which the cached
+	// ENVELOPE answers whole -- so the commonest request opens no message at
+	// all (#1030). The same file is what IMAP FETCH reads and writes.
+	var cache *msgcache.Handle
+	if req.NeedsHeaders() {
+		cache = caches.folder(ref)
+	}
+	if req.EnvelopeSuffices() {
+		if env := cache.Envelope(m); env != nil {
+			fillFromEnvelope(&email, env)
+			return email, headerFields, nil
+		}
 	}
 
 	rc, err := h.box.Fetch(ref.folder, m.Filename, m.AltTier)
@@ -124,6 +140,9 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 		return email, headerFields, nil
 	}
 	fillHeaders(&email, entity.Header)
+	// Write back what the parse produced, so the next envelope-only request --
+	// here or over IMAP -- does not repeat it.
+	cache.StoreEnvelope(m, imapserver.ExtractEnvelope(entity.Header.Header))
 	// Header field properties are answered from the same parsed block, so a
 	// request naming only them costs no more than one naming subject.
 	headerFields = headerFieldValues(entity.Header, req.HeaderProperties())

@@ -68,6 +68,11 @@ func (s *Server) emailGet(_ context.Context, h *userHandle, accountID string, ar
 		List:      []any{},
 		NotFound:  []string{},
 	}
+	// One cache per folder for the whole call: opening per message would take
+	// the folder lock once per row of a listing, which is the request this
+	// exists to make cheap.
+	caches := s.newEnvelopeCaches(h)
+	defer caches.Close()
 	// Answer in the order the client asked, which is what it renders.
 	for _, id := range *req.IDs {
 		ref, ok := found[id]
@@ -75,7 +80,7 @@ func (s *Server) emailGet(_ context.Context, h *userHandle, accountID string, ar
 			resp.NotFound = append(resp.NotFound, id)
 			continue
 		}
-		email, headerFields, err := s.buildEmail(h, ref, req, s.opts.MaxBodyValueBytes)
+		email, headerFields, err := s.buildEmail(h, ref, req, s.opts.MaxBodyValueBytes, caches)
 		if err != nil {
 			// One unreadable message must not fail the whole call: the client
 			// asked for several and the rest are answerable.

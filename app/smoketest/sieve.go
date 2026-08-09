@@ -141,8 +141,18 @@ func msieveDeactivateAndDelete(name string) {
 
 // ── SMTP injector (via MX) ────────────────────────────────────────────────
 
+// deliveryGreeting is what the delivery listener expects. An LMTP server
+// answers EHLO with "500 5.5.1 This is a LMTP server, use LHLO", which is what
+// a deployment whose only ingress is yarilo-lmtp-login used to get (#1202).
+func deliveryGreeting() string {
+	if strings.EqualFold(*flagDeliveryProto, "lmtp") {
+		return "LHLO smoketest"
+	}
+	return "EHLO smoketest"
+}
+
 func lmtpSend(id, from, to, subject, body string) error {
-	addr := net.JoinHostPort(smtpHost(), *flagSieveSMTPPort)
+	addr := net.JoinHostPort(deliveryHost(), *flagDeliveryPort)
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
 	if err != nil {
 		return fmt.Errorf("connect %s: %w", addr, err)
@@ -172,8 +182,8 @@ func lmtpSend(id, from, to, subject, body string) error {
 	if _, err := readResp(); err != nil {
 		return fmt.Errorf("greeting: %w", err)
 	}
-	if resp, err := cmd("EHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
-		return fmt.Errorf("EHLO: %s %v", resp, err)
+	if resp, err := cmd(deliveryGreeting()); err != nil || !strings.HasPrefix(resp, "250") {
+		return fmt.Errorf("%s: %s %v", deliveryGreeting(), resp, err)
 	}
 	if resp, err := cmd("MAIL FROM:<" + from + ">"); err != nil || !strings.HasPrefix(resp, "250") {
 		return fmt.Errorf("MAIL FROM: %s %v", resp, err)
@@ -984,7 +994,7 @@ func checkSieve() error {
 // lmtpSendRaw injects a complete raw message (headers + body) via LMTP, for
 // tests that need custom headers (Content-Type multipart, X-Spam-Score, ...).
 func lmtpSendRaw(from, to, raw string) error {
-	addr := net.JoinHostPort(smtpHost(), *flagSieveSMTPPort)
+	addr := net.JoinHostPort(deliveryHost(), *flagDeliveryPort)
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
 	if err != nil {
 		return fmt.Errorf("connect %s: %w", addr, err)
@@ -1009,8 +1019,8 @@ func lmtpSendRaw(from, to, raw string) error {
 	if _, err := readResp(); err != nil {
 		return fmt.Errorf("greeting: %w", err)
 	}
-	if resp, err := cmd("EHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
-		return fmt.Errorf("EHLO: %s %v", resp, err)
+	if resp, err := cmd(deliveryGreeting()); err != nil || !strings.HasPrefix(resp, "250") {
+		return fmt.Errorf("%s: %s %v", deliveryGreeting(), resp, err)
 	}
 	if resp, err := cmd("MAIL FROM:<" + from + ">"); err != nil || !strings.HasPrefix(resp, "250") {
 		return fmt.Errorf("MAIL FROM: %s %v", resp, err)

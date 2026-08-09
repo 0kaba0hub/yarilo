@@ -128,6 +128,48 @@ var headerDerivedProperties = map[string]bool{
 	"sentAt":     true,
 }
 
+// envelopeDerivedProperties are the header-derived properties an IMAP ENVELOPE
+// carries, and so the ones a cached envelope can answer without the message.
+//
+// "references" and "headers" are absent because ENVELOPE does not hold them,
+// and header:* forms can name any field at all. See
+// https://doc.yarilomail.org/JMAP.
+var envelopeDerivedProperties = map[string]bool{
+	"messageId": true,
+	"inReplyTo": true,
+	"sender":    true,
+	"from":      true,
+	"to":        true,
+	"cc":        true,
+	"bcc":       true,
+	"replyTo":   true,
+	"subject":   true,
+	"sentAt":    true,
+}
+
+// EnvelopeSuffices reports whether every property this request names can be
+// answered from a cached envelope, so the message need not be opened.
+//
+// A request naming no properties gets the full default set and does not
+// qualify.
+func (r EmailGetRequest) EnvelopeSuffices() bool {
+	if r.Properties == nil || r.WantsBodyValues() {
+		return false
+	}
+	named := false
+	for _, p := range *r.Properties {
+		switch {
+		case envelopeDerivedProperties[p]:
+			named = true
+		case headerDerivedProperties[p] || IsHeaderProperty(p) || structureDerivedProperties[p]:
+			// A property the envelope does not carry: the message is opened
+			// anyway, and once open the parse answers everything.
+			return false
+		}
+	}
+	return named
+}
+
 // structureDerivedProperties need the MIME tree walked and its text parts
 // decoded.
 var structureDerivedProperties = map[string]bool{

@@ -301,8 +301,8 @@ func TestEmailGetDoesNotOpenTheMessageForIndexOnlyProperties(t *testing.T) {
 	}
 }
 
-// Naming an envelope property does open the message: those come from headers,
-// not from the index.
+// Naming an envelope property opens the message when nothing has cached its
+// envelope yet: the cache is an optimisation, not a second source of truth.
 func TestEmailGetOpensTheMessageForEnvelopeProperties(t *testing.T) {
 	s, id, home := storedServerWithMessageAt(t, richMessage, 0)
 	removeMailFiles(t, home)
