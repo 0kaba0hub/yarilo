@@ -1,9 +1,25 @@
 package mdboxmap
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+// ObserveReadPart records one part of serving a message body. Exported because
+// the read path lives in the driver while the histogram belongs with the rest
+// of the map's cost accounting.
+func ObserveReadPart(part string, d time.Duration) {
+	metricReadPart.WithLabelValues(part).Observe(d.Seconds())
+}
+
+// timedPart records how long one named part of a freshness check took.
+func timedPart(part string, fn func()) {
+	start := time.Now()
+	fn()
+	metricMapReloadPart.WithLabelValues(part).Observe(time.Since(start).Seconds())
+}
 
 // Metrics that attribute the cost of the mdbox map, which is the structure
 // maildir and sdbox do not have (#1205). Four numbers, chosen so that between
@@ -54,6 +70,22 @@ var (
 		Help: "Bytes of append log replayed into the in-memory map.",
 	})
 
+	// Freshness costs, split so the totals can be reconciled: two stats are
+	// paid even on the fast path, replaying a sibling's tail is a read, and
+	// rebuilding the UID index after it is neither. Whatever the total holds
+	// beyond the three is a fourth cost nobody has named yet, and the gap is
+	// the finding (#1205).
+	metricMapReloadSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "mdbox_map_reload_seconds",
+		Help:    "Time in one map freshness check, whole.",
+		Buckets: prometheus.ExponentialBuckets(0.00001, 4, 11), // 10us .. ~10s
+	})
+	metricMapReloadPart = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "mdbox_map_reload_part_seconds",
+		Help:    "Time in one part of a map freshness check: stat, replay or reindex.",
+		Buckets: prometheus.ExponentialBuckets(0.00001, 4, 11),
+	}, []string{"part"})
+
 	// Compaction happens inside whichever append trips the threshold, so its
 	// cost is a periodic stall rather than an even per-operation price.
 	metricMapFlush = promauto.NewCounter(prometheus.CounterOpts{
@@ -65,4 +97,18 @@ var (
 		Help:    "Duration of one full base-index rewrite.",
 		Buckets: prometheus.ExponentialBuckets(0.001, 4, 9), // 1ms .. ~65s
 	})
+
+	// What a read costs on this driver, which is where the remaining gap to
+	// maildir may live: maildir opens one file by name and is done, mdbox
+	// resolves a map entry, opens a packed file and seeks inside it. Named
+	// parts rather than one number, so the comparison says which step.
+	//
+	// lookup includes a freshness check when the map misses, so it overlaps
+	// with the reload histograms above by design -- they answer "what does
+	// staying fresh cost", this answers "what does a read cost".
+	metricReadPart = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "mdbox_read_part_seconds",
+		Help:    "Time in one part of serving a message body: lookup, open or body.",
+		Buckets: prometheus.ExponentialBuckets(0.00001, 4, 11),
+	}, []string{"part"})
 )

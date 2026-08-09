@@ -203,7 +203,12 @@ func (m *Map) createFresh() error {
 
 // reindex rebuilds the byMapUID lookup table and refreshes the cached header
 // counters from m.f. Caller must hold m.mu.
-func (m *Map) reindex() {
+// reindex rebuilds the UID index. Timed as its own part of a freshness check:
+// a replay of a few kilobytes still walks every record afterwards, and that
+// cost is invisible in the replay number.
+func (m *Map) reindex() { timedPart("reindex", m.reindexLocked) }
+
+func (m *Map) reindexLocked() {
 	idx := make(map[uint32]int, len(m.f.Records))
 	var maxUID, maxFileID uint32
 	for i, rec := range m.f.Records {
@@ -421,6 +426,10 @@ func (m *Map) BumpRebuildCount() error {
 // m.mu. Write callers additionally hold the cross-process lock; readers may call
 // it lock-free (a torn log tail is stopped cleanly by replayLogLocked).
 func (m *Map) reloadLocked() error {
+	whole := time.Now()
+	defer func() { metricMapReloadSeconds.Observe(time.Since(whole).Seconds()) }()
+
+	statStart := time.Now()
 	var baseMod time.Time
 	baseStat, baseErr := os.Stat(m.path)
 	if baseStat != nil {
@@ -430,6 +439,7 @@ func (m *Map) reloadLocked() error {
 	if st, _ := os.Stat(m.logPath()); st != nil {
 		logSize = st.Size()
 	}
+	metricMapReloadPart.WithLabelValues("stat").Observe(time.Since(statStart).Seconds())
 
 	// Fast path: nothing changed on disk.
 	if m.f != nil && baseMod.Equal(m.baseMod) && logSize == m.logSize {

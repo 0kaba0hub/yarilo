@@ -149,7 +149,17 @@ func encMapLogRec(txType mailindex.TxType, payload []byte) ([]byte, error) {
 // appends any records not already present in m.f. Returns the new applied byte
 // offset. A torn tail (crash mid-write) stops replay cleanly without consuming
 // the partial record. Caller holds m.mu; caller re-runs reindex() afterwards.
-func (m *Map) replayLogLocked(fromOffset int64) (int64, error) {
+// replayLogLocked reads the log from fromOffset and folds it in. Timed as the
+// "replay" part of a freshness check.
+func (m *Map) replayLogLocked(fromOffset int64) (off int64, err error) {
+	start := time.Now()
+	defer func() {
+		metricMapReloadPart.WithLabelValues("replay").Observe(time.Since(start).Seconds())
+	}()
+	return m.replayLogInnerLocked(fromOffset)
+}
+
+func (m *Map) replayLogInnerLocked(fromOffset int64) (int64, error) {
 	f, err := os.Open(m.logPath())
 	if errors.Is(err, os.ErrNotExist) {
 		return fromOffset, nil
