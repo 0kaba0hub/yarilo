@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yarilomail/yarilo/internal/storage/mailboxmetrics"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -289,17 +290,33 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 	return fn()
 }
 
+// driverName labels this driver in the timings shared with the others. This is
+// the baseline the packed drivers are compared against: a write to tmp and a
+// rename, with no steps of its own worth naming. The one part it does report
+// is the wait for a write slot, which every driver reports -- leaving it out
+// here would let the packed drivers subtract a queue the baseline still
+// carries.
+const driverName = "maildir"
+
 // Save streams r into tmp/ then atomically renames into cur/. uid comes from
 // UserIndex.AllocateUID; Maildir does not encode it in the filename, so the
 // uid→filename mapping is appended inline to the yarilo-uidlist sidecar for
 // later List() / Fetch() resolution.
 func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string, guid [16]byte) (string, uint32, [16]byte, error) {
+	whole := time.Now()
+	defer func() { mailboxmetrics.ObserveSave(driverName, time.Since(whole)) }()
+
 	var noGUID [16]byte
 	if err := u.checkName(folder); err != nil {
 		return "", 0, noGUID, err
 	}
 	if u.b.writeSem != nil {
+		// Waiting for a slot is somebody else's write, not this one's work.
+		// Timed on every driver, or the comparison tilts: one of them would
+		// subtract the queue from its own cost and the others would not.
+		sem := time.Now()
 		u.b.writeSem <- struct{}{}
+		mailboxmetrics.ObserveSavePart(driverName, "sem", time.Since(sem))
 		defer func() { <-u.b.writeSem }()
 	}
 	folderPath := u.folderPath(folder)

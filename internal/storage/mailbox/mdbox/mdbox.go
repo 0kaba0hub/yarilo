@@ -37,6 +37,7 @@ import (
 
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
+	"github.com/yarilomail/yarilo/internal/storage/mailboxmetrics"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -476,6 +477,10 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 	return entries, nil
 }
 
+// driverName labels this driver in the metrics shared with the others: the
+// question a save timing answers is comparative.
+const driverName = "mdbox"
+
 // Save writes the message body into the user-wide multi-message store and
 // records its location in the mdboxmap. Returns the assigned map_uid as a
 // decimal string; the caller stores it in MessageMeta.Filename.
@@ -495,14 +500,24 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 // fileindex) is ignored: the filename is the map_uid.
 func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string, guid [16]byte) (string, uint32, [16]byte, error) {
 	var noGUID [16]byte
+	whole := time.Now()
+	defer func() { mailboxmetrics.ObserveSave(driverName, time.Since(whole)) }()
+
 	if u.b.writeSem != nil {
+		// Waiting for a slot is somebody else's write, not this one's work,
+		// and left unmeasured it would look like storage being slow.
+		sem := time.Now()
 		u.b.writeSem <- struct{}{}
+		mailboxmetrics.ObserveSavePart(driverName, "sem", time.Since(sem))
 		defer func() { <-u.b.writeSem }()
 	}
+	tRead := time.Now()
 	body, err := readBodyCRLF(r)
+	mailboxmetrics.ObserveSavePart(driverName, "read", time.Since(tRead))
 	if err != nil {
 		return "", 0, noGUID, fmt.Errorf("mdbox/save: read body: %w", err)
 	}
+	tPrepare := time.Now()
 	if err := os.MkdirAll(u.folderPath(folder), 0o700); err != nil {
 		return "", 0, noGUID, fmt.Errorf("mdbox/save: mkdir folder: %w", err)
 	}
@@ -526,6 +541,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 		fileID = 1
 	}
 	curSize, _ := u.fileSize(u.mfilePath(fileID))
+	mailboxmetrics.ObserveSavePart(driverName, "prepare", time.Since(tPrepare))
 	// Roll to a fresh file_id when appending would exceed the size cap, or when
 	// the current append file is older than the rotate interval. The age check
 	// uses a persisted create-time (not a filesystem btime) and a rolling window
@@ -538,13 +554,18 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 		}
 	}
 	if rotate {
+		// Rotation is periodic, not per-message, so it is reported apart: an
+		// average that hides it reads as every save being slower than it is.
+		tRotate := time.Now()
 		fileID, err = m.AllocFileID()
+		mailboxmetrics.ObserveSavePart(driverName, "rotate", time.Since(tRotate))
 		if err != nil {
 			return "", 0, noGUID, fmt.Errorf("mdbox/save: alloc file id: %w", err)
 		}
 		curSize = 0
 	}
 
+	tOpen := time.Now()
 	f, err := os.OpenFile(u.mfilePath(fileID), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return "", 0, noGUID, fmt.Errorf("mdbox/save: open m.%d: %w", fileID, err)
@@ -558,6 +579,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 		return "", 0, noGUID, fmt.Errorf("mdbox/save: stat handle: %w", err)
 	}
 	offset := uint32(st.Size())
+	mailboxmetrics.ObserveSavePart(driverName, "open", time.Since(tOpen))
 	// The dbox file-header line is a file-level header: emit it only for the first
 	// record in a new physical file (offset 0). Appended records start directly at
 	// their message header, matching the dbox v2 layout.
@@ -576,15 +598,26 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 		}
 	}
 	recLen = uint32(len(record))
-	if _, err := f.Write(record); err != nil {
+	tWrite := time.Now()
+	_, werr := f.Write(record)
+	mailboxmetrics.ObserveSavePart(driverName, "write", time.Since(tWrite))
+	if werr != nil {
 		f.Close()
-		return "", 0, noGUID, fmt.Errorf("mdbox/save: write record: %w", err)
+		return "", 0, noGUID, fmt.Errorf("mdbox/save: write record: %w", werr)
 	}
-	if err := f.Close(); err != nil {
-		return "", 0, noGUID, fmt.Errorf("mdbox/save: close m.%d: %w", fileID, err)
+	// Close is its own part: on a networked filesystem this is where the
+	// write is actually paid for, and folding it into the write above would
+	// name the wrong step.
+	tClose := time.Now()
+	cerr := f.Close()
+	mailboxmetrics.ObserveSavePart(driverName, "close", time.Since(tClose))
+	if cerr != nil {
+		return "", 0, noGUID, fmt.Errorf("mdbox/save: close m.%d: %w", fileID, cerr)
 	}
 
+	tMap := time.Now()
 	mapUID, err := m.AppendRecord(fileID, offset, recLen, guid)
+	mailboxmetrics.ObserveSavePart(driverName, "map", time.Since(tMap))
 	if err != nil {
 		return "", 0, noGUID, fmt.Errorf("mdbox/save: map append: %w", err)
 	}
