@@ -290,10 +290,12 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 	return fn()
 }
 
-// driverName labels this driver in the timings shared with the others. The
-// whole is reported and the parts are not: this is the baseline the packed
-// drivers are compared against, and it has no steps worth naming -- a write
-// to tmp and a rename.
+// driverName labels this driver in the timings shared with the others. This is
+// the baseline the packed drivers are compared against: a write to tmp and a
+// rename, with no steps of its own worth naming. The one part it does report
+// is the wait for a write slot, which every driver reports -- leaving it out
+// here would let the packed drivers subtract a queue the baseline still
+// carries.
 const driverName = "maildir"
 
 // Save streams r into tmp/ then atomically renames into cur/. uid comes from
