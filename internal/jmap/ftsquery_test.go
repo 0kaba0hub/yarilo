@@ -1,6 +1,7 @@
 package jmap
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -492,7 +493,7 @@ func TestFolderWithoutGUIDRefusesRatherThanSkips(t *testing.T) {
 	eval := s.newFTSEvaluator(&userHandle{info: &mailbox.UserInfo{Username: testUser}})
 
 	text := "hello"
-	err := eval.prepare(nil, scopeFolder{name: "Broken", id: 7}, &jmapcore.EmailFilter{Text: &text})
+	err := eval.prepare(context.Background(), nil, scopeFolder{name: "Broken", id: 7}, &jmapcore.EmailFilter{Text: &text})
 	var noGUID *errFolderWithoutGUID
 	if !errors.As(err, &noGUID) {
 		t.Fatalf("prepare on a folder with no GUID returned %v, want the refusal", err)
@@ -579,4 +580,80 @@ func rawMessageServer(t *testing.T, stub *stubFTS, raw string) *Server {
 			Locker:      locker,
 		},
 	})
+}
+
+// One folder's refusal is the whole query's answer, so the rest must stop
+// instead of each taking a lock and a round trip for a result nobody will
+// read. On the sandbox this walked dozens of folders and finished eleven
+// seconds after the client had hung up (#1214).
+func TestFanOutStopsAtTheFirstRefusal(t *testing.T) {
+	const folders = 8
+	stub := &stubFTS{
+		statusUID: 1,
+		byFolder:  map[string]fts.Result{},
+		err:       errors.New("engine down"),
+		delay:     map[string]time.Duration{},
+	}
+	// Every lookup is slow, so a run that walks them all takes visibly longer
+	// than one that stops.
+	for name := range folderSet(folders, "needle") {
+		stub.delay[name] = 60 * time.Millisecond
+	}
+	s := searchServer(t, stub, 4, folders, folderSet(folders, "needle"))
+
+	if err := emailQueryError(t, s, `{"accountId":"u1@example.com","filter":{"text":"needle"}}`); err["type"] != "serverFail" {
+		t.Errorf("type = %v, want serverFail", err["type"])
+	}
+
+	asked := len(stub.asked)
+	// Two at a time: without the early stop all eight are asked; with it only
+	// the wave in flight when the first failed.
+	if asked >= folders {
+		t.Errorf("asked %d of %d folders: the fan-out did not stop at the first refusal", asked, folders)
+	}
+}
+
+// A wedged index never advances, so waiting out the budget only guarantees the
+// client is gone before the answer arrives. IMAP grew this exit in #629.
+func TestCatchUpGivesUpWhenTheIndexIsNotAdvancing(t *testing.T) {
+	stub := &stubFTS{byFolder: map[string]fts.Result{"INBOX": {Definite: []uint32{1}}}} // statusUID 0 forever
+	s := searchServer(t, stub, 4, 8, map[string]string{"INBOX": "needle here"})
+	s.opts.FTS.AddMissing = "priority"
+	s.opts.FTS.Timeout = 30 * time.Second // the budget a deployment actually runs with
+
+	start := time.Now()
+	err := emailQueryError(t, s, `{"accountId":"u1@example.com","filter":{"text":"needle"}}`)
+	elapsed := time.Since(start)
+
+	if err["type"] != "serverUnavailable" {
+		t.Errorf("type = %v, want serverUnavailable", err["type"])
+	}
+	// ~2s of a flat checkpoint is enough; waiting the full 30s is the defect.
+	if elapsed > 10*time.Second {
+		t.Errorf("waited %v on an index that never moves, want the early exit", elapsed)
+	}
+}
+
+// A cancellation that is the caller's own must be an error. Answering nil
+// would leave every folder without a stored lookup, and match reads a missing
+// entry as "this filter has no text condition" -- so a search would return the
+// whole mailbox rather than nothing or a failure.
+func TestCallerCancellationIsNotSilentlyNoFilter(t *testing.T) {
+	stub := &stubFTS{statusUID: 1, byFolder: map[string]fts.Result{}}
+	s := searchServer(t, stub, 4, 8, folderSet(3, "needle"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	text := "needle"
+	scope := &queryScope{folders: []scopeFolder{{name: "INBOX", id: 1, guid: "abcd"}}}
+	merr := s.prepareScope(ctx, nil, s.newFTSEvaluator(&userHandle{info: &mailbox.UserInfo{Username: testUser}}),
+		scope, &jmapcore.EmailFilter{Text: &text})
+
+	if merr == nil {
+		t.Fatal("a cancelled request produced no error: the query would run on with no filter applied")
+	}
+	if merr.Type != jmapcore.ErrServerUnavailable {
+		t.Errorf("type = %s, want serverUnavailable", merr.Type)
+	}
 }
