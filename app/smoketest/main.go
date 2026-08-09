@@ -246,6 +246,11 @@ func register() []check {
 	// Gated on credentials, not on cost: components.jmap ships disabled, so a
 	// deployment that never enabled JMAP would fail smoke over a service it
 	// does not run.
+	want("jmap", jmap && *flagJMAPUser != "" && *flagFTSUser != "",
+		"jmap Email/query over full-text search",
+		"needs -jmap, -jmap-user and -fts-user (the latter states that FTS is configured)", func() error {
+			return checkJMAPFTSQuery(*flagJMAPUser, *flagJMAPPass)
+		})
 	want("jmap", jmap && *flagJMAPUser != "", "jmap header:* forms, headers, projection and property validation",
 		"needs -jmap and -jmap-user", checkJMAPHeaderForms)
 
