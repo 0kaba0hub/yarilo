@@ -159,6 +159,7 @@ storage:
   ## mdbox_alt_storage_path: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
   ## mdbox_rotate_size: 10M               # max size per m.<N> before rolling (e.g. 10M, 1G, or a raw byte count; 0 = default 10 MiB)
   ## mdbox_rotate_interval: 0             # roll the append file once older than this (e.g. 30s, 5m, 1h, or raw seconds; 0 = disabled)
+  ## mdbox_map_format: v2                 # on-disk map index format: v2 (fixed-width, cheap open) or v1 (older format, readable by an older binary); converted on next open either way
   ## mdbox_preallocate_space: false       # fallocate() new m.<N> files up front (Linux only)
   ## index_dir: "/var/yarilo-index/%d/%n"     # redirect per-folder index files to a faster disk
   ## control_dir: "/var/yarilo-control/%d/%n" # redirect yarilo-uidlist and subscriptions files

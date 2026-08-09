@@ -77,12 +77,18 @@ func (m *Map) openLogLocked() (*os.File, error) {
 	if st == nil || st.Size() != 0 {
 		return f, nil
 	}
-	hdr := mailindex.NewLogHeader(m.indexID, m.lineage, uint32(time.Now().Unix()))
+	// v1 has nowhere in its base to record a lineage, so a log written under it
+	// carries the constant its readers have always expected.
+	seq := m.lineage
+	if m.format == FormatV1 {
+		seq = 1
+	}
+	hdr := mailindex.NewLogHeader(m.indexID, seq, uint32(time.Now().Unix()))
 	if err := hdr.Encode(f); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("mdboxmap/log: header: %w", err)
 	}
-	m.logLineage = m.lineage
+	m.logLineage = seq
 	m.logSize = mailindex.LogHeaderSize
 	return f, nil
 }
@@ -227,6 +233,12 @@ func (m *Map) replayFromPersistedLocked() (int64, error) {
 	}
 	if seq == 0 {
 		return 0, nil
+	}
+	if m.onDisk == FormatV1 {
+		// No lineage to compare against: v1 replays whole and lives with what
+		// that costs (see formatv1.go).
+		m.logLineage = seq
+		return m.replayLogLocked(mailindex.LogHeaderSize)
 	}
 	var from int64
 	switch seq {

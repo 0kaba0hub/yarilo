@@ -31,6 +31,12 @@ type Map struct {
 	st     store
 	loaded bool
 
+	// format is the base format this deployment writes (mdbox_map_format);
+	// onDisk is the format the file actually carries. They differ only until the
+	// next open converts one into the other.
+	format Format
+	onDisk Format
+
 	// nextMapUID is the next UID an append would assign. Tracked explicitly so
 	// it can be published back to callers at allocation time, not after the next
 	// base rewrite.
@@ -84,8 +90,29 @@ type Map struct {
 	inReload bool
 }
 
+// Format names an on-disk base-index format.
+type Format string
+
+const (
+	// FormatV2 is the fixed-width base: constant-time record addressing, binary
+	// search over the bytes, and the log bookkeeping that makes a freshness
+	// check cheap and a crash between base write and log removal survivable.
+	FormatV2 Format = "v2"
+	// FormatV1 is the mailindex-backed base. Selectable so a deployment can keep
+	// its maps readable by an older binary; see formatv1.go for what it gives up.
+	FormatV1 Format = "v1"
+)
+
 // Option configures Map construction.
 type Option func(*Map)
+
+// WithFormat selects the base format this handle writes (mdbox_map_format). A
+// base already on disk in the other format is converted on open, in whichever
+// direction the setting asks for. Anything but the two known formats is a
+// wiring error and is reported at open.
+func WithFormat(f Format) Option {
+	return func(m *Map) { m.format = f }
+}
 
 // WithLocker wires a yarilo-locks client. A nil Locker leaves only the
 // in-process Mutex as the barrier: never safe in k8s production, unit tests
@@ -126,9 +153,16 @@ func Open(dir, username string, opts ...Option) (*Map, error) {
 	m := &Map{
 		path:     filepath.Join(dir, MapIndexFileName),
 		username: username,
+		format:   FormatV2,
 	}
 	for _, opt := range opts {
 		opt(m)
+	}
+	if m.format == "" {
+		m.format = FormatV2
+	}
+	if m.format != FormatV2 && m.format != FormatV1 {
+		return nil, fmt.Errorf("mdboxmap/open: unknown map format %q, want %q or %q", m.format, FormatV2, FormatV1)
 	}
 	if m.owner == "" {
 		proc := "yarilo"
@@ -184,13 +218,13 @@ func (m *Map) loadOrInit() error {
 	tBase := time.Now()
 	err := m.readBaseLocked()
 	if isForeignBase(err) {
-		if cerr := m.convertV1Locked(); cerr != nil {
-			return cerr
-		}
-		err = m.readBaseLocked()
+		err = m.readBaseV1Locked()
 	}
 	metricMapOpenPart.WithLabelValues("base").Observe(time.Since(tBase).Seconds())
 	if err != nil {
+		return err
+	}
+	if err := m.convertToConfiguredLocked(); err != nil {
 		return err
 	}
 
@@ -224,6 +258,7 @@ func (m *Map) readBaseLocked() error {
 	}
 	m.st.recs = data[baseHeaderLen:want]
 	m.loaded = true
+	m.onDisk = FormatV2
 	m.applyHeaderLocked(h)
 	if st, serr := os.Stat(m.path); serr == nil {
 		m.baseInfo = st
@@ -281,6 +316,9 @@ func (m *Map) createFresh() error {
 // writeBaseLocked rewrites the whole base atomically (.tmp + rename), so a
 // reader either sees the previous file or the new one, never a half-written mix.
 func (m *Map) writeBaseLocked() error {
+	if m.format == FormatV1 {
+		return m.writeBaseV1Locked()
+	}
 	tmp := m.path + ".tmp"
 	buf := make([]byte, 0, baseHeaderLen+len(m.st.recs))
 	buf = append(buf, encodeBaseHeader(m.headerLocked())...)
@@ -292,6 +330,7 @@ func (m *Map) writeBaseLocked() error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("mdboxmap/write: rename: %w", err)
 	}
+	m.onDisk = FormatV2
 	return nil
 }
 
@@ -562,7 +601,7 @@ func (m *Map) reloadLocked() error {
 		if baseErr != nil {
 			return fmt.Errorf("mdboxmap/reload: %w", baseErr)
 		}
-		if m.loaded {
+		if m.loaded && m.onDisk == FormatV2 && m.format == FormatV2 {
 			h, herr := m.peekHeaderLocked()
 			if herr != nil {
 				return fmt.Errorf("mdboxmap/reload: %w", herr)
