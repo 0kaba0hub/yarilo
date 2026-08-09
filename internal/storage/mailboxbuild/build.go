@@ -50,7 +50,8 @@ func byDriver(driver string, sc config.StorageConfig, locker locks.Locker) mailb
 			mdbox.WithListUTF8(sc.MailboxListUTF8),
 			mdbox.WithRotateSize(uint32(quota.ParseSize(sc.MdboxRotateSize))),
 			mdbox.WithRotateInterval(time.Duration(ParseIntervalSeconds(sc.MdboxRotateInterval))*time.Second),
-			mdbox.WithPreallocate(sc.MdboxPreallocateSpace))
+			mdbox.WithPreallocate(sc.MdboxPreallocateSpace),
+			mdbox.WithMapFormat(sc.MdboxMapFormat))
 	default:
 		return maildir.New(maildir.WithLocker(locker), maildir.WithMaxConcurrentWrites(sc.MaxConcurrentWrites),
 			maildir.WithListUTF8(sc.MailboxListUTF8))

@@ -152,6 +152,11 @@ storage:
   maildir_root: /var/mail/vhosts
   mail_home_template: "%d/%u"
   index: fileindex
+  ## On-disk format of the per-user mdbox map index. v2 is fixed-width and
+  ## sorted by map_uid, so an open parses nothing; v1 is the older format, kept
+  ## because it is what an older image can still read. Changing this converts
+  ## the map on the next open, either way, preserving every map_uid.
+  mdbox_map_format: v2
   ## maildir_sync_on_select: true          # reconcile the index with cur/ and new/ on SELECT so MDA/second-MUA deliveries appear without a rebuild (maildir only)
   ## dbox_reactive_rebuild: true           # sdbox: on a missing/corrupt message read, flag the folder and heal its index (expunge vanished records) on the next open
   ## mail_path: ""                            # mail storage root (empty = same as home); supports ~/ and %u/%d/%n/%h

@@ -1870,6 +1870,16 @@ type StorageConfig struct {
 	// count. Empty or "0" disables age-based rotation (default). The cutoff is a
 	// rolling window (a file lives at least this long), not a clock-boundary snap.
 	MdboxRotateInterval string `koanf:"mdbox_rotate_interval"`
+	// MdboxMapFormat selects the on-disk format of the per-user map index:
+	// "v2" (default) or "v1". v2 is fixed-width and sorted by map_uid, so a
+	// lookup is offset arithmetic over the file bytes and an open parses
+	// nothing; it also records which append log it folded and how far, which is
+	// what keeps a crash between writing the base and dropping the log from
+	// applying a refcount delta twice. v1 is the older mailindex-backed format,
+	// kept selectable because the format on disk decides whether a rolled-back
+	// binary can still read the map. Changing the value converts the map on the
+	// next open, in either direction, preserving every map_uid.
+	MdboxMapFormat string `koanf:"mdbox_map_format"`
 	// MdboxPreallocateSpace reserves each new m.<N>'s space up front via
 	// fallocate() (Linux only) instead of growing it write-by-write. Default false.
 	MdboxPreallocateSpace bool `koanf:"mdbox_preallocate_space"`

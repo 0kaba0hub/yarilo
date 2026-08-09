@@ -77,6 +77,10 @@ type Backend struct {
 	// rotateSize is the per-m.<N> size cap before Save rolls to a fresh file_id
 	// (mdbox_rotate_size). 0 selects defaultRotateSize (10 MiB default).
 	rotateSize uint32
+
+	// mapFormat is the on-disk map index format this deployment writes
+	// (mdbox_map_format). Empty selects the package default.
+	mapFormat mdboxmap.Format
 	// rotateInterval rolls the append file once it is older than this, regardless
 	// of size (mdbox_rotate_interval). 0 disables age-based rotation (the default).
 	rotateInterval time.Duration
@@ -130,6 +134,18 @@ func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
 // WithRotateSize sets the per-m.<N> size cap (mdbox_rotate_size) before Save rolls
 // to a fresh file_id. 0 selects the default (10 MiB).
 func WithRotateSize(n uint32) Option { return func(b *Backend) { b.rotateSize = n } }
+
+// WithMapFormat selects the on-disk map index format (mdbox_map_format). An
+// empty value keeps the default; an unknown one is reported when the map is
+// opened rather than silently falling back, because the value names how the
+// bytes that locate every message are written.
+func WithMapFormat(s string) Option {
+	return func(b *Backend) {
+		if s != "" {
+			b.mapFormat = mdboxmap.Format(s)
+		}
+	}
+}
 
 // WithRotateInterval rolls the append file once it is older than d
 // (mdbox_rotate_interval), independent of size. 0 disables age-based rotation.
@@ -304,7 +320,7 @@ func (u *userMailbox) openMap() (*mdboxmap.Map, error) {
 	}
 	m, err := mdboxmap.Open(u.mapStoragePath(), u.username,
 		mdboxmap.WithLocker(u.b.locker), mdboxmap.WithOwner(u.owner),
-		mdboxmap.WithRotateSize(u.b.rotateSize))
+		mdboxmap.WithRotateSize(u.b.rotateSize), mdboxmap.WithFormat(u.b.mapFormat))
 	if err != nil {
 		return nil, err
 	}
