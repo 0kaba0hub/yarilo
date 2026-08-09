@@ -343,6 +343,15 @@ func keysOf(m map[string]map[string]any) []string {
 type testLocker struct {
 	mu    sync.Mutex
 	holds map[string]int
+	// taken counts acquisitions, so a caller that opens per message instead of
+	// per folder is visible rather than merely slower.
+	taken int
+}
+
+func (l *testLocker) acquisitions() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.taken
 }
 
 func (l *testLocker) Lock(_ context.Context, resource, owner string, _ time.Duration) (locks.Lock, error) {
@@ -352,6 +361,7 @@ func (l *testLocker) Lock(_ context.Context, resource, owner string, _ time.Dura
 		l.holds = map[string]int{}
 	}
 	l.holds[resource]++
+	l.taken++
 	return locks.Lock{ID: resource, Resource: resource, Owner: owner}, nil
 }
 

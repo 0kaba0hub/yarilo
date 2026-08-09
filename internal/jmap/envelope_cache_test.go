@@ -2,6 +2,7 @@ package jmap
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -106,5 +107,32 @@ func TestEmailGetDecodesAddressNamesFromTheCache(t *testing.T) {
 	}
 	if cached["sentAt"] != warm["sentAt"] {
 		t.Errorf("sentAt from cache = %v, from parse = %v", cached["sentAt"], warm["sentAt"])
+	}
+}
+
+// The cache is opened once per folder per call, not once per message: opening
+// per message takes the folder lock on every row of a listing, which is the
+// request this exists to make cheap.
+func TestEmailGetOpensTheCacheOncePerFolder(t *testing.T) {
+	s := storedServer(t)
+	locker := s.opts.Storage.Locker.(*testLocker)
+
+	ids := idsOf(t, emailQuery(t, s, `{"accountId":"u1@example.com"}`))
+	if len(ids) < 2 {
+		t.Fatalf("need at least two messages in one folder, got %v", ids)
+	}
+
+	props := `"properties":["id","subject","from"]`
+	before := locker.acquisitions()
+	emailGet(t, s, `{"accountId":"u1@example.com","ids":["`+ids[0]+`"],`+props+`}`)
+	one := locker.acquisitions() - before
+
+	before = locker.acquisitions()
+	emailGet(t, s, `{"accountId":"u1@example.com","ids":["`+strings.Join(ids, `","`)+`"],`+props+`}`)
+	many := locker.acquisitions() - before
+
+	if many != one {
+		t.Errorf("%d ids took %d lock acquisitions, one id took %d: the cost grows per message",
+			len(ids), many, one)
 	}
 }

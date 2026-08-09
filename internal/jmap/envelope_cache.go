@@ -10,18 +10,51 @@ import (
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
 )
 
-// openEnvelopeCache opens the folder's cache file. A nil *Handle is a working
-// value meaning "no cache", so every caller degrades to parsing rather than to
-// an error.
-func (s *Server) openEnvelopeCache(h *userHandle, ref messageRef) *msgcache.Handle {
-	if h.idx == nil || s.opts.Storage == nil {
+// envelopeCaches holds one open cache per folder for the length of one
+// Email/get. Opening per message would take the folder's lock -- a round trip
+// to the lock service -- once per row of a listing, and hold it again on every
+// close; the ids of one request also need not share a folder, hence a map
+// rather than a single handle.
+type envelopeCaches struct {
+	s    *Server
+	h    *userHandle
+	open map[uint64]*msgcache.Handle
+}
+
+func (s *Server) newEnvelopeCaches(h *userHandle) *envelopeCaches {
+	return &envelopeCaches{s: s, h: h, open: map[uint64]*msgcache.Handle{}}
+}
+
+// folder returns the folder's cache, opening it on first use. A nil *Handle is a
+// working value meaning "no cache", so every caller degrades to parsing rather
+// than to an error -- including the memoised nil of a folder that has none.
+func (c *envelopeCaches) folder(ref messageRef) *msgcache.Handle {
+	if c == nil {
 		return nil
 	}
-	return msgcache.Open(h.idx, ref.folderID, msgcache.Options{
-		Locker: s.opts.Storage.Locker,
-		User:   h.info.Username,
-		Folder: ref.folder,
-	})
+	if fc, ok := c.open[ref.folderID]; ok {
+		return fc
+	}
+	var fc *msgcache.Handle
+	if c.h.idx != nil && c.s.opts.Storage != nil {
+		fc = msgcache.Open(c.h.idx, ref.folderID, msgcache.Options{
+			Locker: c.s.opts.Storage.Locker,
+			User:   c.h.info.Username,
+			Folder: ref.folder,
+		})
+	}
+	c.open[ref.folderID] = fc
+	return fc
+}
+
+func (c *envelopeCaches) Close() {
+	if c == nil {
+		return
+	}
+	for _, fc := range c.open {
+		fc.Close()
+	}
+	clear(c.open)
 }
 
 // fillFromEnvelope answers the envelope-derived properties from a cached
@@ -31,6 +64,9 @@ func (s *Server) openEnvelopeCache(h *userHandle, ref messageRef) *msgcache.Hand
 // from the same header block, so the difference is only where the parse
 // happened. Fields ENVELOPE does not carry -- References, Headers -- stay
 // empty, and EnvelopeSuffices refuses a request that names them.
+//
+// Message ids go through messageIDs for the same reason as the parsed path:
+// JMAP carries them bare, without the angle brackets (§4.1.2.4).
 func fillFromEnvelope(email *jmapcore.Email, env *imaplib.Envelope) {
 	if s := env.Subject; s != "" {
 		email.Subject = &s
@@ -39,7 +75,7 @@ func fillFromEnvelope(email *jmapcore.Email, env *imaplib.Envelope) {
 		s := env.Date.UTC().Format(time.RFC3339)
 		email.SentAt = &s
 	}
-	email.MessageID = envMessageIDs(env.MessageID)
+	email.MessageID = messageIDs(env.MessageID)
 	email.InReplyTo = envInReplyTo(env.InReplyTo)
 	email.From = envAddresses(env.From)
 	email.Sender = envAddresses(env.Sender)
@@ -47,12 +83,6 @@ func fillFromEnvelope(email *jmapcore.Email, env *imaplib.Envelope) {
 	email.CC = envAddresses(env.Cc)
 	email.BCC = envAddresses(env.Bcc)
 	email.ReplyTo = envAddresses(env.ReplyTo)
-}
-
-// envMessageIDs mirrors messageIDs: JMAP carries bare ids without the angle
-// brackets (§4.1.2.4), and an absent header is null rather than an empty list.
-func envMessageIDs(v string) []string {
-	return messageIDs(v)
 }
 
 func envInReplyTo(ids []string) []string {

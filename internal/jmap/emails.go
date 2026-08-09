@@ -82,7 +82,7 @@ func (s *Server) findMessages(h *userHandle, want map[string]bool) (map[string]m
 // buildEmail renders one Email. Bodies are read only when a body value or a
 // structural property was actually asked for: an Email/get for envelope fields
 // must not touch the message at all.
-func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGetRequest, ceiling uint32) (jmapcore.Email, map[string]any, error) {
+func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGetRequest, ceiling uint32, caches *envelopeCaches) (jmapcore.Email, map[string]any, error) {
 	var headerFields map[string]any
 	m := ref.meta
 	email := jmapcore.Email{
@@ -107,8 +107,7 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 	// all (#1030). The same file is what IMAP FETCH reads and writes.
 	var cache *msgcache.Handle
 	if req.NeedsHeaders() {
-		cache = s.openEnvelopeCache(h, ref)
-		defer cache.Close()
+		cache = caches.folder(ref)
 	}
 	if req.EnvelopeSuffices() {
 		if env := cache.Envelope(m); env != nil {
