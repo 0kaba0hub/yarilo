@@ -9,9 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-message"
 	_ "github.com/emersion/go-message/charset" // registers the charset decoders
 
+	"github.com/yarilomail/yarilo/internal/msgcache"
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -100,6 +102,21 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 		return email, headerFields, nil
 	}
 
+	// A listing asks for subject and sender on every row, which the cached
+	// ENVELOPE answers whole -- so the commonest request opens no message at
+	// all (#1030). The same file is what IMAP FETCH reads and writes.
+	var cache *msgcache.Handle
+	if req.NeedsHeaders() {
+		cache = s.openEnvelopeCache(h, ref)
+		defer cache.Close()
+	}
+	if req.EnvelopeSuffices() {
+		if env := cache.Envelope(m); env != nil {
+			fillFromEnvelope(&email, env)
+			return email, headerFields, nil
+		}
+	}
+
 	rc, err := h.box.Fetch(ref.folder, m.Filename, m.AltTier)
 	if err != nil {
 		return email, headerFields, fmt.Errorf("jmap: fetch %s/%d: %w", ref.folder, m.UID, err)
@@ -124,6 +141,9 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 		return email, headerFields, nil
 	}
 	fillHeaders(&email, entity.Header)
+	// Write back what the parse produced, so the next envelope-only request --
+	// here or over IMAP -- does not repeat it.
+	cache.StoreEnvelope(m, imapserver.ExtractEnvelope(entity.Header.Header))
 	// Header field properties are answered from the same parsed block, so a
 	// request naming only them costs no more than one naming subject.
 	headerFields = headerFieldValues(entity.Header, req.HeaderProperties())
