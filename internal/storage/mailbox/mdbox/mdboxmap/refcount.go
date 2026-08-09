@@ -31,12 +31,13 @@ func (m *Map) UpdateRefcounts(mapUIDs []uint32, delta int16) error {
 		}
 		deltas := make([]mailindex.TxExtAtomicInc, 0, len(mapUIDs))
 		for _, uid := range mapUIDs {
-			idx, ok := m.byMapUID[uid]
+			i, ok := m.findLocked(uid)
 			if !ok {
 				return fmt.Errorf("mdboxmap/refcount: map_uid %d not found", uid)
 			}
-			rec := m.f.Records[idx]
-			rec.Ext[extRef] = encodeRefExt(clampRef(int32(decodeRefExt(rec.Ext[extRef])) + int32(delta)))
+			e := m.st.at(i)
+			e.RefCount = clampRef(int32(e.RefCount) + int32(delta))
+			m.st.setAt(i, e)
 			deltas = append(deltas, mailindex.TxExtAtomicInc{UID: uid, Diff: int32(delta)})
 		}
 		// Appended, not rewritten. Every save and every delete changes a
@@ -72,8 +73,9 @@ func (m *Map) SetRefcountsFromReferences(refs map[uint32]int) (int, error) {
 			return err
 		}
 		zeroed = 0
-		for _, rec := range m.f.Records {
-			n := refs[rec.UID]
+		for i, count := 0, m.st.count(); i < count; i++ {
+			e := m.st.at(i)
+			n := refs[e.UID]
 			if n < 0 {
 				n = 0
 			}
@@ -83,7 +85,8 @@ func (m *Map) SetRefcountsFromReferences(refs map[uint32]int) (int, error) {
 			if n == 0 {
 				zeroed++
 			}
-			rec.Ext[extRef] = encodeRefExt(uint16(n))
+			e.RefCount = uint16(n)
+			m.st.setAt(i, e)
 		}
 		return m.flushLocked()
 	})
@@ -101,7 +104,7 @@ func (m *Map) SetRefcountsFromReferences(refs map[uint32]int) (int, error) {
 func (m *Map) GetZeroRefFiles() ([]uint32, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.f == nil {
+	if !m.loaded {
 		return nil, nil
 	}
 	// Refcounts live in the log until it is compacted, and this answer decides
@@ -111,16 +114,11 @@ func (m *Map) GetZeroRefFiles() ([]uint32, error) {
 		return nil, fmt.Errorf("mdboxmap/zero-ref: %w", err)
 	}
 	seen := make(map[uint32]bool)
-	for _, rec := range m.f.Records {
-		if decodeRefExt(rec.Ext[extRef]) != 0 {
-			continue
+	m.st.each(func(e MapEntry) {
+		if e.RefCount == 0 {
+			seen[e.FileID] = true
 		}
-		fileID, _, _, err := decodeMapExt(rec.Ext[extMap])
-		if err != nil {
-			return nil, fmt.Errorf("mdboxmap/zero-ref scan uid=%d: %w", rec.UID, err)
-		}
-		seen[fileID] = true
-	}
+	})
 	out := make([]uint32, 0, len(seen))
 	for id := range seen {
 		out = append(out, id)
@@ -135,7 +133,7 @@ func (m *Map) GetZeroRefFiles() ([]uint32, error) {
 func (m *Map) RecordsInFile(fileID uint32) ([]MapEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.f == nil {
+	if !m.loaded {
 		return nil, nil
 	}
 	// Same reason as GetZeroRefFiles: purge copies forward what is referenced
@@ -144,15 +142,10 @@ func (m *Map) RecordsInFile(fileID uint32) ([]MapEntry, error) {
 		return nil, fmt.Errorf("mdboxmap/records-in-file: %w", err)
 	}
 	var out []MapEntry
-	for _, rec := range m.f.Records {
-		e, err := recordToEntry(rec)
-		if err != nil {
-			return nil, fmt.Errorf("mdboxmap/records-in-file: %w", err)
+	m.st.each(func(e MapEntry) {
+		if e.FileID == fileID {
+			out = append(out, e)
 		}
-		if e.FileID != fileID {
-			continue
-		}
-		out = append(out, e)
-	}
+	})
 	return out, nil
 }

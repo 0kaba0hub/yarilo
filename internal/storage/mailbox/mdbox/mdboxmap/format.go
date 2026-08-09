@@ -16,9 +16,10 @@ const (
 	LegacyMapIndexFileName = "dovecot.map.index"
 )
 
-// Extension names and on-disk sizes are pinned by the wire
-// spec (the internal docs). Renaming or resizing breaks the
-// in-place format the rest of the storage layer depends on.
+// Extension names and on-disk sizes are pinned by the wire spec (the
+// internal docs). They describe the append log's record layout, and the
+// v1 base the converter reads once; the v2 base carries the same fields
+// at fixed offsets instead (see formatv2.go).
 const (
 	// extMap holds {file_id, offset, size} per record.
 	extMap     = "map"

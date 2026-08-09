@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
 // lockRead takes the in-process map mutex and records the wait. A read needs no
@@ -22,36 +20,28 @@ func lockRead(mu *sync.Mutex) {
 // when the UID is not present. Reads under m.mu only — no
 // cross-process lock — the caller may see a brief stale view
 // when a sibling process appends concurrently, but never a torn
-// record (mailindex Recreate is atomic .tmp+rename).
+// record (the base is replaced atomically by .tmp+rename).
 func (m *Map) Lookup(mapUID uint32) (MapEntry, bool, error) {
 	lockRead(&m.mu)
 	defer m.mu.Unlock()
-	entry, ok, err := m.lookupLocked(mapUID)
-	if err != nil || ok {
-		return entry, ok, err
+	if e, ok := m.lookupLocked(mapUID); ok {
+		return e, true, nil
 	}
 	// Miss: a sibling process may have appended this map_uid after we cached the
 	// map. Refresh (incremental log replay) and retry before reporting absence.
 	if rerr := m.reloadLocked(); rerr != nil {
 		return MapEntry{}, false, rerr
 	}
-	return m.lookupLocked(mapUID)
+	e, ok := m.lookupLocked(mapUID)
+	return e, ok, nil
 }
 
-func (m *Map) lookupLocked(mapUID uint32) (MapEntry, bool, error) {
-	if m.byMapUID == nil {
-		return MapEntry{}, false, nil
-	}
-	idx, ok := m.byMapUID[mapUID]
+func (m *Map) lookupLocked(mapUID uint32) (MapEntry, bool) {
+	i, ok := m.findLocked(mapUID)
 	if !ok {
-		return MapEntry{}, false, nil
+		return MapEntry{}, false
 	}
-	rec := m.f.Records[idx]
-	entry, err := recordToEntry(rec)
-	if err != nil {
-		return MapEntry{}, false, err
-	}
-	return entry, true, nil
+	return m.st.at(i), true
 }
 
 // LookupMany resolves a batch of map_uids in a single lock hop.
@@ -63,20 +53,14 @@ func (m *Map) LookupMany(mapUIDs []uint32) ([]MapEntry, error) {
 	out := make([]MapEntry, len(mapUIDs))
 	refreshed := false
 	for i, uid := range mapUIDs {
-		e, ok, err := m.lookupLocked(uid)
-		if err != nil {
-			return nil, fmt.Errorf("mdboxmap/lookup uid=%d: %w", uid, err)
-		}
+		e, ok := m.lookupLocked(uid)
 		if !ok && !refreshed {
 			// Refresh once on the first miss to pick up a sibling's appends.
 			if rerr := m.reloadLocked(); rerr != nil {
 				return nil, fmt.Errorf("mdboxmap/lookup refresh: %w", rerr)
 			}
 			refreshed = true
-			e, ok, err = m.lookupLocked(uid)
-			if err != nil {
-				return nil, fmt.Errorf("mdboxmap/lookup uid=%d: %w", uid, err)
-			}
+			e, ok = m.lookupLocked(uid)
 		}
 		if ok {
 			out[i] = e
@@ -98,31 +82,10 @@ func (m *Map) LookupByGUID(guid [16]byte) (MapEntry, bool, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, rec := range m.f.Records {
-		if decodeGUIDExt(rec.Ext[extGUID]) == guid {
-			entry, err := recordToEntry(rec)
-			if err != nil {
-				return MapEntry{}, false, err
-			}
-			return entry, true, nil
+	for i, n := 0, m.st.count(); i < n; i++ {
+		if e := m.st.at(i); e.GUID == guid {
+			return e, true, nil
 		}
 	}
 	return MapEntry{}, false, nil
-}
-
-// recordToEntry unpacks a mailindex Record into the typed
-// MapEntry surfaced through the Map API.
-func recordToEntry(rec *mailindex.Record) (MapEntry, error) {
-	fileID, offset, size, err := decodeMapExt(rec.Ext[extMap])
-	if err != nil {
-		return MapEntry{}, fmt.Errorf("decode map ext: %w", err)
-	}
-	return MapEntry{
-		UID:      rec.UID,
-		FileID:   fileID,
-		Offset:   offset,
-		Size:     size,
-		RefCount: decodeRefExt(rec.Ext[extRef]),
-		GUID:     decodeGUIDExt(rec.Ext[extGUID]),
-	}, nil
 }

@@ -2,14 +2,14 @@
 // dbox map (on-disk file: `yarilo.map.index`). It is the
 // keystone of the mdbox storage model:
 //
-//   - one binary mailindex file shared by every folder in the
-//     user's mdbox tree
+//   - one binary file shared by every folder in the user's mdbox tree
 //   - each record describes one stored message:
-//     (file_id, offset, size) under the "map" extension
-//     plus a uint16 refcount under the "ref" extension
-//   - the mailindex Record.UID column is the message's "map_uid",
-//     a globally-unique handle that every folder-index references
-//   - the map header carries `highest_file_id` — the highest m.<N>
+//     (file_id, offset, size), a uint16 refcount and the message GUID
+//   - the record's UID column is the message's "map_uid", a
+//     globally-unique handle that every folder-index references. It
+//     exists nowhere else: no storage file carries it, so the map is
+//     not derivable from the messages on disk
+//   - the header carries `highest_file_id` — the highest m.<N>
 //     physical file ever allocated under this map
 //
 // The map is what makes IMAP COPY O(1) in mdbox: a copy writes
@@ -23,11 +23,21 @@
 //
 // Wire layout — see the internal docs for the byte-level spec:
 //
-//	header     standard mailindex header
-//	exts       "map" (12 B per-record, 4 B header for highest_file_id)
-//	           "ref" (2 B per-record, atomic-inc)
-//	records    Record{UID = map_uid, Ext["map"] = {file_id, offset, size},
-//	                  Ext["ref"] = refcount}
+//	header     64 B, fixed: magic, version, counters, and how far into
+//	           the append log the records below already reach
+//	records    36 B each, sorted by map_uid: {map_uid, file_id, offset,
+//	           size, refcount, guid}
+//
+// Fixed-width and sorted is what makes an open cheap: a record is
+// addressed by offset arithmetic and found by binary search over the
+// bytes, so there is nothing to parse and no lookup table to build.
+// The version byte is there to refuse, not to adapt — a base this
+// binary does not recognise is never guessed at, because the map
+// decides which bytes belong to which message and which file a purge
+// may unlink.
+//
+// The append log is a separate format and keeps its own: transactions
+// carry mailindex records under a layout fixed in this package.
 //
 // Locking model:
 //

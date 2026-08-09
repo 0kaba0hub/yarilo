@@ -15,7 +15,7 @@ func ObserveReadPart(part string, d time.Duration) {
 }
 
 // observePart records one named part of a freshness check -- and only when a
-// check is what is running. Replay and reindex are also reached from opening
+// check is what is running. Replay is also reached from opening
 // the map, where no whole is being timed: counting them there would let the
 // parts exceed the total, and the unnamed remainder between them is the whole
 // point of the split. A negative remainder says nothing.
@@ -88,7 +88,7 @@ var (
 	})
 	metricMapOpenPart = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "mdbox_map_open_part_seconds",
-		Help:    "Time in one part of opening the map: base, replay or reindex.",
+		Help:    "Time in one part of opening the map: base or replay.",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 11),
 	}, []string{"part"})
 
@@ -104,7 +104,7 @@ var (
 	})
 	metricMapReloadPart = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "mdbox_map_reload_part_seconds",
-		Help:    "Time in one part of a map freshness check: stat, replay or reindex.",
+		Help:    "Time in one part of a map freshness check: stat or replay.",
 		Buckets: prometheus.ExponentialBuckets(0.00001, 4, 11),
 	}, []string{"part"})
 
