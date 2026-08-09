@@ -30,7 +30,7 @@ image:
 logLevel: info
 
 storage:
-  volatileDir: "/tmp/yarilo-volatile/%d/%n"
+  volatile_dir: "/tmp/yarilo-volatile/%2.256Nu/%u"
   persistence:
     enabled: true
     accessMode: ReadWriteMany       # RWX so multiple session replicas share the store

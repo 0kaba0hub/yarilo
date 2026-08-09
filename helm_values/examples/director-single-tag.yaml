@@ -35,7 +35,7 @@ logLevel: info                      # info in prod; debug only when diagnosing
 
 # ---- Storage: shared NFS (RWX) for the tag's mailbox + index data ----------
 storage:
-  volatileDir: "/tmp/yarilo-volatile/%d/%n"
+  volatile_dir: "/tmp/yarilo-volatile/%2.256Nu/%u"
   persistence:
     enabled: true
     accessMode: ReadWriteMany       # RWX — every co-located pod mounts the shard

@@ -28,7 +28,7 @@ logLevel: debug                     # verbose is fine for dev
 
 # Single-node local storage (RWO — all pods must land on the same node):
 storage:
-  volatileDir: "/tmp/yarilo-volatile/%d/%n"
+  volatile_dir: "/tmp/yarilo-volatile/%2.256Nu/%u"
   persistence:
     enabled: true
     accessMode: ReadWriteOnce
