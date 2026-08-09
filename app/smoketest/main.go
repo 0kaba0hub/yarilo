@@ -195,14 +195,14 @@ func main() {
 	want(jmap && *flagJMAPUser != "", "jmap header:* forms, headers, projection and property validation",
 		"needs -jmap and -jmap-user", checkJMAPHeaderForms)
 
-	if s := runChecks(checks, *flagRequireAll); s.failed > 0 {
+	if s := runChecks(checks, *flagRequireAll, os.Stderr); s.failed > 0 {
 		os.Exit(1)
 	}
 }
 
 // runChecks runs the gate and reports it whole: what ran, what failed, and
 // what the deployment never asked for.
-func runChecks(checks []check, requireAll bool) summary {
+func runChecks(checks []check, requireAll bool, out io.Writer) summary {
 	slog.Info("smoke: start", "total", len(checks))
 	var failures []result
 	var skipped []check
@@ -231,16 +231,18 @@ func runChecks(checks []check, requireAll bool) summary {
 	// The whole intended gate, not the part that happened to be configured.
 	slog.Info("smoke: summary", "checks", len(checks), "passed", passed,
 		"failed", len(failures), "skipped", len(skipped))
-	if len(skipped) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%d smoke check(s) skipped:\n", len(skipped))
+	// Under -require-all a skip is already itemised as a failure; listing it
+	// twice reads as two distinct problems.
+	if len(skipped) > 0 && !requireAll {
+		fmt.Fprintf(out, "\n%d smoke check(s) skipped:\n", len(skipped))
 		for _, c := range skipped {
-			fmt.Fprintf(os.Stderr, "  - %s (%s)\n", c.name, c.skip)
+			fmt.Fprintf(out, "  - %s (%s)\n", c.name, c.skip)
 		}
 	}
 	if len(failures) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%d smoke check(s) failed:\n", len(failures))
+		fmt.Fprintf(out, "\n%d smoke check(s) failed:\n", len(failures))
 		for _, f := range failures {
-			fmt.Fprintf(os.Stderr, "  - %s: %v\n", f.name, f.err)
+			fmt.Fprintf(out, "  - %s: %v\n", f.name, f.err)
 		}
 	}
 	return summary{total: len(checks), passed: passed, failed: len(failures), skipped: len(skipped)}
