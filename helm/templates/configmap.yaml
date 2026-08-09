@@ -587,6 +587,9 @@ data:
     {{- end }}
 
     {{- $storage := .Values.storage }}
+    {{- if and $storage $storage.volatileDir }}
+    {{- fail "storage.volatileDir is not read by this chart; the key is storage.volatile_dir. Rename it — as written, the index tmp file keeps its fsync on the mail volume." }}
+    {{- end }}
     {{- if $storage }}
     storage:
       mailbox: {{ $storage.mailbox | quote }}

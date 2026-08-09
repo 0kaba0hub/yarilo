@@ -31,7 +31,7 @@ logLevel: info
 
 # Per-shard NFS RWX PV (overridden per release via --set storageClass):
 storage:
-  volatileDir: "/tmp/yarilo-volatile/%d/%n"
+  volatile_dir: "/tmp/yarilo-volatile/%2.256Nu/%u"
   persistence:
     enabled: true
     accessMode: ReadWriteMany
