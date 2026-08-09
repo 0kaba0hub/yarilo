@@ -1,6 +1,7 @@
 package mdboxmap
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -60,6 +61,48 @@ func (m *Map) appendLogLocked(recs []*mailindex.Record) error {
 	}
 	if st, err := os.Stat(m.logPath()); err == nil {
 		m.logSize = st.Size()
+	}
+	return nil
+}
+
+// appendRefcountLogLocked records refcount deltas as one EXT_ATOMIC_INC
+// transaction. Deltas, not absolute values: an absolute write is only safe
+// while every writer holds the map lock and has reloaded first, and a future
+// path that does neither would silently lose an update -- where a lost
+// decrement leaks a file and a lost increment lets purge delete a message that
+// is still referenced.
+//
+// The reference format applies the increment to the last EXT_INTRO'd
+// extension. This log introduces none, so the map replay applies it to the
+// refcount extension by convention; both sides live in this package.
+func (m *Map) appendRefcountLogLocked(deltas []mailindex.TxExtAtomicInc) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(m.logPath(), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("mdboxmap/log: open: %w", err)
+	}
+	defer f.Close()
+	if st, _ := f.Stat(); st != nil && st.Size() == 0 {
+		hdr := mailindex.NewLogHeader(m.f.Header.IndexID, 1, uint32(time.Now().Unix()))
+		if err := hdr.Encode(f); err != nil {
+			return fmt.Errorf("mdboxmap/log: header: %w", err)
+		}
+	}
+	rec, err := encMapLogRec(mailindex.TxTypeExtAtomicInc, mailindex.EncodeTxExtAtomicIncPayload(deltas))
+	if err != nil {
+		return fmt.Errorf("mdboxmap/log: frame: %w", err)
+	}
+	if _, err := f.Write(rec); err != nil {
+		return fmt.Errorf("mdboxmap/log: write: %w", err)
+	}
+	if st, err := os.Stat(m.logPath()); err == nil {
+		m.logSize = st.Size()
+	}
+	// Same threshold the append path uses: the log is bounded, not unbounded.
+	if m.logSize > mapLogCompactBytes {
+		return m.flushLocked()
 	}
 	return nil
 }
@@ -139,9 +182,12 @@ func (m *Map) replayLogLocked(fromOffset int64) (int64, error) {
 	if stride == 0 {
 		return pos, nil
 	}
-	existing := make(map[uint32]struct{}, len(m.f.Records))
+	// UID -> record, built here rather than from m.byMapUID: that index is
+	// rebuilt after the replay, so during it it still describes the previous
+	// state -- and a delta applied through it would land nowhere.
+	existing := make(map[uint32]*mailindex.Record, len(m.f.Records))
 	for _, r := range m.f.Records {
-		existing[r.UID] = struct{}{}
+		existing[r.UID] = r
 	}
 	hdrBuf := make([]byte, 8)
 	for {
@@ -164,6 +210,10 @@ func (m *Map) replayLogLocked(fromOffset int64) (int64, error) {
 			break // torn tail — do not advance pos past the partial record
 		}
 		pos += int64(8 + payloadLen)
+		if txHdr.Type.Kind() == mailindex.TxTypeExtAtomicInc {
+			applyRefcountDeltas(existing, payload)
+			continue
+		}
 		if txHdr.Type.Kind() != mailindex.TxTypeAppend {
 			continue
 		}
@@ -177,8 +227,42 @@ func (m *Map) replayLogLocked(fromOffset int64) (int64, error) {
 			}
 			rp := rec
 			m.f.Records = append(m.f.Records, &rp)
-			existing[rp.UID] = struct{}{}
+			existing[rp.UID] = &rp
 		}
 	}
 	return pos, nil
+}
+
+// applyRefcountDeltas folds one EXT_ATOMIC_INC payload into the records the
+// replay has built so far. A delta naming an unknown UID is skipped rather
+// than failing the replay: the record may have been expunged by a later
+// transaction, and refusing to replay would leave the map on the base alone --
+// which is the stale state this log exists to avoid.
+func applyRefcountDeltas(byUID map[uint32]*mailindex.Record, payload []byte) {
+	const sz = 8
+	le := binary.LittleEndian
+	for i := 0; i+sz <= len(payload); i += sz {
+		uid := le.Uint32(payload[i:])
+		diff := int32(le.Uint32(payload[i+4:]))
+		rec, ok := byUID[uid]
+		if !ok {
+			continue
+		}
+		rec.Ext[extRef] = encodeRefExt(clampRef(int32(decodeRefExt(rec.Ext[extRef])) + diff))
+	}
+}
+
+// clampRef keeps a refcount inside the 16 bits the extension carries. The
+// floor matters: a count driven below zero by a replayed decrement would wrap
+// to a huge number and keep a dead file alive forever, and the ceiling is the
+// format's.
+func clampRef(v int32) uint16 {
+	switch {
+	case v < 0:
+		return 0
+	case v > 0xFFFF:
+		return 0xFFFF
+	default:
+		return uint16(v)
+	}
 }
