@@ -144,7 +144,15 @@ func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 		return rerr
 	})
 	if perr != nil && !message.IsUnknownCharset(perr) {
-		return fmt.Errorf("fts/buildmail: parse: %w", perr)
+		// A message whose structure cannot be read is still mail, and a client
+		// expects to find it by its words. Refusing it made one such message
+		// stop its folder's indexing and, through a query that spans folders,
+		// take search away from the whole account (#1219). So it degrades:
+		// what could not be understood as MIME is indexed as opaque text.
+		metricDegraded.WithLabelValues("parse").Inc()
+		slog.Warn("fts/buildmail: message structure unreadable, indexing it as opaque text",
+			"uid", uid, "err", perr)
+		return b.buildOpaque(st, raw, upd)
 	}
 
 	return b.walkEntity(st, e, 0, upd)
@@ -444,7 +452,12 @@ func (b *Builder) buildDecodedAttachment(st *buildState, e *message.Entity, medi
 		// Any other decoder error is a hard failure (bad config, a permanent
 		// 4xx, a script protocol error): abort this message so autoindex
 		// retries it later, rather than commit a silently-incomplete document.
-		return fmt.Errorf("fts/buildmail: decode attachment: %w", err)
+		// One part that will not decode is not a reason to lose the rest of
+		// the message: the others are already indexed and this one is not.
+		metricDegraded.WithLabelValues("attachment").Inc()
+		slog.Warn("fts/buildmail: attachment could not be decoded, indexing the message without it",
+			"uid", st.uid, "content_type", mediaType, "err", err)
+		return nil
 	}
 	if !ok || len(text) == 0 {
 		// Unsupported content type/extension: index what else was readable and
@@ -570,6 +583,33 @@ func (b *Builder) buildBodyText(st *buildState, chain *language.Chain, contentTy
 		return nil
 	}
 	return session.Close()
+}
+
+// buildOpaque indexes the message's own bytes as one text part, for a message
+// whose MIME could not be parsed. It rewinds first: the parser has already
+// consumed part of the stream, and what is left is not the message.
+//
+// A reader that cannot rewind indexes nothing here rather than indexing a
+// tail that starts mid-header -- half a message under the right UID reads as
+// a complete one, and no caller could tell.
+func (b *Builder) buildOpaque(st *buildState, raw io.Reader, upd fts.Update) error {
+	seeker, ok := raw.(io.Seeker)
+	if !ok {
+		return nil
+	}
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+		return nil
+	}
+	chain, reader, err := b.detectPartChain(raw, false)
+	if err != nil {
+		return nil
+	}
+	// Through the same body path a text part takes, so the size cap, the
+	// dedup and the token stream behave identically -- an opaque message is
+	// indexed like text, not like a special case.
+	return b.buildBodyText(st, chain, "text/plain", func(sink func([]byte) error) error {
+		return copyChunks(reader, sink)
+	}, upd)
 }
 
 var errBodyCap = fmt.Errorf("fts/buildmail: body size cap reached")

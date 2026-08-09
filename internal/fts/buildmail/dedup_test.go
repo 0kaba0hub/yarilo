@@ -220,13 +220,23 @@ func TestDecoderDegradedErrorSkipsAttachmentWithoutFailingMessage(t *testing.T) 
 // ErrDegraded is a hard failure (bad config, permanent 4xx, protocol error)
 // — Build must abort so the caller doesn't commit a silently-incomplete
 // document, letting autoindex retry the whole message later.
-func TestDecoderHardErrorFailsMessage(t *testing.T) {
+// A decoder that will not decode an attachment costs that attachment, not the
+// message: the other parts are indexed and the message stays findable. It was
+// a failure before (#721); it degrades now, because a message refused by the
+// indexer is a message no client can find at all (#1219). The loss is counted
+// rather than silent -- see fts_index_degraded_total.
+func TestDecoderHardErrorCostsTheAttachmentNotTheMessage(t *testing.T) {
 	upd := &fakeUpdate{}
 	b := New(Options{
 		Decoder: &errDecoder{err: fmt.Errorf("fts/decoder/tika: unexpected status 400")},
 	}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err == nil {
-		t.Fatal("expected Build to fail on a hard decoder error")
+	if err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
+		t.Fatalf("Build: %v, want the message indexed without the attachment", err)
+	}
+	// The message's own text must still be there, or "degraded" is a skip
+	// under a kinder name.
+	if len(upd.bodyTokens()) == 0 {
+		t.Error("nothing from the message was indexed: a degraded message must still be findable")
 	}
 }
 
