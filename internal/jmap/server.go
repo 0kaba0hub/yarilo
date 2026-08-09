@@ -42,6 +42,9 @@ type Options struct {
 	// limit wins when smaller; a client naming none gets this rather than
 	// everything, and the response reports the limit that was applied.
 	QueryMaxLimit uint
+	// FTS answers the full-text conditions of Email/query. Nil leaves the
+	// index-only evaluator, which refuses those conditions by name.
+	FTS *FTS
 	// Storage reaches one user's mail. Nil leaves only the methods that need no
 	// mail store, which is what the session-resource-only tests run against.
 	Storage *Storage

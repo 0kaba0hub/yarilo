@@ -191,7 +191,7 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 	quotaClone := quota.NewClone(cloneDicts)
 
-	ftsClient, ftsChain, err := buildFTS(cfg)
+	ftsClient, ftsChain, err := BuildFTS(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -1357,10 +1357,10 @@ func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 	}
 }
 
-// buildFTS wires the session-side FTS client (https://doc.yarilomail.org/FTS §11). Sessions
+// BuildFTS wires the session-side FTS client (https://doc.yarilomail.org/FTS §11). Sessions
 // only ever talk to the yarilo-fts service over the wire — remote mode; the
 // embedded mode is for the service's own tests/CLI.
-func buildFTS(cfg *config.Config) (ftsproto.Client, *language.MultiChain, error) {
+func BuildFTS(cfg *config.Config) (ftsproto.Client, *language.MultiChain, error) {
 	fc := cfg.FTS
 	if !fc.Enabled {
 		return nil, nil, nil

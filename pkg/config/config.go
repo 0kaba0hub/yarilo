@@ -372,6 +372,13 @@ type JMAPProtocolConfig struct {
 	// whole result set, and the response reports the limit that was applied
 	// (RFC 8620 §5.5). Default 256.
 	QueryMaxLimit int `koanf:"jmap_query_max_limit"`
+	// MaxQueryFolders caps how many folders one Email/query may search with
+	// full text. It is a bound on what a single request may take, which is a
+	// different budget from fts_max_conns (what one process may take from the
+	// service): a query exceeding it is refused with invalidArguments naming
+	// both numbers, never answered from a truncated fan-out. Counts only the
+	// folders a full-text condition would search. Default 64.
+	MaxQueryFolders int `koanf:"jmap_max_query_folders"`
 	// PushTimeout is the idle timeout for a push connection, in seconds.
 	// Default 90. Unused until the push phase.
 	PushTimeout int `koanf:"jmap_push_timeout"`
@@ -886,10 +893,15 @@ type FTSConfig struct {
 	HeaderExcludes         []string `koanf:"fts_header_excludes"`
 	CommitLimit            int      `koanf:"fts_commit_limit"`
 
-	SearchAddMissing   string `koanf:"fts_search_add_missing"`
-	SearchReadFallback bool   `koanf:"fts_search_read_fallback"`
-	SearchTimeoutSecs  int    `koanf:"fts_search_timeout_secs"`
-	SearchStrict       bool   `koanf:"fts_search_strict"`
+	SearchAddMissing string `koanf:"fts_search_add_missing"`
+	// SearchReadFallback falls back to the exact scan when a lookup fails or
+	// the index lags. JMAP has no scan: Email/query never reads bodies, so on
+	// that surface the flag cannot choose a fallback and a failed lookup is
+	// refused instead (serverFail; a lagging index is serverUnavailable, which
+	// says "retry"). Deliberate divergence, not an oversight.
+	SearchReadFallback bool `koanf:"fts_search_read_fallback"`
+	SearchTimeoutSecs  int  `koanf:"fts_search_timeout_secs"`
+	SearchStrict       bool `koanf:"fts_search_strict"`
 	// Search disables FTS SEARCH while indexing keeps running (#726 item
 	// 3) — incident degradation (bad query results, engine misbehaving)
 	// without losing index freshness. Sessions treat Search=false as "no
@@ -2034,6 +2046,7 @@ func Load(path string) (*Config, error) {
 				MaxSizeRequestRaw:     "10M",
 				MaxBodyValueBytesRaw:  "256K",
 				QueryMaxLimit:         256,
+				MaxQueryFolders:       64,
 				PushTimeout:           90,
 			},
 			IMAP: IMAPProtocolConfig{

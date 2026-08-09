@@ -119,6 +119,27 @@ func main() {
 	go readyfile.Touch(ctx, reg.ReadinessDir, "jmap",
 		time.Duration(reg.ReadinessTouchInterval)*time.Second, ready.Load)
 
+	// The same client the session protocols use, so a query expands terms
+	// through the identical language chain the service indexed with. Its pool
+	// is this process's own: fts_max_conns is per process, so this adds to what
+	// yarilo-backend-api already holds rather than sharing it.
+	ftsClient, ftsChain, err := backend.BuildFTS(cfg)
+	if err != nil {
+		slog.Error("fts client", "err", err)
+		os.Exit(1)
+	}
+	var ftsOpts *jmap.FTS
+	if ftsClient != nil && cfg.FTS.Search {
+		ftsOpts = &jmap.FTS{
+			Client:     ftsClient,
+			Chain:      ftsChain,
+			MaxConns:   cfg.FTS.MaxConns,
+			MaxFolders: cfg.Protocol.JMAP.MaxQueryFolders,
+			AddMissing: cfg.FTS.SearchAddMissing,
+			Timeout:    time.Duration(cfg.FTS.SearchTimeoutSecs) * time.Second,
+		}
+	}
+
 	srv := jmap.New(jmap.Options{
 		Addr:              addr,
 		TLSConfig:         tlsCfg,
@@ -126,6 +147,7 @@ func main() {
 		Limits:            jmap.LimitsFrom(cfg.Protocol.JMAP),
 		OnListen:          func() { ready.Store(true) },
 		Storage:           store,
+		FTS:               ftsOpts,
 		MaxBodyValueBytes: uint32(cfg.Protocol.JMAP.MaxBodyValueBytes), //nolint:gosec // config-bounded
 		QueryMaxLimit:     uint(cfg.Protocol.JMAP.QueryMaxLimit),       //nolint:gosec // config-bounded
 	})

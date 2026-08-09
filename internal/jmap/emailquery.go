@@ -15,10 +15,16 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// filterEvaluator returns the evaluator this build can answer filters with.
-// Full-text support arrives as a second evaluator here, which is the only line
-// that changes.
-func (s *Server) filterEvaluator() filterEvaluator { return indexEvaluator{} }
+// filterEvaluator returns the evaluator this deployment can answer filters
+// with: the full-text one when yarilo-fts is wired, the index-only one
+// otherwise -- which refuses text conditions by name rather than answering
+// them from what it can see.
+func (s *Server) filterEvaluator(h *userHandle) filterEvaluator {
+	if s.opts.FTS != nil && s.opts.FTS.Client != nil && s.opts.FTS.Chain != nil {
+		return s.newFTSEvaluator(h)
+	}
+	return indexEvaluator{}
+}
 
 // emailQuery implements Email/query (RFC 8621 §4.4).
 func (s *Server) emailQuery(_ context.Context, h *userHandle, accountID string, args json.RawMessage) (any, *jmapcore.MethodError) {
@@ -36,7 +42,7 @@ func (s *Server) emailQuery(_ context.Context, h *userHandle, accountID string, 
 	// The evaluator, not the query body, decides what can be answered: adding
 	// full-text support means supplying an evaluator that names fewer
 	// conditions, with nothing here to change.
-	eval := s.filterEvaluator()
+	eval := s.filterEvaluator(h)
 	if unsupported := eval.unsupported(req.Filter); len(unsupported) > 0 {
 		return nil, &jmapcore.MethodError{Type: jmapcore.ErrUnsupportedFilter,
 			Description: "conditions not supported yet: " + strings.Join(unsupported, ", ")}
@@ -51,12 +57,17 @@ func (s *Server) emailQuery(_ context.Context, h *userHandle, accountID string, 
 		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
 	}
 
+	if merr := s.checkQueryFolders(scope, req.Filter); merr != nil {
+		return nil, merr
+	}
+	// Every folder is resolved before any message is read: the lookups run
+	// against one another rather than one per pass through the loop below.
+	if merr := s.prepareScope(h, eval, scope, req.Filter); merr != nil {
+		return nil, merr
+	}
+
 	matched := make([]queryHit, 0, 64)
 	for _, f := range scope.folders {
-		if err := eval.prepare(h, f, req.Filter); err != nil {
-			slog.Warn("jmap: Email/query prepare failed", "folder", f.name, "err", err)
-			return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
-		}
 		metas, err := h.idx.GetMessages(f.id, mailbox.SeqSet{{From: 1, To: 0}})
 		if err != nil {
 			slog.Warn("jmap: Email/query read failed", "folder", f.name, "err", err)
@@ -123,8 +134,11 @@ type queryHit struct {
 
 // scopeFolder is a folder the query reads.
 type scopeFolder struct {
-	name        string
-	id          uint64
+	name string
+	id   uint64
+	// guid is the folder identity the full-text index is keyed by; empty means
+	// the folder has none and cannot be searched (#1183).
+	guid        string
 	mailboxID   string
 	uidValidity uint32
 	highestMod  uint64
@@ -166,6 +180,7 @@ func (s *Server) queryScope(h *userHandle, f *jmapcore.EmailFilter) (*queryScope
 		sf := scopeFolder{
 			name:        name,
 			id:          folder.ID,
+			guid:        ftsMailboxGUID(folder.GUID),
 			mailboxID:   mailboxID(folder.GUID),
 			uidValidity: folder.UIDValidity,
 			highestMod:  folder.HighestModSeq,
