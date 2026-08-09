@@ -338,6 +338,27 @@ func EncodeTxExtAtomicIncPayload(recs []TxExtAtomicInc) []byte {
 	return out
 }
 
+// DecodeTxExtAtomicIncPayload is the inverse. Kept beside the encoder so the
+// two cannot drift: a reader that hand-rolls the layout starts reading rubbish
+// the moment the format moves, silently and in whatever the extension happens
+// to mean.
+//
+// A trailing partial record is ignored rather than reported: a torn write is
+// the ordinary crash case for a log, and the whole records before it are still
+// good.
+func DecodeTxExtAtomicIncPayload(payload []byte) []TxExtAtomicInc {
+	const sz = 8
+	out := make([]TxExtAtomicInc, 0, len(payload)/sz)
+	le := binary.LittleEndian
+	for i := 0; i+sz <= len(payload); i += sz {
+		out = append(out, TxExtAtomicInc{
+			UID:  le.Uint32(payload[i:]),
+			Diff: int32(le.Uint32(payload[i+4:])),
+		})
+	}
+	return out
+}
+
 // EncodeTxKeywordUpdatePayload emits the payload for
 // KEYWORD_UPDATE. Layout: modify_type(1) + padding(1) +
 // name_size(2) + name + uid_ranges (4 bytes each pair).

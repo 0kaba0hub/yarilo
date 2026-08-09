@@ -2,6 +2,8 @@ package mdboxmap
 
 import (
 	"fmt"
+
+	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
 // UpdateRefcounts applies a signed delta to the refcount of every
@@ -27,23 +29,30 @@ func (m *Map) UpdateRefcounts(mapUIDs []uint32, delta int16) error {
 		if err := m.reloadLocked(); err != nil {
 			return err
 		}
+		deltas := make([]mailindex.TxExtAtomicInc, 0, len(mapUIDs))
 		for _, uid := range mapUIDs {
 			idx, ok := m.byMapUID[uid]
 			if !ok {
 				return fmt.Errorf("mdboxmap/refcount: map_uid %d not found", uid)
 			}
 			rec := m.f.Records[idx]
-			cur := int32(decodeRefExt(rec.Ext[extRef]))
-			next := cur + int32(delta)
-			if next < 0 {
-				next = 0
-			}
-			if next > 0xFFFF {
-				next = 0xFFFF
-			}
-			rec.Ext[extRef] = encodeRefExt(uint16(next))
+			rec.Ext[extRef] = encodeRefExt(clampRef(int32(decodeRefExt(rec.Ext[extRef])) + int32(delta)))
+			deltas = append(deltas, mailindex.TxExtAtomicInc{UID: uid, Diff: int32(delta)})
 		}
-		return m.flushLocked()
+		// Appended, not rewritten. Every save and every delete changes a
+		// refcount, so rewriting the whole base index here made a full file
+		// rewrite the price of one operation -- and every sibling process then
+		// had to re-open the base it invalidated (#1205).
+		if err := m.appendRefcountLogLocked(deltas); err != nil {
+			// The records above are already changed, and the write that would
+			// have made them durable did not happen: neither the base mtime
+			// nor the log size moved, so the next reload would take the fast
+			// path and keep the phantom value. For a decrement that value is
+			// below the truth, and the purge scan reads exactly this state.
+			m.invalidateLocked()
+			return err
+		}
+		return nil
 	})
 }
 
@@ -95,6 +104,12 @@ func (m *Map) GetZeroRefFiles() ([]uint32, error) {
 	if m.f == nil {
 		return nil, nil
 	}
+	// Refcounts live in the log until it is compacted, and this answer decides
+	// what purge physically deletes: reading the base alone would offer a file
+	// whose count was raised moments ago.
+	if err := m.reloadLocked(); err != nil {
+		return nil, fmt.Errorf("mdboxmap/zero-ref: %w", err)
+	}
 	seen := make(map[uint32]bool)
 	for _, rec := range m.f.Records {
 		if decodeRefExt(rec.Ext[extRef]) != 0 {
@@ -122,6 +137,11 @@ func (m *Map) RecordsInFile(fileID uint32) ([]MapEntry, error) {
 	defer m.mu.Unlock()
 	if m.f == nil {
 		return nil, nil
+	}
+	// Same reason as GetZeroRefFiles: purge copies forward what is referenced
+	// and drops the rest, from these counts.
+	if err := m.reloadLocked(); err != nil {
+		return nil, fmt.Errorf("mdboxmap/records-in-file: %w", err)
 	}
 	var out []MapEntry
 	for _, rec := range m.f.Records {
