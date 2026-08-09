@@ -281,3 +281,41 @@ func TestBuildBodyTextPartialReadErrorConsistentAcrossDedup(t *testing.T) {
 		})
 	}
 }
+
+// nonSeekReader is a stream that cannot be rewound -- what a caller feeding
+// the message straight off the wire would pass.
+type nonSeekReader struct{ r io.Reader }
+
+func (n nonSeekReader) Read(p []byte) (int, error) { return n.r.Read(p) }
+
+// An unparseable message can only be indexed as opaque text if the bytes can
+// be read a second time. When they cannot, nothing is indexed -- and that must
+// be reported as a failure, not as a degraded message: a degraded one is
+// searchable in part, this one is a hole, and only the caller can count it as
+// such.
+func TestUnparseableWithoutRewindIsReportedAsFailure(t *testing.T) {
+	upd := &fakeUpdate{}
+	b := New(Options{}, mustChain(t))
+	raw := nonSeekReader{r: strings.NewReader("NoColonHeaderLine\r\n\r\nbody words here\r\n")}
+
+	if err := b.Build(1, raw, upd); err == nil {
+		t.Fatal("Build reported success although nothing was indexed")
+	}
+	if len(upd.bodyTokens()) != 0 {
+		t.Errorf("tokens were indexed from a stream that could not be rewound: %v", upd.bodyTokens())
+	}
+}
+
+// The same message through a reader that can rewind is indexed by its words,
+// which is what makes the case above about honesty rather than about parsing.
+func TestUnparseableWithRewindIsIndexed(t *testing.T) {
+	upd := &fakeUpdate{}
+	b := New(Options{}, mustChain(t))
+
+	if err := b.Build(1, strings.NewReader("NoColonHeaderLine\r\n\r\nopaquewordzz here\r\n"), upd); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !hasToken(upd.bodyTokens(), "opaquewordzz") {
+		t.Errorf("the message was not indexed by its own words: %v", upd.bodyTokens())
+	}
+}

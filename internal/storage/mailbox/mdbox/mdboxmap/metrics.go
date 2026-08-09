@@ -14,11 +14,16 @@ func ObserveReadPart(part string, d time.Duration) {
 	metricReadPart.WithLabelValues(part).Observe(d.Seconds())
 }
 
-// timedPart records how long one named part of a freshness check took.
-func timedPart(part string, fn func()) {
-	start := time.Now()
-	fn()
-	metricMapReloadPart.WithLabelValues(part).Observe(time.Since(start).Seconds())
+// observePart records one named part of a freshness check -- and only when a
+// check is what is running. Replay and reindex are also reached from opening
+// the map, where no whole is being timed: counting them there would let the
+// parts exceed the total, and the unnamed remainder between them is the whole
+// point of the split. A negative remainder says nothing.
+func (m *Map) observePart(part string, d time.Duration) {
+	if !m.inReload {
+		return
+	}
+	metricMapReloadPart.WithLabelValues(part).Observe(d.Seconds())
 }
 
 // Metrics that attribute the cost of the mdbox map, which is the structure
@@ -106,6 +111,10 @@ var (
 	// lookup includes a freshness check when the map misses, so it overlaps
 	// with the reload histograms above by design -- they answer "what does
 	// staying fresh cost", this answers "what does a read cost".
+	//
+	// One Fetch can record "open" twice: a message flagged as living on the
+	// alt tier is opened there first and falls back to the primary when that
+	// fails. The sample count is therefore not the number of reads.
 	metricReadPart = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "mdbox_read_part_seconds",
 		Help:    "Time in one part of serving a message body: lookup, open or body.",

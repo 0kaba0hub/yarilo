@@ -335,11 +335,6 @@ func TestReloadPartsFitInsideTheWhole(t *testing.T) {
 // number that lumps them says the driver is slower without saying which step,
 // which is what the comparison with maildir needs (#1205).
 func TestReadPartsAreRecordedSeparately(t *testing.T) {
-	for _, part := range []string{"lookup", "open", "body"} {
-		if _, count := histVecSum(t, metricReadPart, part); count != 0 {
-			continue // another test in this package already exercised it
-		}
-	}
 	ObserveReadPart("lookup", 5*time.Millisecond)
 	ObserveReadPart("open", 7*time.Millisecond)
 	ObserveReadPart("body", 11*time.Millisecond)
@@ -353,5 +348,42 @@ func TestReadPartsAreRecordedSeparately(t *testing.T) {
 		if sum < want {
 			t.Errorf("%s recorded %.6fs, want at least %.6fs", part, sum, want)
 		}
+	}
+}
+
+// Opening a map replays and reindexes too, and no whole is being timed there.
+// Counting those parts would let the sum exceed the total, and the unnamed
+// remainder between them -- the point of the split -- would go negative and
+// say nothing.
+func TestPartsAreNotCountedOutsideAFreshnessCheck(t *testing.T) {
+	m, dir := openTestMap(t)
+	if _, err := m.AppendRecord(1, 0, 10, [16]byte{1}); err != nil {
+		t.Fatalf("AppendRecord: %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, replayBefore := histVecSum(t, metricMapReloadPart, "replay")
+	_, reindexBefore := histVecSum(t, metricMapReloadPart, "reindex")
+	_, wholeBefore := histSum(t, metricMapReloadSeconds)
+
+	// Opening reads the base and rebuilds the index; that is not a check.
+	again, err := Open(dir, "alice@example.com")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer again.Close() //nolint:errcheck
+
+	_, replayAfter := histVecSum(t, metricMapReloadPart, "replay")
+	_, reindexAfter := histVecSum(t, metricMapReloadPart, "reindex")
+	_, wholeAfter := histSum(t, metricMapReloadSeconds)
+
+	if wholeAfter != wholeBefore {
+		t.Fatalf("opening the map timed %d freshness checks", wholeAfter-wholeBefore)
+	}
+	if replayAfter != replayBefore || reindexAfter != reindexBefore {
+		t.Errorf("opening the map recorded %d replay and %d reindex parts with no whole to sit inside",
+			replayAfter-replayBefore, reindexAfter-reindexBefore)
 	}
 }

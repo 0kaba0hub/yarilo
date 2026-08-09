@@ -153,9 +153,7 @@ func encMapLogRec(txType mailindex.TxType, payload []byte) ([]byte, error) {
 // "replay" part of a freshness check.
 func (m *Map) replayLogLocked(fromOffset int64) (off int64, err error) {
 	start := time.Now()
-	defer func() {
-		metricMapReloadPart.WithLabelValues("replay").Observe(time.Since(start).Seconds())
-	}()
+	defer func() { m.observePart("replay", time.Since(start)) }()
 	return m.replayLogInnerLocked(fromOffset)
 }
 

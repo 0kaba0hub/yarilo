@@ -67,6 +67,9 @@ type Map struct {
 	// mtime; logSize is the replayed byte offset of the append log.
 	baseMod time.Time
 	logSize int64
+	// inReload is true while a freshness check is running, so its parts are
+	// timed against a whole that exists. Guarded by m.mu like the rest.
+	inReload bool
 }
 
 // Option configures Map construction.
@@ -206,7 +209,11 @@ func (m *Map) createFresh() error {
 // reindex rebuilds the UID index. Timed as its own part of a freshness check:
 // a replay of a few kilobytes still walks every record afterwards, and that
 // cost is invisible in the replay number.
-func (m *Map) reindex() { timedPart("reindex", m.reindexLocked) }
+func (m *Map) reindex() {
+	start := time.Now()
+	m.reindexLocked()
+	m.observePart("reindex", time.Since(start))
+}
 
 func (m *Map) reindexLocked() {
 	idx := make(map[uint32]int, len(m.f.Records))
@@ -427,7 +434,11 @@ func (m *Map) BumpRebuildCount() error {
 // it lock-free (a torn log tail is stopped cleanly by replayLogLocked).
 func (m *Map) reloadLocked() error {
 	whole := time.Now()
-	defer func() { metricMapReloadSeconds.Observe(time.Since(whole).Seconds()) }()
+	m.inReload = true
+	defer func() {
+		m.inReload = false
+		metricMapReloadSeconds.Observe(time.Since(whole).Seconds())
+	}()
 
 	statStart := time.Now()
 	var baseMod time.Time
@@ -439,7 +450,7 @@ func (m *Map) reloadLocked() error {
 	if st, _ := os.Stat(m.logPath()); st != nil {
 		logSize = st.Size()
 	}
-	metricMapReloadPart.WithLabelValues("stat").Observe(time.Since(statStart).Seconds())
+	m.observePart("stat", time.Since(statStart))
 
 	// Fast path: nothing changed on disk.
 	if m.f != nil && baseMod.Equal(m.baseMod) && logSize == m.logSize {

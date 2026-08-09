@@ -149,10 +149,20 @@ func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 		// stop its folder's indexing and, through a query that spans folders,
 		// take search away from the whole account (#1219). So it degrades:
 		// what could not be understood as MIME is indexed as opaque text.
+		indexed, oerr := b.buildOpaque(st, raw, upd)
+		if oerr != nil {
+			return oerr
+		}
+		if !indexed {
+			// Nothing was indexed, so this is a hole, not a partial index.
+			// Saying otherwise would file it under "searchable in part" and
+			// leave a gap no counter reports.
+			return fmt.Errorf("fts/buildmail: parse: %w", perr)
+		}
 		metricDegraded.WithLabelValues("parse").Inc()
 		slog.Warn("fts/buildmail: message structure unreadable, indexing it as opaque text",
 			"uid", uid, "err", perr)
-		return b.buildOpaque(st, raw, upd)
+		return nil
 	}
 
 	return b.walkEntity(st, e, 0, upd)
@@ -449,9 +459,6 @@ func (b *Builder) buildDecodedAttachment(st *buildState, e *message.Entity, medi
 				"uid", st.uid, "content_type", mediaType, "filename", filename, "err", err)
 			return nil
 		}
-		// Any other decoder error is a hard failure (bad config, a permanent
-		// 4xx, a script protocol error): abort this message so autoindex
-		// retries it later, rather than commit a silently-incomplete document.
 		// One part that will not decode is not a reason to lose the rest of
 		// the message: the others are already indexed and this one is not.
 		metricDegraded.WithLabelValues("attachment").Inc()
@@ -591,25 +598,30 @@ func (b *Builder) buildBodyText(st *buildState, chain *language.Chain, contentTy
 //
 // A reader that cannot rewind indexes nothing here rather than indexing a
 // tail that starts mid-header -- half a message under the right UID reads as
-// a complete one, and no caller could tell.
-func (b *Builder) buildOpaque(st *buildState, raw io.Reader, upd fts.Update) error {
+// a complete one, and no caller could tell. It reports that as "not indexed"
+// so the caller files it where it belongs: a hole to be counted, not a
+// message that is searchable in part.
+func (b *Builder) buildOpaque(st *buildState, raw io.Reader, upd fts.Update) (bool, error) {
 	seeker, ok := raw.(io.Seeker)
 	if !ok {
-		return nil
+		return false, nil
 	}
 	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
-		return nil
+		return false, nil
 	}
 	chain, reader, err := b.detectPartChain(raw, false)
 	if err != nil {
-		return nil
+		return false, nil
 	}
 	// Through the same body path a text part takes, so the size cap, the
 	// dedup and the token stream behave identically -- an opaque message is
 	// indexed like text, not like a special case.
-	return b.buildBodyText(st, chain, "text/plain", func(sink func([]byte) error) error {
+	if err := b.buildBodyText(st, chain, "text/plain", func(sink func([]byte) error) error {
 		return copyChunks(reader, sink)
-	}, upd)
+	}, upd); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 var errBodyCap = fmt.Errorf("fts/buildmail: body size cap reached")
