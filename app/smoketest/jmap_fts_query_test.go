@@ -111,8 +111,8 @@ func TestJMAPFTSQueryStopsOnAFinalFailure(t *testing.T) {
 }
 
 const (
-	ftsProbeMarker  = "jmapftsmarker1"
-	ftsProbeAbsent  = ftsProbeMarker + "notdelivered"
+	ftsProbeMarker  = "jfts000000001hit"
+	ftsProbeAbsent  = "jfts000000001gap"
 	ftsProbeSubject = "jmap fts smoke " + ftsProbeMarker
 )
 
@@ -177,5 +177,29 @@ func TestJMAPFTSQueryRefusesTheWrongAnswers(t *testing.T) {
 				t.Errorf("error %q does not say %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// The markers must be distinguishable after tokenisation, or the negative
+// query proves nothing: the generic tokenizer caps a token at 30 bytes, so two
+// markers sharing a longer prefix collapse to one term. That is what made the
+// gate report a hit for a marker nobody ever delivered (#1213).
+func TestProbeMarkersSurviveTokenisation(t *testing.T) {
+	const tokenMaxLen = 30 // language.DefaultTokenMaxLen
+
+	marker, absent, _ := ftsProbeMarkers()
+	for _, m := range []string{marker, absent} {
+		if len(m) > tokenMaxLen {
+			t.Errorf("marker %q is %d bytes: it is indexed and queried truncated", m, len(m))
+		}
+	}
+	// Differing only past the cap is the same failure in a different dress.
+	head := min(len(marker), len(absent))
+	if head > tokenMaxLen {
+		head = tokenMaxLen
+	}
+	if marker[:head] == absent[:head] {
+		t.Errorf("markers %q and %q are identical for the first %d bytes: one term, two queries",
+			marker, absent, head)
 	}
 }

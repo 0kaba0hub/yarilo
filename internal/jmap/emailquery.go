@@ -27,7 +27,7 @@ func (s *Server) filterEvaluator(h *userHandle) filterEvaluator {
 }
 
 // emailQuery implements Email/query (RFC 8621 §4.4).
-func (s *Server) emailQuery(_ context.Context, h *userHandle, accountID string, args json.RawMessage) (any, *jmapcore.MethodError) {
+func (s *Server) emailQuery(ctx context.Context, h *userHandle, accountID string, args json.RawMessage) (any, *jmapcore.MethodError) {
 	var req jmapcore.EmailQueryRequest
 	if err := json.Unmarshal(args, &req); err != nil {
 		return nil, &jmapcore.MethodError{Type: jmapcore.ErrInvalidArguments, Description: err.Error()}
@@ -62,7 +62,7 @@ func (s *Server) emailQuery(_ context.Context, h *userHandle, accountID string, 
 	}
 	// Every folder is resolved before any message is read: the lookups run
 	// against one another rather than one per pass through the loop below.
-	if merr := s.prepareScope(h, eval, scope, req.Filter); merr != nil {
+	if merr := s.prepareScope(ctx, h, eval, scope, req.Filter); merr != nil {
 		return nil, merr
 	}
 

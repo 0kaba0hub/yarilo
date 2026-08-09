@@ -1,6 +1,7 @@
 package jmap
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -22,7 +23,7 @@ import (
 //   - match answers per message, using whatever prepare resolved.
 type filterEvaluator interface {
 	unsupported(f *jmapcore.EmailFilter) []string
-	prepare(h *userHandle, sf scopeFolder, f *jmapcore.EmailFilter) error
+	prepare(ctx context.Context, h *userHandle, sf scopeFolder, f *jmapcore.EmailFilter) error
 	match(m *mailbox.MessageMeta, sf scopeFolder, scope *queryScope, f *jmapcore.EmailFilter) bool
 }
 
@@ -42,7 +43,9 @@ func (indexEvaluator) unsupported(f *jmapcore.EmailFilter) []string {
 // prepare has nothing to resolve: every condition this evaluator answers is in
 // the message metadata already. A full-text evaluator does its per-folder
 // lookup here.
-func (indexEvaluator) prepare(*userHandle, scopeFolder, *jmapcore.EmailFilter) error { return nil }
+func (indexEvaluator) prepare(context.Context, *userHandle, scopeFolder, *jmapcore.EmailFilter) error {
+	return nil
+}
 
 func (indexEvaluator) match(m *mailbox.MessageMeta, sf scopeFolder, scope *queryScope, f *jmapcore.EmailFilter) bool {
 	if f == nil {

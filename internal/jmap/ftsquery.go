@@ -1,6 +1,7 @@
 package jmap
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -135,15 +136,20 @@ func (e *ftsEvaluator) unsupported(*jmapcore.EmailFilter) []string { return nil 
 
 // prepare looks one folder up. It runs once per folder, and the query runs
 // several of them at once (see prepareScope).
-func (e *ftsEvaluator) prepare(h *userHandle, sf scopeFolder, f *jmapcore.EmailFilter) error {
+func (e *ftsEvaluator) prepare(ctx context.Context, h *userHandle, sf scopeFolder, f *jmapcore.EmailFilter) error {
 	terms := f.TextConditions()
 	if len(terms) == 0 {
 		return nil
 	}
+	// Nobody is waiting any more, or a sibling folder has already decided the
+	// answer: neither is worth a lock and a round trip.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if sf.guid == "" {
 		return &errFolderWithoutGUID{folder: sf.name}
 	}
-	if err := e.catchUp(h, sf); err != nil {
+	if err := e.catchUp(ctx, h, sf); err != nil {
 		return err
 	}
 	query, verify, impossible := e.buildQuery(f)
@@ -187,7 +193,7 @@ func (e *ftsEvaluator) prepare(h *userHandle, sf scopeFolder, f *jmapcore.EmailF
 // falls back to the exact scan at this point; Email/query has no scan, so the
 // only honest ending is "retry" -- a result computed from a half-indexed folder
 // would be missing mail and say nothing about it.
-func (e *ftsEvaluator) catchUp(h *userHandle, sf scopeFolder) error {
+func (e *ftsEvaluator) catchUp(ctx context.Context, h *userHandle, sf scopeFolder) error {
 	metas, err := h.idx.GetMessages(sf.id, mailbox.SeqSet{{From: 1, To: 0}})
 	if err != nil || len(metas) == 0 {
 		return nil
@@ -213,14 +219,33 @@ func (e *ftsEvaluator) catchUp(h *userHandle, sf scopeFolder) error {
 	if perr := e.fts.Client.Prepend(e.user, mbox, maxUID); perr != nil {
 		return fmt.Errorf("jmap: fts prepend %q: %w", sf.name, perr)
 	}
+	// Give up early when the checkpoint stops moving: a wedged index would
+	// otherwise hold the request for the whole budget, which the client's own
+	// deadline is usually shorter than -- so it hangs up and the work
+	// continues for nobody. IMAP grew the same early exit in #629.
+	const stallPolls = 8 // 8 x 250ms = ~2s of no movement
+	best, stalls := last, 0
 	for time.Now().Before(e.deadline) {
-		time.Sleep(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
 		cur, _, serr := e.fts.Client.Status(e.user, mbox)
 		if serr != nil {
 			return fmt.Errorf("jmap: fts status %q: %w", sf.name, serr)
 		}
 		if cur >= maxUID {
 			return nil
+		}
+		if cur > best {
+			best, stalls = cur, 0
+			continue
+		}
+		if stalls++; stalls >= stallPolls {
+			slog.Warn("jmap: fts index is not advancing, not waiting out the budget",
+				"user", e.user, "folder", sf.name, "indexed", cur, "want", maxUID)
+			return errIndexLagging
 		}
 	}
 	slog.Warn("jmap: fts index still behind, asking the client to retry",
@@ -439,7 +464,7 @@ func (s *Server) checkQueryFolders(scope *queryScope, f *jmapcore.EmailFilter) *
 // Concurrency is bounded here rather than left to the pool: an exhausted pool
 // answers with an error after its wait, so more goroutines than connections
 // would turn load into refusals.
-func (s *Server) prepareScope(h *userHandle, eval filterEvaluator, scope *queryScope, f *jmapcore.EmailFilter) *jmapcore.MethodError {
+func (s *Server) prepareScope(ctx context.Context, h *userHandle, eval filterEvaluator, scope *queryScope, f *jmapcore.EmailFilter) *jmapcore.MethodError {
 	width := 1
 	if s.opts.FTS != nil {
 		width = s.opts.FTS.requestConcurrency()
@@ -447,6 +472,14 @@ func (s *Server) prepareScope(h *userHandle, eval filterEvaluator, scope *queryS
 	if fe, ok := eval.(*ftsEvaluator); ok {
 		fe.startRequest()
 	}
+	// One folder's refusal is the whole query's answer, so the rest stop
+	// rather than each taking a lock and a round trip for a result that will
+	// be discarded. Cancelling also carries the caller's own deadline down:
+	// without it the backend kept working for eleven seconds after the client
+	// had hung up.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	sem := make(chan struct{}, width)
 	errs := make([]error, len(scope.folders))
 	var wg sync.WaitGroup
@@ -456,16 +489,24 @@ func (s *Server) prepareScope(h *userHandle, eval filterEvaluator, scope *queryS
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			errs[i] = eval.prepare(h, sf, f)
+			if err := eval.prepare(ctx, h, sf, f); err != nil {
+				errs[i] = err
+				cancel()
+			}
 		}()
 	}
 	wg.Wait()
 
 	for i, err := range errs {
-		if err == nil {
+		if err == nil || errors.Is(err, context.Canceled) {
+			// A folder that stopped because a sibling had already decided the
+			// answer is not itself a finding.
 			continue
 		}
 		return queryPrepareError(scope.folders[i].name, err)
+	}
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+		return &jmapcore.MethodError{Type: jmapcore.ErrServerUnavailable, Description: err.Error()}
 	}
 	return nil
 }

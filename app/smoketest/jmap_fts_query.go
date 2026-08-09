@@ -18,9 +18,12 @@ import (
 // that arrived in another. -fts-user is read as the deployment's statement
 // that full-text search is configured at all.
 func checkJMAPFTSQuery(user string) error {
-	marker := fmt.Sprintf("jmapftsmarker%d", time.Now().UnixNano())
-	absent := marker + "notdelivered"
-	subject := "jmap fts smoke " + marker
+	// Short enough to survive tokenisation whole: the generic tokenizer caps a
+	// token at 30 bytes, so a longer marker is indexed and queried by its
+	// truncated prefix. The absent marker must therefore differ inside that
+	// prefix -- appending a suffix to a marker that is already too long
+	// produces the same term and the check proves nothing (#1213).
+	marker, absent, subject := ftsProbeMarkers()
 	if err := lmtpSend(uniqueID(), "jmap-fts-probe@test.invalid", user,
 		subject, "the jmap fts probe body "+marker+" end"); err != nil {
 		return fmt.Errorf("deliver: %w", err)
@@ -89,6 +92,18 @@ func assertFTSQueryFindsOnly(user, marker, absent, subject string) error {
 			absent, len(other))
 	}
 	return nil
+}
+
+// ftsProbeMarkers builds the pair the check searches for. Short enough to
+// survive tokenisation whole -- the generic tokenizer caps a token at 30 bytes
+// -- and differing inside that cap: appending a suffix to a marker that is
+// already too long yields the same term, and the negative query then matches
+// the delivered message (#1213).
+func ftsProbeMarkers() (marker, absent, subject string) {
+	stamp := time.Now().UnixNano() % 1e9
+	marker = fmt.Sprintf("jfts%09dhit", stamp)
+	absent = fmt.Sprintf("jfts%09dgap", stamp)
+	return marker, absent, "jmap fts smoke " + marker
 }
 
 // jmapServerUnavailable is the one type that means "retry" (RFC 8620 3.6.2).
