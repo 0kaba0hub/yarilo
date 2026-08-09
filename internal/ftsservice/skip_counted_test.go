@@ -85,3 +85,40 @@ func TestSkippedMessageIsCounted(t *testing.T) {
 		t.Errorf("checkpoint = %d, want 2: an unreadable message stopped the run", last)
 	}
 }
+
+// A damaged message is indexed, and the line that says so has to be enough to
+// go and look at it: the mailbox it is in, its own GUID, and the file holding
+// it. A warning that only says "something was damaged" names a problem nobody
+// can then find.
+func TestRepairedMessageIsReportedWithItsIdentity(t *testing.T) {
+	svc, box, uidx := newTestService(t)
+	saveRawMessage(t, box, uidx, 1, "From: a@b\r\nNoColonHeaderLine\r\nSubject: damagedzz\r\n\r\nbodywordzz\r\n")
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	if err := svc.Index(testUser, testMbox, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitIndexed(t, svc, 1)
+
+	line := logs.String()
+	if !strings.Contains(line, "message MIME was damaged") {
+		t.Fatalf("the repair was not reported:\n%s", line)
+	}
+	for _, want := range []string{"folder=" + testMbox.Name, "guid=", "file=", "dropped_header_lines=1"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the report does not carry %q, so the message cannot be found:\n%s", want, line)
+		}
+	}
+	// And it is searchable, which is the point of repairing it.
+	res, err := svc.Lookup(testUser, testMbox, lookupWord("bodywordzz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Definite) != 1 {
+		t.Errorf("lookup = %v, want the repaired message", res.Definite)
+	}
+}

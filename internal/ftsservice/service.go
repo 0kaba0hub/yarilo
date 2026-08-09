@@ -831,10 +831,19 @@ func (s *Service) indexOne(mbox fts.MailboxRef, item fetched, upd fts.Update) er
 	}
 
 	tBuild := time.Now()
-	err := s.builder.Build(m.UID, bytes.NewReader(item.body), upd)
+	report, err := s.builder.Build(m.UID, bytes.NewReader(item.body), upd)
 	metricBuild.Observe(time.Since(tBuild).Seconds())
 	if err != nil {
 		return &buildError{err: err}
+	}
+	if report.Repaired {
+		// Reported here because this is where the message can be found again:
+		// the mailbox, its GUID and the file are what an operator opens to see
+		// for themselves why it was damaged.
+		slog.Warn("fts: message MIME was damaged, indexed after repair",
+			"folder", mbox.Name, "mailbox_guid", mbox.GUID,
+			"uid", m.UID, "guid", mailbox.FormatObjectID(m.GUID), "file", m.Filename,
+			"dropped_header_lines", report.DroppedHeaderLines, "err", report.Cause)
 	}
 	// Per-message breadcrumb: which UID/file was fed to the engine. Metadata
 	// only (size is the index-time signal for "was there anything to

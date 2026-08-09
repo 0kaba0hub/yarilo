@@ -100,7 +100,7 @@ const multipartMsg = "From: Alice Smith <alice@example.com>\r\n" +
 func TestBuildMultipart(t *testing.T) {
 	upd := &fakeUpdate{}
 	b := New(Options{}, mustChain(t))
-	if err := b.Build(7, strings.NewReader(multipartMsg), upd); err != nil {
+	if _, err := b.Build(7, strings.NewReader(multipartMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 
@@ -173,7 +173,7 @@ func TestAddressHeaderStructuredParsing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			upd := &fakeUpdate{}
 			b := New(Options{}, mustChain(t))
-			if err := b.Build(1, strings.NewReader(tc.msg), upd); err != nil {
+			if _, err := b.Build(1, strings.NewReader(tc.msg), upd); err != nil {
 				t.Fatal(err)
 			}
 			from := upd.find(fts.KeyHeader, "from")
@@ -208,7 +208,7 @@ func TestHeaderIncludeExclude(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			upd := &fakeUpdate{}
 			b := New(tc.opts, mustChain(t))
-			if err := b.Build(1, strings.NewReader(multipartMsg), upd); err != nil {
+			if _, err := b.Build(1, strings.NewReader(multipartMsg), upd); err != nil {
 				t.Fatal(err)
 			}
 			got := upd.find(fts.KeyHeader, tc.hdr) != nil
@@ -222,7 +222,7 @@ func TestHeaderIncludeExclude(t *testing.T) {
 func TestRejectedKeySkipsData(t *testing.T) {
 	upd := &fakeUpdate{reject: map[string]bool{"subject": true}}
 	b := New(Options{}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(multipartMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(multipartMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	if upd.find(fts.KeyHeader, "subject") != nil {
@@ -234,7 +234,7 @@ func TestBodySizeCap(t *testing.T) {
 	msg := "Subject: cap\r\n\r\n" + strings.Repeat("alpha beta ", 100) + "omega"
 	upd := &fakeUpdate{}
 	b := New(Options{MaxSize: 20}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(msg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(msg), upd); err != nil {
 		t.Fatal(err)
 	}
 	body := upd.bodyTokens()
@@ -281,7 +281,7 @@ func TestBuildDoesNotBufferWholeMessageForSingleLanguage(t *testing.T) {
 	// chunks (go-message's parser + copyChunks' own 8KiB buffer) — nowhere
 	// near the full ~1.1MB body, which is exactly what this test guards.
 	br := &boundedReader{t: t, r: strings.NewReader(msg), max: 64 * 1024}
-	if err := b.Build(1, br, upd); err != nil {
+	if _, err := b.Build(1, br, upd); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -296,7 +296,7 @@ func TestNestedMessage(t *testing.T) {
 		"nested payload here\r\n"
 	upd := &fakeUpdate{}
 	b := New(Options{}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(msg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(msg), upd); err != nil {
 		t.Fatal(err)
 	}
 	inner := upd.find(fts.KeyMIMEHeader, "subject")
@@ -312,7 +312,7 @@ func TestEncodedWordHeader(t *testing.T) {
 	msg := "Subject: =?UTF-8?B?0J/RgNC40LLRltGCINGB0LLRltGC?=\r\n\r\nbody\r\n"
 	upd := &fakeUpdate{}
 	b := New(Options{}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(msg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(msg), upd); err != nil {
 		t.Fatal(err)
 	}
 	subj := upd.find(fts.KeyHeader, "subject")

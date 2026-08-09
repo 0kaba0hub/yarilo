@@ -31,7 +31,7 @@ const alternativeTwinMsg = "Subject: dup\r\n" +
 func TestDedupSkipsMultipartAlternativeTwin(t *testing.T) {
 	upd := &fakeUpdate{}
 	b := New(Options{DedupBodyParts: true}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(alternativeTwinMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(alternativeTwinMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	var bodyKeys int
@@ -54,7 +54,7 @@ func TestDedupSkipsMultipartAlternativeTwin(t *testing.T) {
 func TestDedupOffIndexesBothTwins(t *testing.T) {
 	upd := &fakeUpdate{}
 	b := New(Options{}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(alternativeTwinMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(alternativeTwinMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	var bodyKeys int
@@ -85,7 +85,7 @@ func TestDedupDistinctContentBothIndexed(t *testing.T) {
 		"--BOUND--\r\n"
 	upd := &fakeUpdate{}
 	b := New(Options{DedupBodyParts: true}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(msg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(msg), upd); err != nil {
 		t.Fatal(err)
 	}
 	var bodyKeys int
@@ -140,7 +140,7 @@ func TestDecoderIndexesAttachmentText(t *testing.T) {
 	b := New(Options{
 		Decoder: &fakeDecoder{forContentType: "application/pdf", text: []byte("invoice total ninety nine dollars")},
 	}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	body := upd.bodyTokens()
@@ -155,7 +155,7 @@ func TestDecoderIndexesAttachmentText(t *testing.T) {
 func TestNoDecoderSkipsAttachment(t *testing.T) {
 	upd := &fakeUpdate{}
 	b := New(Options{}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range upd.keys {
@@ -172,7 +172,7 @@ func TestDecoderUnsupportedTypeSkips(t *testing.T) {
 	b := New(Options{
 		Decoder: &fakeDecoder{forContentType: "application/msword", text: []byte("unused")},
 	}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range upd.keys {
@@ -200,7 +200,7 @@ func TestDecoderDegradedErrorSkipsAttachmentWithoutFailingMessage(t *testing.T) 
 	b := New(Options{
 		Decoder: &errDecoder{err: fmt.Errorf("fts/decoder/tika: giving up: %w", decoder.ErrDegraded)},
 	}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
 		t.Fatalf("Build must not fail on a degraded decoder error: %v", err)
 	}
 	if upd.find(fts.KeyHeader, "subject") == nil {
@@ -230,7 +230,7 @@ func TestDecoderHardErrorCostsTheAttachmentNotTheMessage(t *testing.T) {
 	b := New(Options{
 		Decoder: &errDecoder{err: fmt.Errorf("fts/decoder/tika: unexpected status 400")},
 	}, mustChain(t))
-	if err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(pdfAttachmentMsg), upd); err != nil {
 		t.Fatalf("Build: %v, want the message indexed without the attachment", err)
 	}
 	// The message's own text must still be there, or "degraded" is a skip
@@ -288,34 +288,36 @@ type nonSeekReader struct{ r io.Reader }
 
 func (n nonSeekReader) Read(p []byte) (int, error) { return n.r.Read(p) }
 
-// An unparseable message can only be indexed as opaque text if the bytes can
-// be read a second time. When they cannot, nothing is indexed -- and that must
-// be reported as a failure, not as a degraded message: a degraded one is
-// searchable in part, this one is a hole, and only the caller can count it as
-// such.
-func TestUnparseableWithoutRewindIsReportedAsFailure(t *testing.T) {
+// The repair works on a stream that cannot be rewound, which is what a caller
+// reading straight off the wire would hand over: the header block is read once,
+// line by line, and what follows is the body.
+func TestDamagedMessageIsRepairedFromAStream(t *testing.T) {
 	upd := &fakeUpdate{}
 	b := New(Options{}, mustChain(t))
-	raw := nonSeekReader{r: strings.NewReader("NoColonHeaderLine\r\n\r\nbody words here\r\n")}
+	raw := nonSeekReader{r: strings.NewReader("From: a@b\r\nNoColonHeaderLine\r\nSubject: subjectwordzz\r\n\r\nbodywordzz here\r\n")}
 
-	if err := b.Build(1, raw, upd); err == nil {
-		t.Fatal("Build reported success although nothing was indexed")
+	report, err := b.Build(1, raw, upd)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
 	}
-	if len(upd.bodyTokens()) != 0 {
-		t.Errorf("tokens were indexed from a stream that could not be rewound: %v", upd.bodyTokens())
+	if !report.Repaired || report.DroppedHeaderLines != 1 {
+		t.Errorf("report = %+v, want one dropped line reported", report)
+	}
+	if !hasToken(upd.bodyTokens(), "bodywordzz") {
+		t.Errorf("the body was not indexed: %v", upd.bodyTokens())
 	}
 }
 
-// The same message through a reader that can rewind is indexed by its words,
-// which is what makes the case above about honesty rather than about parsing.
-func TestUnparseableWithRewindIsIndexed(t *testing.T) {
+// Input that is not a message at all still fails: a hole must be reported as
+// one, not as a message that is searchable in part.
+func TestUnsalvageableInputFails(t *testing.T) {
 	upd := &fakeUpdate{}
 	b := New(Options{}, mustChain(t))
 
-	if err := b.Build(1, strings.NewReader("NoColonHeaderLine\r\n\r\nopaquewordzz here\r\n"), upd); err != nil {
-		t.Fatalf("Build: %v", err)
+	if _, err := b.Build(1, strings.NewReader("\x00\x01 no colon, no blank line, not mail"), upd); err == nil {
+		t.Fatal("Build reported success on input that is not a message")
 	}
-	if !hasToken(upd.bodyTokens(), "opaquewordzz") {
-		t.Errorf("the message was not indexed by its own words: %v", upd.bodyTokens())
+	if len(upd.bodyTokens()) != 0 {
+		t.Errorf("tokens were indexed from something that is not a message: %v", upd.bodyTokens())
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/fts/decoder"
 	"github.com/yarilomail/yarilo/internal/fts/language"
 	"github.com/yarilomail/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/pkg/mimesalvage"
 )
 
 // Options selects which headers are indexed and how much body text is fed.
@@ -124,7 +125,21 @@ const detectionRetryFactor = 4
 // caller owns the update session (commit/rollback). Each body/attachment part
 // detects its own language lazily, from its own text (see detectPartChain);
 // headers always use dataChain.
-func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
+// Report says how the message had to be treated to be indexed. The caller
+// carries the identity that makes it actionable -- the mailbox, the GUID, the
+// file -- so it does the reporting; this only says what happened.
+type Report struct {
+	// Repaired is true when the message did not parse as it stood and was read
+	// by dropping what could not be a header.
+	Repaired bool
+	// DroppedHeaderLines is how many lines that repair discarded.
+	DroppedHeaderLines int
+	// Cause is why the parser refused it in the first place.
+	Cause error
+}
+
+func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) (Report, error) {
+	var report Report
 	remaining := b.opts.MaxSize
 	if remaining <= 0 {
 		remaining = -1 // unlimited
@@ -137,35 +152,34 @@ func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 	t0 := time.Now()
 	defer func() { st.stages.observe(time.Since(t0)) }()
 
-	var e *message.Entity
+	var (
+		e   *message.Entity
+		res mimesalvage.Result
+	)
 	perr := track(&st.stages.parse, func() error {
 		var rerr error
-		e, rerr = message.Read(raw)
+		e, res, rerr = mimesalvage.Read(raw)
 		return rerr
 	})
 	if perr != nil && !message.IsUnknownCharset(perr) {
-		// A message whose structure cannot be read is still mail, and a client
-		// expects to find it by its words. Refusing it made one such message
-		// stop its folder's indexing and, through a query that spans folders,
-		// take search away from the whole account (#1219). So it degrades:
-		// what could not be understood as MIME is indexed as opaque text.
-		indexed, oerr := b.buildOpaque(st, raw, upd)
-		if oerr != nil {
-			return oerr
-		}
-		if !indexed {
-			// Nothing was indexed, so this is a hole, not a partial index.
-			// Saying otherwise would file it under "searchable in part" and
-			// leave a gap no counter reports.
-			return fmt.Errorf("fts/buildmail: parse: %w", perr)
-		}
+		// Nothing that could be a message: not damage, and reporting it as a
+		// partial index would hide a hole no counter would then report.
+		return report, fmt.Errorf("fts/buildmail: parse: %w", perr)
+	}
+	if res.Salvaged {
+		// The message was damaged and was read anyway, by dropping what could
+		// not be a header. It is indexed as an ordinary message -- parts,
+		// types and encodings intact -- so a client finds it by its words
+		// rather than not at all (#1219). The caller is told, because the
+		// mailbox and the message identity live there, and an operator has to
+		// be able to find this message and see for themselves.
 		metricDegraded.WithLabelValues("parse").Inc()
-		slog.Warn("fts/buildmail: message structure unreadable, indexing it as opaque text",
-			"uid", uid, "err", perr)
-		return nil
+		report.Repaired = true
+		report.DroppedHeaderLines = res.DroppedHeaderLines
+		report.Cause = perr
 	}
 
-	return b.walkEntity(st, e, 0, upd)
+	return report, b.walkEntity(st, e, 0, upd)
 }
 
 // readPrefix reads up to n bytes from r, tolerating a short read at EOF (a
@@ -590,38 +604,6 @@ func (b *Builder) buildBodyText(st *buildState, chain *language.Chain, contentTy
 		return nil
 	}
 	return session.Close()
-}
-
-// buildOpaque indexes the message's own bytes as one text part, for a message
-// whose MIME could not be parsed. It rewinds first: the parser has already
-// consumed part of the stream, and what is left is not the message.
-//
-// A reader that cannot rewind indexes nothing here rather than indexing a
-// tail that starts mid-header -- half a message under the right UID reads as
-// a complete one, and no caller could tell. It reports that as "not indexed"
-// so the caller files it where it belongs: a hole to be counted, not a
-// message that is searchable in part.
-func (b *Builder) buildOpaque(st *buildState, raw io.Reader, upd fts.Update) (bool, error) {
-	seeker, ok := raw.(io.Seeker)
-	if !ok {
-		return false, nil
-	}
-	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
-		return false, nil
-	}
-	chain, reader, err := b.detectPartChain(raw, false)
-	if err != nil {
-		return false, nil
-	}
-	// Through the same body path a text part takes, so the size cap, the
-	// dedup and the token stream behave identically -- an opaque message is
-	// indexed like text, not like a special case.
-	if err := b.buildBodyText(st, chain, "text/plain", func(sink func([]byte) error) error {
-		return copyChunks(reader, sink)
-	}, upd); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 var errBodyCap = fmt.Errorf("fts/buildmail: body size cap reached")
