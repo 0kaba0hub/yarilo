@@ -45,6 +45,11 @@ func TestRefcountChangeDoesNotRewriteTheBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat base: %v", err)
 	}
+	// Size alone cannot tell: a rewrite of the same records is the same
+	// length, so mtime is what discriminates -- and on a filesystem with
+	// coarse timestamps a rewrite inside one tick would slip through. Once the
+	// #1208 counters are available here, the honest assertion is that
+	// mdbox_map_flush_total did not move.
 	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
 		t.Error("the base index was rewritten for a refcount change")
 	}
@@ -186,5 +191,41 @@ func TestPurgeReadsSeeTheLog(t *testing.T) {
 	}
 	if len(recs) != 1 || recs[0].RefCount != 1 {
 		t.Errorf("records = %+v, want one with refcount 1", recs)
+	}
+}
+
+// A failed append leaves memory ahead of the disk, and the purge scan reads
+// memory. Neither the base mtime nor the log size moved, so without dropping
+// the freshness stamps the next reload takes the fast path and keeps the
+// phantom count -- below the truth for a decrement, which is a file offered
+// for deletion while it is still referenced.
+func TestFailedAppendDoesNotLeavePhantomRefcounts(t *testing.T) {
+	m, dir := openTestMap(t)
+	uid := seedRecord(t, m, 7)
+
+	// Make the log unwritable: a directory in its place fails the open the
+	// way a full or broken filesystem would.
+	logPath := filepath.Join(dir, MapIndexFileName) + ".log"
+	if err := os.Remove(logPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove log: %v", err)
+	}
+	if err := os.Mkdir(logPath, 0o700); err != nil {
+		t.Fatalf("mkdir over log: %v", err)
+	}
+
+	if err := m.UpdateRefcounts([]uint32{uid}, -1); err == nil {
+		t.Fatal("the append succeeded although the log could not be opened")
+	}
+
+	files, err := m.GetZeroRefFiles()
+	if err != nil {
+		// Reloading over the broken log may itself fail; that is an honest
+		// refusal and not a file offered for deletion.
+		return
+	}
+	for _, id := range files {
+		if id == 7 {
+			t.Error("purge was offered a file whose decrement was never written")
+		}
 	}
 }

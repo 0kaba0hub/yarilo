@@ -43,7 +43,16 @@ func (m *Map) UpdateRefcounts(mapUIDs []uint32, delta int16) error {
 		// refcount, so rewriting the whole base index here made a full file
 		// rewrite the price of one operation -- and every sibling process then
 		// had to re-open the base it invalidated (#1205).
-		return m.appendRefcountLogLocked(deltas)
+		if err := m.appendRefcountLogLocked(deltas); err != nil {
+			// The records above are already changed, and the write that would
+			// have made them durable did not happen: neither the base mtime
+			// nor the log size moved, so the next reload would take the fast
+			// path and keep the phantom value. For a decrement that value is
+			// below the truth, and the purge scan reads exactly this state.
+			m.invalidateLocked()
+			return err
+		}
+		return nil
 	})
 }
 

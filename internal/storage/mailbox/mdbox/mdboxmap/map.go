@@ -297,6 +297,15 @@ func timed(h prometheus.Observer, fn func() error) error {
 	return err
 }
 
+// invalidateLocked drops the freshness stamps so the next read reloads from
+// disk instead of trusting memory. Used where an in-memory change could not be
+// persisted: memory is then ahead of the file, and the fast path would keep it
+// that way.
+func (m *Map) invalidateLocked() {
+	m.baseMod = time.Time{}
+	m.logSize = -1
+}
+
 // flushLocked rewrites the whole base index from m.f and drops the append log:
 // the base now holds the full state, so the log resets to empty. This is the
 // compaction point and the full-state persist for refcount/purge/file-id

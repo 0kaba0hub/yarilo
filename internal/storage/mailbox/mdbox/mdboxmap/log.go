@@ -1,7 +1,6 @@
 package mdboxmap
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -234,21 +233,21 @@ func (m *Map) replayLogLocked(fromOffset int64) (int64, error) {
 }
 
 // applyRefcountDeltas folds one EXT_ATOMIC_INC payload into the records the
-// replay has built so far. A delta naming an unknown UID is skipped rather
-// than failing the replay: the record may have been expunged by a later
-// transaction, and refusing to replay would leave the map on the base alone --
-// which is the stale state this log exists to avoid.
+// replay has built so far.
+//
+// A delta naming an unknown UID is skipped, and the two directions are not
+// equally forgiving: a skipped decrement only keeps a dead file alive, while a
+// skipped increment lets purge delete a message that is still referenced. This
+// is safe on one invariant -- a record is durable before any delta against it,
+// since the append is logged (or flushed) before the refcount that follows it.
+// If that ever stops holding, this skip is where the breakage would hide.
 func applyRefcountDeltas(byUID map[uint32]*mailindex.Record, payload []byte) {
-	const sz = 8
-	le := binary.LittleEndian
-	for i := 0; i+sz <= len(payload); i += sz {
-		uid := le.Uint32(payload[i:])
-		diff := int32(le.Uint32(payload[i+4:]))
-		rec, ok := byUID[uid]
+	for _, d := range mailindex.DecodeTxExtAtomicIncPayload(payload) {
+		rec, ok := byUID[d.UID]
 		if !ok {
 			continue
 		}
-		rec.Ext[extRef] = encodeRefExt(clampRef(int32(decodeRefExt(rec.Ext[extRef])) + diff))
+		rec.Ext[extRef] = encodeRefExt(clampRef(int32(decodeRefExt(rec.Ext[extRef])) + d.Diff))
 	}
 }
 
