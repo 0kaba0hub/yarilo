@@ -136,7 +136,7 @@ func main() {
 	flag.Parse()
 
 	checks := register()
-	exempt, err := parseExemptions(*flagRequireAllExcept, checks)
+	exempt, err := parseExemptions(*flagRequireAllExcept, *flagRequireAll, checks)
 	if err != nil {
 		slog.Error("smoke: bad -require-all-except", "err", err)
 		os.Exit(2)
@@ -221,10 +221,15 @@ func register() []check {
 // parseExemptions reads -require-all-except. An area no check declares is an
 // error, not a silent no-op: the flag exists to narrow a gate, so a typo in
 // it must not read as a narrower gate that quietly still demands everything.
-func parseExemptions(list string, checks []check) (map[string]bool, error) {
+func parseExemptions(list string, requireAll bool, checks []check) (map[string]bool, error) {
 	known := map[string]bool{}
 	for _, c := range checks {
 		known[c.area] = true
+	}
+	// Alone the flag reads as "demand everything except this" while actually
+	// demanding nothing, so it is rejected rather than silently inert.
+	if strings.TrimSpace(list) != "" && !requireAll {
+		return nil, fmt.Errorf("-require-all-except narrows -require-all, which is not set: nothing is being demanded")
 	}
 	exempt := map[string]bool{}
 	for _, a := range strings.Split(list, ",") {
@@ -248,22 +253,25 @@ func runChecks(checks []check, requireAll bool, exempt map[string]bool, out io.W
 	var failures []result
 	var skipped, tolerated []check
 	passed, exempted := 0, 0
+	// An exemption only means something against a demand, so nothing may
+	// report itself as exempt when nothing is demanded.
+	forgiven := func(area string) bool { return requireAll && exempt[area] }
 	for i, c := range checks {
 		if c.skip != "" {
 			skipped = append(skipped, c)
 			// An exemption forgives an area the deployment does not run; it
 			// never forgives a check that ran and failed.
-			if requireAll && !exempt[c.area] {
+			if requireAll && !forgiven(c.area) {
 				slog.Error("smoke: SKIP", "n", i+1, "total", len(checks), "check", c.name, "reason", c.skip)
 				failures = append(failures, result{c.name, fmt.Errorf("not configured: %s", c.skip)})
 				continue
 			}
-			if exempt[c.area] {
+			if forgiven(c.area) {
 				exempted++
 			}
 			tolerated = append(tolerated, c)
 			slog.Warn("smoke: SKIP", "n", i+1, "total", len(checks), "check", c.name,
-				"reason", c.skip, "area", c.area, "exempt", exempt[c.area])
+				"reason", c.skip, "area", c.area, "exempt", forgiven(c.area))
 			continue
 		}
 		slog.Info("smoke: run", "n", i+1, "total", len(checks), "check", c.name)
@@ -284,7 +292,7 @@ func runChecks(checks []check, requireAll bool, exempt map[string]bool, out io.W
 	if len(tolerated) > 0 {
 		fmt.Fprintf(out, "\n%d smoke check(s) skipped:\n", len(tolerated))
 		for _, c := range tolerated {
-			if exempt[c.area] {
+			if forgiven(c.area) {
 				fmt.Fprintf(out, "  - %s (%s; area %s exempt from -require-all)\n", c.name, c.skip, c.area)
 				continue
 			}

@@ -100,12 +100,17 @@ func TestRequireAllExceptForgivesOnlySkipsInNamedAreas(t *testing.T) {
 		}
 	})
 
-	t.Run("without require-all an exemption changes no outcome", func(t *testing.T) {
+	// main rejects this combination; if it ever reaches runChecks, nothing may
+	// claim to be exempt from a demand that was never made.
+	t.Run("without require-all nothing reports itself exempt", func(t *testing.T) {
 		var out bytes.Buffer
 		got := runChecks(set(), false, map[string]bool{"jmap": true}, &out)
-		want := summary{total: 3, passed: 0, failed: 1, skipped: 2, exempt: 1}
+		want := summary{total: 3, passed: 0, failed: 1, skipped: 2, exempt: 0}
 		if got != want {
 			t.Errorf("summary = %+v, want %+v", got, want)
+		}
+		if strings.Contains(out.String(), "-require-all") {
+			t.Errorf("report cites a flag the run did not use:\n%s", out.String())
 		}
 	})
 }
@@ -115,7 +120,7 @@ func TestRequireAllExceptForgivesOnlySkipsInNamedAreas(t *testing.T) {
 func TestParseExemptionsRejectsUnknownAreas(t *testing.T) {
 	checks := []check{{area: "jmap", name: "jmap session"}, {area: "imap", name: "imap FTS"}}
 
-	got, err := parseExemptions(" jmap , imap ", checks)
+	got, err := parseExemptions(" jmap , imap ", true, checks)
 	if err != nil {
 		t.Fatalf("parseExemptions: %v", err)
 	}
@@ -123,16 +128,24 @@ func TestParseExemptionsRejectsUnknownAreas(t *testing.T) {
 		t.Errorf("exempt = %v, want jmap and imap", got)
 	}
 
-	if got, err := parseExemptions("", checks); err != nil || len(got) != 0 {
+	if got, err := parseExemptions("", true, checks); err != nil || len(got) != 0 {
 		t.Errorf("empty list = %v, %v; want an empty set and no error", got, err)
 	}
 
-	err = func() error { _, err := parseExemptions("jmpa", checks); return err }()
+	err = func() error { _, err := parseExemptions("jmpa", true, checks); return err }()
 	if err == nil {
 		t.Fatal("a misspelled area was accepted")
 	}
 	if !strings.Contains(err.Error(), "imap, jmap") {
 		t.Errorf("error does not list the known areas: %v", err)
+	}
+
+	// Alone the flag reads as a narrowed demand while demanding nothing.
+	if _, err := parseExemptions("jmap", false, checks); err == nil {
+		t.Error("-require-all-except was accepted without -require-all")
+	}
+	if _, err := parseExemptions("", false, checks); err != nil {
+		t.Errorf("an unset exemption without -require-all must be fine: %v", err)
 	}
 }
 
