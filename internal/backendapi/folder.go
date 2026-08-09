@@ -118,16 +118,7 @@ func (s *Server) handleFolderStats(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "open folder: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	msgs, err := bundle.box.List(req.Folder)
-	if err != nil {
-		apiError(w, "list messages: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	var sizeBytes uint64
-	for _, m := range msgs {
-		sizeBytes += uint64(m.Size)
-	}
-	apiJSON(w, map[string]any{
+	out := map[string]any{
 		"name":           folder.Name,
 		"guid":           hex.EncodeToString(folder.GUID[:]),
 		"uid_validity":   folder.UIDValidity,
@@ -135,9 +126,36 @@ func (s *Server) handleFolderStats(w http.ResponseWriter, r *http.Request) {
 		"messages":       folder.Messages,
 		"unseen":         folder.Unseen,
 		"highest_modseq": folder.HighestModSeq,
-		"size_bytes":     sizeBytes,
-		"on_disk_count":  uint32(len(msgs)),
-	})
+		// Null rather than zero where the driver cannot answer: a folder-
+		// agnostic store keeps its messages user-wide, so it has no per-folder
+		// listing to count or measure. Reporting 0 made "not applicable" look
+		// like a fact, which breaks any comparison between drivers and fires
+		// every "this folder is empty on disk" alert forever (#1224).
+		"size_bytes":    nil,
+		"on_disk_count": nil,
+	}
+	if !isFolderAgnostic(bundle.box) {
+		msgs, err := bundle.box.List(req.Folder)
+		if err != nil {
+			apiError(w, "list messages: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var sizeBytes uint64
+		for _, m := range msgs {
+			sizeBytes += uint64(m.Size)
+		}
+		out["size_bytes"] = sizeBytes
+		out["on_disk_count"] = uint32(len(msgs))
+	}
+	apiJSON(w, out)
+}
+
+// isFolderAgnostic reports whether the driver keeps its messages outside any
+// one folder, in which case a per-folder count of files on disk is not a
+// number it has.
+func isFolderAgnostic(box mailbox.UserMailbox) bool {
+	fa, ok := box.(mailbox.FolderAgnosticStorage)
+	return ok && fa.FolderAgnosticScan()
 }
 
 // folderInfoCommon opens the folder and returns its metadata.
