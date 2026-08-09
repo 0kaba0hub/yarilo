@@ -57,11 +57,16 @@ type Map struct {
 	// belongs to an earlier map at this path and is discarded, never applied.
 	indexID uint32
 
-	// logSeq / logReplayOffset are the persisted "how far into the log does the
-	// base already reach" pair. The offset is honoured only when the log on disk
-	// carries logSeq: a log from an earlier base is replayed whole instead.
-	logSeq          uint32
-	logReplayOffset int64
+	// lineage names the log the base on disk is the root of; foldedLineage /
+	// foldedOffset name the log that base absorbed and how far into it.
+	lineage       uint32
+	foldedLineage uint32
+	foldedOffset  int64
+
+	// logLineage is the lineage of the log this handle has been applying, and
+	// logSize how far into it. The pair is what the handle compares against a
+	// rewritten base to decide whether its records are already that base's.
+	logLineage uint32
 
 	// rotateSize is the per-m.<N> size cap the batch append path enforces. 0
 	// means the package default (defaultRotateSize).
@@ -235,23 +240,26 @@ func (m *Map) applyHeaderLocked(h baseHeader) {
 	m.createFileID = h.CreateFileID
 	m.createTime = h.CreateTime
 	m.indexID = h.IndexID
-	m.logSeq = h.LogSeq
-	m.logReplayOffset = int64(h.LogReplayOffset)
+	m.lineage = h.Lineage
+	m.foldedLineage = h.FoldedLineage
+	m.foldedOffset = int64(h.FoldedOffset)
 }
 
 func (m *Map) headerLocked() baseHeader {
 	return baseHeader{
-		Version:         baseVersion2,
-		RecordSize:      baseRecordLen,
-		RecordCount:     uint32(m.st.count()),
-		NextMapUID:      m.nextMapUID,
-		HighestFileID:   m.highestFileID,
-		RebuildCount:    m.rebuildCount,
-		CreateFileID:    m.createFileID,
-		CreateTime:      m.createTime,
-		LogReplayOffset: uint64(m.logReplayOffset),
-		IndexID:         m.indexID,
-		LogSeq:          m.logSeq,
+		Version:       baseVersion2,
+		RecordSize:    baseRecordLen,
+		RecordCount:   uint32(m.st.count()),
+		NextMapUID:    m.nextMapUID,
+		HighestFileID: m.highestFileID,
+		RebuildCount:  m.rebuildCount,
+		CreateFileID:  m.createFileID,
+		CreateTime:    m.createTime,
+		FoldedOffset:  uint64(m.foldedOffset),
+		FoldedLineage: m.foldedLineage,
+		Lineage:       m.lineage,
+		RecordsDigest: digestRecords(m.st.recs),
+		IndexID:       m.indexID,
 	}
 }
 
@@ -263,8 +271,9 @@ func (m *Map) createFresh() error {
 	m.loaded = true
 	m.nextMapUID = 1
 	m.highestFileID = 0
-	m.logSeq = 0
-	m.logReplayOffset = 0
+	m.lineage = 0
+	m.foldedLineage = 0
+	m.foldedOffset = 0
 	return m.flushLocked()
 }
 
@@ -285,32 +294,45 @@ func (m *Map) writeBaseLocked() error {
 	return nil
 }
 
-// writeLogPairingLocked records which log, and how much of it, the base on disk
-// already contains. Only those two fields are touched: everything else in the
-// header describes the records in the file, and memory is routinely ahead of
-// them — an append lives in the log long before the base is rewritten, so
-// publishing the in-memory counts here would claim records the file does not
-// hold.
-func (m *Map) writeLogPairingLocked() error {
-	f, err := os.OpenFile(m.path, os.O_RDWR, 0o600)
+// peekHeaderLocked reads the 80-byte header without the record area. Deciding
+// whether a rewritten base needs reading at all costs one short positional read.
+func (m *Map) peekHeaderLocked() (baseHeader, error) {
+	f, err := os.Open(m.path)
 	if err != nil {
-		return fmt.Errorf("mdboxmap/header: open: %w", err)
+		return baseHeader{}, fmt.Errorf("mdboxmap/peek: open: %w", err)
 	}
 	defer f.Close()
 	buf := make([]byte, baseHeaderLen)
 	if _, err := f.ReadAt(buf, 0); err != nil {
-		return fmt.Errorf("mdboxmap/header: read: %w", err)
+		return baseHeader{}, fmt.Errorf("mdboxmap/peek: read: %w", err)
 	}
-	h, err := decodeBaseHeader(buf)
-	if err != nil {
-		return err
+	return decodeBaseHeader(buf)
+}
+
+// adoptFoldLocked takes ownership of a rewritten base without reading it, and
+// reports whether it could. The fast path holds only when the new base is this
+// handle's own state folded flat: it absorbed the log this handle was applying,
+// no further than this handle got, and the records it published hash to the ones
+// in memory.
+//
+// The digest is what keeps this honest without a list to maintain. Several write
+// paths rewrite the base outside the log — purge, expunge-vanished, the refcount
+// recompute, the rebuild counter, the file-id allocator — and any of them can
+// have folded exactly the same log while changing what it holds. A future one
+// would too. None of them has to declare anything: a base whose records differ
+// cannot match the digest, so it is read.
+func (m *Map) adoptFoldLocked(h baseHeader, baseMod time.Time) bool {
+	if h.FoldedLineage != m.logLineage || m.logSize < int64(h.FoldedOffset) {
+		return false
 	}
-	h.LogSeq = m.logSeq
-	h.LogReplayOffset = uint64(m.logReplayOffset)
-	if _, err := f.WriteAt(encodeBaseHeader(h), 0); err != nil {
-		return fmt.Errorf("mdboxmap/header: write: %w", err)
+	if h.RecordsDigest != digestRecords(m.st.recs) {
+		return false
 	}
-	return nil
+	m.applyHeaderLocked(h)
+	m.logLineage = h.Lineage
+	m.logSize = 0
+	m.baseMod = baseMod
+	return true
 }
 
 // findExtLocked resolves a map_uid to its index in the record area.
@@ -394,16 +416,15 @@ func (m *Map) flushLocked() error {
 	if err != nil {
 		return err
 	}
-	if seq != 0 {
-		m.logSeq = seq
-	}
-	m.logReplayOffset = size
+	m.foldedLineage, m.foldedOffset = seq, size
+	m.lineage++
 	if err := m.writeBaseLocked(); err != nil {
 		return err
 	}
 	if err := os.Remove(m.logPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("mdboxmap/flush: remove log: %w", err)
 	}
+	m.logLineage = m.lineage
 	m.logSize = 0
 	if st, err := os.Stat(m.path); err == nil {
 		m.baseMod = st.ModTime()
@@ -495,13 +516,24 @@ func (m *Map) reloadLocked() error {
 		return nil
 	}
 
-	// Base changed (or first load): re-read it, then replay from the offset it
-	// records as already folded in.
+	// The base file moved. Either it was rewritten by someone, or this is the
+	// first load; the 80-byte header says which, and whether the records it now
+	// holds are the ones already in memory.
 	if !m.loaded || !baseMod.Equal(m.baseMod) {
-		metricMapReload.WithLabelValues("reopen").Inc()
 		if baseErr != nil {
 			return fmt.Errorf("mdboxmap/reload: %w", baseErr)
 		}
+		if m.loaded {
+			h, herr := m.peekHeaderLocked()
+			if herr != nil {
+				return fmt.Errorf("mdboxmap/reload: %w", herr)
+			}
+			if m.adoptFoldLocked(h, baseMod) {
+				metricMapReload.WithLabelValues("fold").Inc()
+				return nil
+			}
+		}
+		metricMapReload.WithLabelValues("reopen").Inc()
 		if err := m.readBaseLocked(); err != nil {
 			return fmt.Errorf("mdboxmap/reload: %w", err)
 		}

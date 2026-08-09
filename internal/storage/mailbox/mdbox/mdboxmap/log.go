@@ -64,10 +64,10 @@ func logRecordToEntry(rec mailindex.Record) (MapEntry, error) {
 }
 
 // openLogLocked opens the log for appending and writes its header when the file
-// is new. A fresh log gets the next sequence number and the base records it
-// immediately: the pair (seq, offset) is what lets a later open know how much of
-// this log the base already contains, and a base that never saw this log falls
-// back to replaying it whole.
+// is new. The header carries the base's lineage, which is what makes the log
+// self-describing: a reader compares it against the base it read and knows
+// whether that base already contains these transactions. The base itself is not
+// touched — a log's birth is not a change to the map.
 func (m *Map) openLogLocked() (*os.File, error) {
 	f, err := os.OpenFile(m.logPath(), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
@@ -77,21 +77,13 @@ func (m *Map) openLogLocked() (*os.File, error) {
 	if st == nil || st.Size() != 0 {
 		return f, nil
 	}
-	seq := m.logSeq + 1
-	hdr := mailindex.NewLogHeader(m.indexID, seq, uint32(time.Now().Unix()))
+	hdr := mailindex.NewLogHeader(m.indexID, m.lineage, uint32(time.Now().Unix()))
 	if err := hdr.Encode(f); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("mdboxmap/log: header: %w", err)
 	}
-	m.logSeq = seq
-	m.logReplayOffset = mailindex.LogHeaderSize
-	if err := m.writeLogPairingLocked(); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	if bst, serr := os.Stat(m.path); serr == nil {
-		m.baseMod = bst.ModTime()
-	}
+	m.logLineage = m.lineage
+	m.logSize = mailindex.LogHeaderSize
 	return f, nil
 }
 
@@ -220,17 +212,35 @@ func encMapLogRec(txType mailindex.TxType, payload []byte) ([]byte, error) {
 }
 
 // replayFromPersistedLocked replays only the part of the log the base does not
-// already contain. The base names the log it folded in by sequence number; a log
-// carrying a different one belongs to an earlier base and is replayed whole.
+// already contain, deciding from the log's own lineage:
+//
+//   - the base's own lineage: the log holds only what was written after the
+//     base, so it is replayed whole;
+//   - the lineage the base folded: replay resumes past the folded offset. This
+//     is the crash between writing the base and removing the log — replaying it
+//     whole would apply every refcount delta in it a second time;
+//   - anything else: the log belongs to some earlier map at this path.
 func (m *Map) replayFromPersistedLocked() (int64, error) {
 	seq, _, err := m.logIdentityLocked()
 	if err != nil {
 		return 0, err
 	}
-	from := int64(mailindex.LogHeaderSize)
-	if seq != 0 && seq == m.logSeq && m.logReplayOffset > from {
-		from = m.logReplayOffset
+	if seq == 0 {
+		return 0, nil
 	}
+	var from int64
+	switch seq {
+	case m.lineage:
+		from = mailindex.LogHeaderSize
+	case m.foldedLineage:
+		from = m.foldedOffset
+		if from < mailindex.LogHeaderSize {
+			from = mailindex.LogHeaderSize
+		}
+	default:
+		return 0, errLogIndexMismatch
+	}
+	m.logLineage = seq
 	return m.replayLogLocked(from)
 }
 

@@ -74,17 +74,19 @@ func TestStoreKeepsRecordsOrdered(t *testing.T) {
 // how much of the log is replayed on top of it.
 func TestBaseHeaderRoundTrips(t *testing.T) {
 	want := baseHeader{
-		Version:         baseVersion2,
-		RecordSize:      baseRecordLen,
-		RecordCount:     3,
-		NextMapUID:      8,
-		HighestFileID:   2,
-		RebuildCount:    5,
-		CreateFileID:    2,
-		CreateTime:      1723200000,
-		LogReplayOffset: 4096,
-		IndexID:         4242,
-		LogSeq:          7,
+		Version:       baseVersion2,
+		RecordSize:    baseRecordLen,
+		RecordCount:   3,
+		NextMapUID:    8,
+		HighestFileID: 2,
+		RebuildCount:  5,
+		CreateFileID:  2,
+		CreateTime:    1723200000,
+		FoldedOffset:  4096,
+		FoldedLineage: 6,
+		Lineage:       7,
+		RecordsDigest: digestRecords([]byte("records")),
+		IndexID:       4242,
 	}
 	got, err := decodeBaseHeader(encodeBaseHeader(want))
 	if err != nil {

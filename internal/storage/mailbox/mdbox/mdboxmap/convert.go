@@ -96,8 +96,13 @@ func (m *Map) convertV1Locked() error {
 	if rerr != nil && !errors.Is(rerr, errLogIndexMismatch) {
 		return fmt.Errorf("mdboxmap/convert: replay log: %w", rerr)
 	}
-	m.logSeq = seq
-	m.logReplayOffset = applied
+	// The v1 log stays where it is and keeps being appended to, so the v2 base
+	// records it as folded up to here. Its own lineage must differ from it, or a
+	// later reader would take that log for one written after this base and apply
+	// its transactions a second time.
+	m.foldedLineage, m.foldedOffset = seq, applied
+	m.lineage = seq + 1
+	m.logLineage = seq
 	m.logSize = applied
 
 	if err := m.writeBaseLocked(); err != nil {

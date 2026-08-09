@@ -69,7 +69,7 @@ var (
 	metricMapReload = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "mdbox_map_reload_total",
 		Help: "Map freshness checks by outcome.",
-	}, []string{"result"}) // fast | replay | reopen
+	}, []string{"result"}) // fast | replay | fold | reopen
 	metricMapReplayBytes = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "mdbox_map_replay_bytes_total",
 		Help: "Bytes of append log replayed into the in-memory map.",
@@ -83,7 +83,7 @@ var (
 	// storage first (#1205).
 	metricMapOpenSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "mdbox_map_open_seconds",
-		Help:    "Time to open the map for a handle, whole: reading the base index, replaying the log and rebuilding the UID index.",
+		Help:    "Time to open the map for a handle, whole: reading the base index and replaying the log.",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 11), // 100us .. ~100s
 	})
 	metricMapOpenPart = promauto.NewHistogramVec(prometheus.HistogramOpts{
