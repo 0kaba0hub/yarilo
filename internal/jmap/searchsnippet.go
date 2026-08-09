@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/yarilomail/yarilo/internal/fts/buildmail"
 	"github.com/yarilomail/yarilo/internal/fts/language"
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
 )
@@ -63,7 +64,7 @@ func (s *Server) searchSnippet(_ context.Context, h *userHandle, accountID strin
 		// The same read the Maybe confirmation uses: a second way of getting
 		// the text would produce messages the search finds and the snippet
 		// cannot show, for no reason in the data.
-		hdr, body, err := eval.readMessage(scopeFolder{name: ref.folder}, ref.meta)
+		hdr, parts, err := eval.readParts(scopeFolder{name: ref.folder}, ref.meta)
 		if err != nil {
 			slog.Warn("jmap: snippet cannot read the message", "id", id, "err", err)
 			resp.NotFound = append(resp.NotFound, id)
@@ -72,10 +73,39 @@ func (s *Server) searchSnippet(_ context.Context, h *userHandle, accountID strin
 		resp.List = append(resp.List, jmapcore.SearchSnippet{
 			EmailID: id,
 			Subject: marker.mark(decodeWord(hdr.Get("subject")), 0),
-			Preview: marker.mark(body, s.opts.SnippetMaxChars),
+			Preview: marker.mark(displayText(parts), s.opts.SnippetMaxChars),
 		})
 	}
 	return resp, nil
+}
+
+// displayText is what a reader is shown, which is not what a condition is
+// confirmed against: the confirmation searches every text part, markup
+// included, while a fragment must not put HTML source in front of a person.
+// text/plain wins; an HTML-only message is stripped, the same shape Email
+// preview takes.
+func displayText(parts []walkedPart) string {
+	var htmlBody string
+	for _, p := range parts {
+		if p.mediaType == "text/plain" && p.body != "" {
+			return p.body
+		}
+		if p.mediaType == "text/html" && htmlBody == "" {
+			htmlBody = p.body
+		}
+	}
+	if htmlBody == "" {
+		return ""
+	}
+	var out strings.Builder
+	if err := buildmail.HTMLToText(strings.NewReader(htmlBody), func(b []byte) error {
+		out.Write(b)
+		out.WriteByte(' ')
+		return nil
+	}); err != nil {
+		return ""
+	}
+	return strings.Join(strings.Fields(out.String()), " ")
 }
 
 // snippetMarker highlights whole tokens whose stem matched, never substrings:
@@ -88,10 +118,14 @@ type snippetMarker struct {
 	// from, so "running" marks under a query for "run" exactly when the index
 	// thought it a match.
 	chain *language.MultiChain
+	// seen memoises the verdict per token: a get over hundreds of ids would
+	// otherwise stem tens of thousands of words, and a long message repeats
+	// the same ones throughout.
+	seen map[string]bool
 }
 
 func newSnippetMarker(s *Server, f *jmapcore.EmailFilter) *snippetMarker {
-	m := &snippetMarker{stems: map[string]bool{}}
+	m := &snippetMarker{stems: map[string]bool{}, seen: map[string]bool{}}
 	if f == nil || s.opts.FTS == nil {
 		return m
 	}
@@ -117,10 +151,8 @@ func (m *snippetMarker) mark(text string, maxChars int) *string {
 		return nil
 	}
 	var out strings.Builder
-	matched := false
 	for _, tok := range splitTokens(text) {
 		if tok.word && m.matches(tok.text) {
-			matched = true
 			out.WriteString("<mark>")
 			out.WriteString(html.EscapeString(tok.text))
 			out.WriteString("</mark>")
@@ -128,21 +160,111 @@ func (m *snippetMarker) mark(text string, maxChars int) *string {
 		}
 		out.WriteString(html.EscapeString(tok.text))
 	}
-	if !matched {
-		return nil
-	}
 	s := out.String()
 	if maxChars > 0 {
-		s = truncateMarked(s, maxChars)
+		s = windowAround(s, maxChars)
+	}
+	// The one decision, taken on what is being returned rather than on what was
+	// found somewhere in the message: a fragment with no highlight in it is the
+	// invented answer null exists to avoid.
+	if !strings.Contains(s, "<mark>") {
+		return nil
 	}
 	return &s
+}
+
+// windowAround cuts maxChars of visible text around the first highlight --
+// "the relevant section" the method is named for (RFC 8621 5.1). Cutting from
+// the start instead would return the head of a long message with no highlight
+// in it, stated as a search fragment.
+func windowAround(s string, maxChars int) string {
+	hit := strings.Index(s, "<mark>")
+	if hit < 0 {
+		return truncateMarked(s, maxChars)
+	}
+	// A quarter of the window as lead-in, so the hit is not flush left, backed
+	// up to a word boundary: a fragment starting mid-word reads as damaged.
+	lead := maxChars / 4
+	start := backUpVisible(s, hit, lead)
+	out := truncateMarked(s[start:], maxChars)
+	if start > 0 {
+		out = ellipsis + out
+	}
+	if end := start + visibleLen(out); end < len(s) {
+		out += ellipsis
+	}
+	return out
+}
+
+// ellipsis marks a fragment that does not start or end at the message's own
+// edges, so a reader is not told the mail begins mid-sentence.
+const ellipsis = "\u2026"
+
+// backUpVisible walks back from hit over at most n visible characters, then to
+// the nearest word boundary, never splitting an entity or a tag.
+func backUpVisible(s string, hit, n int) int {
+	i := hit
+	for visible := 0; i > 0 && visible < n; visible++ {
+		j := i - 1
+		for j > 0 && !utf8.RuneStart(s[j]) {
+			j--
+		}
+		// Stepping back into markup or an entity would leave a fragment of it.
+		if s[j] == '>' || s[j] == ';' {
+			break
+		}
+		i = j
+	}
+	for i > 0 && i < len(s) && !isBoundary(rune(s[i-1])) {
+		i++
+	}
+	if i >= hit {
+		return hit
+	}
+	return i
+}
+
+func isBoundary(r rune) bool { return unicode.IsSpace(r) || unicode.IsPunct(r) }
+
+// visibleLen counts what a reader sees: markup and entities are one thing to
+// them, not the bytes they are written with.
+func visibleLen(s string) int {
+	n := 0
+	for i := 0; i < len(s); {
+		switch {
+		case strings.HasPrefix(s[i:], "<mark>"), strings.HasPrefix(s[i:], "</mark>"):
+			i += strings.IndexByte(s[i:], '>') + 1
+		case s[i] == '&':
+			if end := strings.IndexByte(s[i:], ';'); end >= 0 {
+				i += end + 1
+			} else {
+				i++
+			}
+			n++
+		default:
+			_, size := utf8.DecodeRuneInString(s[i:])
+			i += size
+			n++
+		}
+	}
+	return n
 }
 
 // matches reports whether this token's own expansion meets the query's. Both
 // sides go through the same chain, so "running" matches a query for "run"
 // exactly when the index thought so.
 func (m *snippetMarker) matches(token string) bool {
-	if m.stems[strings.ToLower(token)] {
+	key := strings.ToLower(token)
+	if hit, ok := m.seen[key]; ok {
+		return hit
+	}
+	hit := m.expandAndCompare(key)
+	m.seen[key] = hit
+	return hit
+}
+
+func (m *snippetMarker) expandAndCompare(token string) bool {
+	if m.stems[token] {
 		return true
 	}
 	if m.chain == nil {

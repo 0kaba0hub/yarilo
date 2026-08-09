@@ -143,3 +143,67 @@ func TestSearchSnippetBoundsTheIDCount(t *testing.T) {
 		t.Errorf("type = %v, want requestTooLarge", err["type"])
 	}
 }
+
+// A long message: the fragment must be the window around the hit, not the head
+// of the mail. Cutting from the start returns 256 characters with no highlight
+// in them, stated as a search result -- worse than null, because the field
+// claims a match.
+func TestSearchSnippetWindowsAroundTheHit(t *testing.T) {
+	filler := strings.Repeat("padding words here ", 120) // ~2 KB before the hit
+	s := snippetServer(t, "Subject: hi\r\nFrom: alice@example.com\r\n\r\n"+filler+"the needle at last\r\n")
+	id := snippetIDs(t, s)
+	preview, _ := firstSnippet(t, snippetGet(t, s, `{"accountId":"u1@example.com","emailIds":["`+id+`"],
+		"filter":{"text":"needle"}}`))["preview"].(string)
+
+	if !strings.Contains(preview, "<mark>needle</mark>") {
+		t.Fatalf("preview %q carries no highlight: it is the head of the message, not a snippet", preview)
+	}
+	if visibleLen(preview) > s.opts.SnippetMaxChars+2 { // the two ellipses
+		t.Errorf("preview is %d visible chars, want at most %d", visibleLen(preview), s.opts.SnippetMaxChars)
+	}
+	if !strings.HasPrefix(preview, "\u2026") {
+		t.Errorf("preview %q does not say it starts mid-message", preview)
+	}
+}
+
+// The confirmation searches every text part, markup included; a reader must
+// not be shown that markup. text/plain wins, and the HTML twin stays out.
+func TestSearchSnippetPreviewSkipsTheHTMLSource(t *testing.T) {
+	raw := "Subject: hi\r\nFrom: alice@example.com\r\n" +
+		"MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=b1\r\n\r\n" +
+		"--b1\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nthe needle in plain text\r\n" +
+		"--b1\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +
+		"<div style=\"color:red\"><p>the needle in html</p></div>\r\n--b1--\r\n"
+	s := snippetServer(t, raw)
+	id := snippetIDs(t, s)
+	preview, _ := firstSnippet(t, snippetGet(t, s, `{"accountId":"u1@example.com","emailIds":["`+id+`"],
+		"filter":{"text":"needle"}}`))["preview"].(string)
+
+	if !strings.Contains(preview, "<mark>needle</mark>") {
+		t.Errorf("preview %q has no highlight", preview)
+	}
+	for _, bad := range []string{"&lt;div", "&lt;p&gt;", "color:red"} {
+		if strings.Contains(preview, bad) {
+			t.Errorf("preview %q shows HTML source", preview)
+		}
+	}
+}
+
+// An HTML-only message still gets a fragment, with the tags stripped rather
+// than escaped into view.
+func TestSearchSnippetStripsAnHTMLOnlyBody(t *testing.T) {
+	raw := "Subject: hi\r\nFrom: alice@example.com\r\n" +
+		"MIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +
+		"<div><p>the needle in html</p></div>\r\n"
+	s := snippetServer(t, raw)
+	id := snippetIDs(t, s)
+	preview, _ := firstSnippet(t, snippetGet(t, s, `{"accountId":"u1@example.com","emailIds":["`+id+`"],
+		"filter":{"text":"needle"}}`))["preview"].(string)
+
+	if !strings.Contains(preview, "<mark>needle</mark>") {
+		t.Errorf("preview %q has no highlight", preview)
+	}
+	if strings.Contains(preview, "&lt;") {
+		t.Errorf("preview %q shows escaped tags instead of text", preview)
+	}
+}
