@@ -1,6 +1,7 @@
 package mdboxmap
 
 import (
+	"os"
 	"testing"
 )
 
@@ -183,5 +184,61 @@ func TestAFoldStillReadsTheLogWrittenAfterIt(t *testing.T) {
 	}
 	if len(zero) != 0 {
 		t.Errorf("purge was offered file(s) %v whose message was referenced again in the log written after the fold", zero)
+	}
+}
+
+// The signal that the base changed cannot be the clock. On a filesystem whose
+// timestamps are coarse, a rewrite lands in the same tick as the read before it
+// -- and a refcount recompute rewrites the same number of records, so the size
+// does not move either. What always moves is the file itself: every rewrite is a
+// .tmp and a rename, so the name points at a different file afterwards.
+func TestABaseRewrittenWithinTheSameTimestampIsNoticed(t *testing.T) {
+	m, dir := openTestMap(t)
+	uid, err := m.AppendRecord(1, 0, 10, [16]byte{1})
+	if err != nil {
+		t.Fatalf("AppendRecord: %v", err)
+	}
+	// Fold first, so the reader's base already holds the record and the rewrite
+	// below changes no byte count at all.
+	if _, err := m.AllocFileID(); err != nil {
+		t.Fatalf("AllocFileID: %v", err)
+	}
+
+	reader, err := Open(dir, "alice@example.com")
+	if err != nil {
+		t.Fatalf("Open reader: %v", err)
+	}
+	defer reader.Close() //nolint:errcheck
+	if _, err := reader.RecordsInFile(1); err != nil {
+		t.Fatalf("seed read: %v", err)
+	}
+
+	before, err := os.Stat(m.path)
+	if err != nil {
+		t.Fatalf("stat base: %v", err)
+	}
+	if _, err := m.SetRefcountsFromReferences(map[uint32]int{uid: 4}); err != nil {
+		t.Fatalf("SetRefcountsFromReferences: %v", err)
+	}
+	// Coarse timestamps, reproduced exactly: the rewrite is indistinguishable
+	// from the previous file by mtime, and by size.
+	if err := os.Chtimes(m.path, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	after, err := os.Stat(m.path)
+	if err != nil {
+		t.Fatalf("stat base after: %v", err)
+	}
+	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("the row does not test what it claims: size %d->%d, mtime %v->%v",
+			before.Size(), after.Size(), before.ModTime(), after.ModTime())
+	}
+
+	recs, err := reader.RecordsInFile(1)
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("RecordsInFile: %+v err=%v", recs, err)
+	}
+	if recs[0].RefCount != 4 {
+		t.Errorf("reader sees refcount %d, want 4: the rewrite went unnoticed", recs[0].RefCount)
 	}
 }

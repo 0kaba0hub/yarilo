@@ -72,12 +72,13 @@ type Map struct {
 	// means the package default (defaultRotateSize).
 	rotateSize uint32
 
-	// baseMod / logSize track what this handle has applied from disk so
+	// baseInfo / logSize track what this handle has applied from disk so
 	// reloadLocked can fast-path when nothing changed and replay only the log
-	// tail a sibling process appended since. baseMod is the base index file's
-	// mtime; logSize is the replayed byte offset of the append log.
-	baseMod time.Time
-	logSize int64
+	// tail a sibling process appended since. baseInfo is the stat of the base
+	// file the records came from; logSize is the replayed byte offset of the
+	// append log.
+	baseInfo os.FileInfo
+	logSize  int64
 	// inReload is true while a freshness check is running, so its parts are
 	// timed against a whole that exists. Guarded by m.mu like the rest.
 	inReload bool
@@ -225,7 +226,7 @@ func (m *Map) readBaseLocked() error {
 	m.loaded = true
 	m.applyHeaderLocked(h)
 	if st, serr := os.Stat(m.path); serr == nil {
-		m.baseMod = st.ModTime()
+		m.baseInfo = st
 	}
 	return nil
 }
@@ -312,6 +313,23 @@ func (m *Map) applyLogTailLocked() error {
 	return nil
 }
 
+// sameBaseLocked reports whether st is the very file the records in memory came
+// from. Identity first: every base rewrite goes through .tmp and a rename, so
+// the file behind the name is a different one afterwards. Size and mtime are
+// compared too, for the writer that ever updates a base in place.
+//
+// Timestamps alone are not enough, and this is not theoretical: on a filesystem
+// with coarse mtime granularity a rewrite lands in the same tick as the read
+// that preceded it, and a reader watching only the clock never looks again.
+func (m *Map) sameBaseLocked(st os.FileInfo) bool {
+	if m.baseInfo == nil || st == nil {
+		return false
+	}
+	return os.SameFile(m.baseInfo, st) &&
+		st.Size() == m.baseInfo.Size() &&
+		st.ModTime().Equal(m.baseInfo.ModTime())
+}
+
 // peekHeaderLocked reads the 80-byte header without the record area. Deciding
 // whether a rewritten base needs reading at all costs one short positional read.
 func (m *Map) peekHeaderLocked() (baseHeader, error) {
@@ -339,7 +357,7 @@ func (m *Map) peekHeaderLocked() (baseHeader, error) {
 // have folded exactly the same log while changing what it holds. A future one
 // would too. None of them has to declare anything: a base whose records differ
 // cannot match the digest, so it is read.
-func (m *Map) adoptFoldLocked(h baseHeader, baseMod time.Time) bool {
+func (m *Map) adoptFoldLocked(h baseHeader, baseInfo os.FileInfo) bool {
 	if h.FoldedLineage != m.logLineage || m.logSize < int64(h.FoldedOffset) {
 		return false
 	}
@@ -349,7 +367,7 @@ func (m *Map) adoptFoldLocked(h baseHeader, baseMod time.Time) bool {
 	m.applyHeaderLocked(h)
 	m.logLineage = h.Lineage
 	m.logSize = 0
-	m.baseMod = baseMod
+	m.baseInfo = baseInfo
 	return true
 }
 
@@ -410,7 +428,7 @@ func timed(h prometheus.Observer, fn func() error) error {
 // persisted: memory is then ahead of the file, and the fast path would keep it
 // that way.
 func (m *Map) invalidateLocked() {
-	m.baseMod = time.Time{}
+	m.baseInfo = nil
 	m.logSize = -1
 }
 
@@ -445,7 +463,7 @@ func (m *Map) flushLocked() error {
 	m.logLineage = m.lineage
 	m.logSize = 0
 	if st, err := os.Stat(m.path); err == nil {
-		m.baseMod = st.ModTime()
+		m.baseInfo = st
 	}
 	return nil
 }
@@ -517,19 +535,22 @@ func (m *Map) reloadLocked() error {
 	}()
 
 	statStart := time.Now()
-	var baseMod time.Time
 	baseStat, baseErr := os.Stat(m.path)
-	if baseStat != nil {
-		baseMod = baseStat.ModTime()
-	}
 	var logSize int64
 	if st, _ := os.Stat(m.logPath()); st != nil {
 		logSize = st.Size()
 	}
 	m.observePart("stat", time.Since(statStart))
 
+	sameBase := m.loaded && m.sameBaseLocked(baseStat)
+	// A log only ever shrinks by being folded into a rewritten base, so it is a
+	// change signal in its own right -- and one that does not depend on a clock:
+	// a rewrite within the filesystem's timestamp granularity leaves the mtime
+	// where it was.
+	logShrank := logSize < m.logSize
+
 	// Fast path: nothing changed on disk.
-	if m.loaded && baseMod.Equal(m.baseMod) && logSize == m.logSize {
+	if sameBase && !logShrank && logSize == m.logSize {
 		metricMapReload.WithLabelValues("fast").Inc()
 		return nil
 	}
@@ -537,7 +558,7 @@ func (m *Map) reloadLocked() error {
 	// The base file moved. Either it was rewritten by someone, or this is the
 	// first load; the 80-byte header says which, and whether the records it now
 	// holds are the ones already in memory.
-	if !m.loaded || !baseMod.Equal(m.baseMod) {
+	if !m.loaded || !sameBase || logShrank {
 		if baseErr != nil {
 			return fmt.Errorf("mdboxmap/reload: %w", baseErr)
 		}
@@ -546,7 +567,7 @@ func (m *Map) reloadLocked() error {
 			if herr != nil {
 				return fmt.Errorf("mdboxmap/reload: %w", herr)
 			}
-			if m.adoptFoldLocked(h, baseMod) {
+			if m.adoptFoldLocked(h, baseStat) {
 				metricMapReload.WithLabelValues("fold").Inc()
 				// Adopting the fold is not the end of the check: the writer that
 				// folded may already have appended to the log of the lineage it
