@@ -294,6 +294,24 @@ func (m *Map) writeBaseLocked() error {
 	return nil
 }
 
+// applyLogTailLocked brings the handle up to the end of the log that belongs to
+// the base it now holds. Both branches that take a new base end here: whatever
+// the base does not contain is in the log, and a check that returns without
+// reading it hands the caller a state that is one transaction stale.
+func (m *Map) applyLogTailLocked() error {
+	applied, err := m.replayFromPersistedLocked()
+	if errors.Is(err, errLogIndexMismatch) {
+		// Log left over from a previous map at this path — discard it.
+		_ = os.Remove(m.logPath())
+		m.logSize = 0
+		return nil
+	} else if err != nil {
+		return err
+	}
+	m.logSize = applied
+	return nil
+}
+
 // peekHeaderLocked reads the 80-byte header without the record area. Deciding
 // whether a rewritten base needs reading at all costs one short positional read.
 func (m *Map) peekHeaderLocked() (baseHeader, error) {
@@ -530,24 +548,19 @@ func (m *Map) reloadLocked() error {
 			}
 			if m.adoptFoldLocked(h, baseMod) {
 				metricMapReload.WithLabelValues("fold").Inc()
-				return nil
+				// Adopting the fold is not the end of the check: the writer that
+				// folded may already have appended to the log of the lineage it
+				// just started. Leaving here would carry that tail over to the
+				// next check, and a check is exactly what the purge scan runs
+				// before deciding what to unlink.
+				return m.applyLogTailLocked()
 			}
 		}
 		metricMapReload.WithLabelValues("reopen").Inc()
 		if err := m.readBaseLocked(); err != nil {
 			return fmt.Errorf("mdboxmap/reload: %w", err)
 		}
-		applied, err := m.replayFromPersistedLocked()
-		if errors.Is(err, errLogIndexMismatch) {
-			// Log left over from a previous map at this path — discard it.
-			_ = os.Remove(m.logPath())
-			m.logSize = 0
-			return nil
-		} else if err != nil {
-			return err
-		}
-		m.logSize = applied
-		return nil
+		return m.applyLogTailLocked()
 	}
 
 	// Base unchanged, log grew: replay only the new tail.

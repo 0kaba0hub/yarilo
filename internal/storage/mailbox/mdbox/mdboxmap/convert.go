@@ -100,6 +100,13 @@ func (m *Map) convertV1Locked() error {
 	// records it as folded up to here. Its own lineage must differ from it, or a
 	// later reader would take that log for one written after this base and apply
 	// its transactions a second time.
+	if seq == 0 {
+		// No log to fold: replaying a file that is not there returns the offset it
+		// was given, and carrying that over would leave the handle claiming to
+		// have applied bytes of a log that does not exist -- every later check
+		// would then miss its fast path.
+		applied = 0
+	}
 	m.foldedLineage, m.foldedOffset = seq, applied
 	m.lineage = seq + 1
 	m.logLineage = seq

@@ -137,3 +137,51 @@ func TestABaseWrittenPastTheLogForcesAReRead(t *testing.T) {
 		t.Error("a base holding different records was adopted instead of read")
 	}
 }
+
+// Adopting a fold is not the whole check. A writer that folds the base starts a
+// new log lineage and is free to append to it immediately, so the records the
+// caller asked about can already have moved again. The purge scan runs exactly
+// one check and unlinks on its answer: a delta left unapplied here is a message
+// deleted while a folder still references it.
+func TestAFoldStillReadsTheLogWrittenAfterIt(t *testing.T) {
+	m, dir := openTestMap(t)
+	uid, err := m.AppendRecord(1, 0, 10, [16]byte{1})
+	if err != nil {
+		t.Fatalf("AppendRecord: %v", err)
+	}
+
+	reader, err := Open(dir, "alice@example.com")
+	if err != nil {
+		t.Fatalf("Open reader: %v", err)
+	}
+	defer reader.Close() //nolint:errcheck
+	if _, err := reader.GetZeroRefFiles(); err != nil {
+		t.Fatalf("seed scan: %v", err)
+	}
+
+	// The last reference goes away, and the reader sees that.
+	if err := m.UpdateRefcounts([]uint32{uid}, -1); err != nil {
+		t.Fatalf("UpdateRefcounts -1: %v", err)
+	}
+	zero, err := reader.GetZeroRefFiles()
+	if err != nil || len(zero) != 1 {
+		t.Fatalf("zero-ref scan after the drop: %v err=%v", zero, err)
+	}
+
+	// A fold of exactly that state, and then a fresh reference against the log
+	// of the lineage the fold started.
+	if _, err := m.AllocFileID(); err != nil {
+		t.Fatalf("AllocFileID: %v", err)
+	}
+	if err := m.UpdateRefcounts([]uint32{uid}, 1); err != nil {
+		t.Fatalf("UpdateRefcounts +1: %v", err)
+	}
+
+	zero, err = reader.GetZeroRefFiles()
+	if err != nil {
+		t.Fatalf("zero-ref scan after the fold: %v", err)
+	}
+	if len(zero) != 0 {
+		t.Errorf("purge was offered file(s) %v whose message was referenced again in the log written after the fold", zero)
+	}
+}
