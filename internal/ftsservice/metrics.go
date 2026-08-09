@@ -161,6 +161,12 @@ var (
 		Name: "fts_index_skipped_total",
 		Help: "Messages passed over by indexing, by reason. Their content is unsearchable until a rescan.",
 	}, []string{"reason"})
+	// The reasons are declared up front so the counter reads zero instead of
+	// being absent. A labelled counter with no observation is not exported at
+	// all, and a dashboard asking "how many messages were skipped" then shows
+	// a gap where the answer is "none" -- which is the one answer an operator
+	// most wants to be able to see.
+	_                = declareSkipReasons()
 	metricQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "fts_index_queue_depth",
 		Help: "Mailboxes waiting for an index pass. A running pass is not pending, and one mailbox counts once however many requests it received.",
@@ -199,3 +205,10 @@ var (
 // ObserveLockWait records how long acquiring the per-mailbox FTS write lock
 // took. Called by the binary's LockMailbox wrapper.
 func ObserveLockWait(d time.Duration) { metricLockWait.Observe(d.Seconds()) }
+
+func declareSkipReasons() bool {
+	for _, reason := range []string{"read", "other"} {
+		metricIndexSkipped.WithLabelValues(reason)
+	}
+	return true
+}

@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yarilomail/yarilo/internal/storage/mailboxmetrics"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -293,7 +294,16 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // UserIndex.AllocateUID; Maildir does not encode it in the filename, so the
 // uid→filename mapping is appended inline to the yarilo-uidlist sidecar for
 // later List() / Fetch() resolution.
+// driverName labels this driver in the timings shared with the others. The
+// whole is reported and the parts are not: this is the baseline the packed
+// drivers are compared against, and it has no steps worth naming -- a write
+// to tmp and a rename.
+const driverName = "maildir"
+
 func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string, guid [16]byte) (string, uint32, [16]byte, error) {
+	whole := time.Now()
+	defer func() { mailboxmetrics.ObserveSave(driverName, time.Since(whole)) }()
+
 	var noGUID [16]byte
 	if err := u.checkName(folder); err != nil {
 		return "", 0, noGUID, err

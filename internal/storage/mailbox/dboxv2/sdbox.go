@@ -18,6 +18,7 @@ import (
 
 	"github.com/yarilomail/yarilo/internal/storage/idxrebuild"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
+	"github.com/yarilomail/yarilo/internal/storage/mailboxmetrics"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -327,7 +328,15 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 // UserIndex.AppendMessage. flags are ignored — sdbox delegates flag storage to
 // the index. A zero guid is generated here; a non-zero one is stored verbatim so
 // EMAILID survives COPY/MOVE. The effective GUID is returned.
+// driverName labels this driver in the timings shared with the others: it
+// sits between the two, one lock per write and one file per message, which is
+// what makes it the useful middle point in the comparison.
+const driverName = "sdbox"
+
 func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []string, guid [16]byte) (string, uint32, [16]byte, error) {
+	whole := time.Now()
+	defer func() { mailboxmetrics.ObserveSave(driverName, time.Since(whole)) }()
+
 	var noGUID [16]byte
 	if u.b.writeSem != nil {
 		u.b.writeSem <- struct{}{}
