@@ -299,24 +299,35 @@ func (t verifyTerm) matches(hdr message.Header, body string) bool {
 	return false
 }
 
+// readMessage returns the header and every text part's decoded body joined,
+// which is what a condition is confirmed against: a hit may be anywhere the
+// index looked.
 func (e *ftsEvaluator) readMessage(sf scopeFolder, m *mailbox.MessageMeta) (message.Header, string, error) {
-	rc, err := e.box.Fetch(sf.name, m.Filename, m.AltTier)
+	hdr, parts, err := e.readParts(sf, m)
 	if err != nil {
 		return message.Header{}, "", err
 	}
-	defer rc.Close() //nolint:errcheck
-	entity, err := message.Read(rc)
-	if err != nil && entity == nil {
-		return message.Header{}, "", err
-	}
 	var text strings.Builder
-	for _, p := range collectParts(entity, "") {
+	for _, p := range parts {
 		if strings.HasPrefix(p.mediaType, "text/") {
 			text.WriteString(p.body)
 			text.WriteString("\n")
 		}
 	}
-	return entity.Header, text.String(), nil
+	return hdr, text.String(), nil
+}
+
+func (e *ftsEvaluator) readParts(sf scopeFolder, m *mailbox.MessageMeta) (message.Header, []walkedPart, error) {
+	rc, err := e.box.Fetch(sf.name, m.Filename, m.AltTier)
+	if err != nil {
+		return message.Header{}, nil, err
+	}
+	defer rc.Close() //nolint:errcheck
+	entity, err := message.Read(rc)
+	if err != nil && entity == nil {
+		return message.Header{}, nil, err
+	}
+	return entity.Header, collectParts(entity, ""), nil
 }
 
 // buildQuery converts the filter's text conditions into the engine query, and

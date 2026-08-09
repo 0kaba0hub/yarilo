@@ -309,6 +309,25 @@ func (f *EmailFilter) TextConditions() []string {
 	return out
 }
 
+// TextValues are the strings the text conditions search for. A snippet
+// highlights these, so it needs the values rather than the condition names
+// TextConditions reports.
+func (f *EmailFilter) TextValues() []string {
+	if f == nil {
+		return nil
+	}
+	var out []string
+	for _, p := range []*string{f.Text, f.Body, f.Subject, f.From, f.To, f.Cc, f.Bcc} {
+		if p != nil && *p != "" {
+			out = append(out, *p)
+		}
+	}
+	if len(f.Header) > 1 && f.Header[1] != "" {
+		out = append(out, f.Header[1])
+	}
+	return out
+}
+
 // EffectiveLimit resolves the client's limit against the server's ceiling, the
 // same way EffectiveBodyBytes does for body values: the smaller wins, and a
 // client naming none gets the ceiling rather than everything. RFC 8620 §5.5

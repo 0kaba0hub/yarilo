@@ -9,7 +9,9 @@ import (
 // htmlToText streams HTML text content into sink, dropping
 // script/style/head subtrees and emitting a space at tag boundaries so
 // adjacent elements don't fuse into one token.
-func htmlToText(r io.Reader, sink func([]byte) error) error {
+// HTMLToText is exported for the JMAP snippet, which shows a fragment to a
+// reader and must not put markup in front of them.
+func HTMLToText(r io.Reader, sink func([]byte) error) error {
 	tk := html.NewTokenizer(r)
 	skipDepth := 0
 	for {

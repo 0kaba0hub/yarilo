@@ -177,7 +177,7 @@ func extractSample(prefix []byte, isHTML bool) string {
 		return string(prefix)
 	}
 	var buf bytes.Buffer
-	_ = htmlToText(bytes.NewReader(prefix), func(p []byte) error {
+	_ = HTMLToText(bytes.NewReader(prefix), func(p []byte) error {
 		buf.Write(p)
 		return nil
 	})
@@ -401,7 +401,7 @@ func (b *Builder) buildTextBody(st *buildState, e *message.Entity, mediaType str
 	}
 	produce := func(sink func([]byte) error) error {
 		if isHTML {
-			return htmlToText(reader, sink)
+			return HTMLToText(reader, sink)
 		}
 		return copyChunks(reader, sink)
 	}
