@@ -258,6 +258,24 @@ func cleanStaleOptimizeTmp(dir string) {
 	slog.Info("fts/flatcurve: cleaned stale optimize tmp dir left over from a prior crash", "dir", tmp)
 }
 
+// pruneEmptyParents removes the directories a moved index leaves behind,
+// climbing from dir while each is empty and strictly below root. os.Remove
+// refuses a non-empty directory, which is the stop: a user whose other
+// mailboxes are not migrated yet keeps the shell until they are.
+//
+// Not for the bytes -- for the answer to "did the migration run". Left in
+// place, <root>/mailboxes/<name> is present for every mailbox whether it
+// moved or not, and the state that tells them apart is one level down
+// (#1195). Best-effort: the data is already where it belongs.
+func pruneEmptyParents(dir, root string) {
+	root = filepath.Clean(root)
+	for d := filepath.Clean(dir); d != root && strings.HasPrefix(d, root+string(filepath.Separator)); d = filepath.Dir(d) {
+		if err := os.Remove(d); err != nil {
+			return
+		}
+	}
+}
+
 // migrateLegacyDir moves an existing FTS index from the old flat path to the
 // driver-aware dir, so switching the resolver relocates the index in place
 // instead of orphaning it and forcing a full reindex. Best-effort: on failure
@@ -291,6 +309,7 @@ func (u *userIndex) migrateLegacyDir(mbox fts.MailboxRef, newDir string) {
 			"from", legacy, "to", newDir, "err", err)
 		return
 	}
+	pruneEmptyParents(filepath.Dir(legacy), u.user.IndexRoot)
 	slog.Info("fts/flatcurve: migrated legacy FTS dir to the GUID-keyed path",
 		"from", legacy, "to", newDir)
 }
