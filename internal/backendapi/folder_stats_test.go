@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxv2"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/yarilomail/yarilo/pkg/config"
@@ -72,6 +73,7 @@ func TestFolderStatsSaysNullWhereItCannotCount(t *testing.T) {
 		wantNull bool
 	}{
 		{"maildir counts files", maildir.New(), false},
+		{"sdbox stores a file per message", dboxv2.New(), false},
 		{"mdbox keeps messages user-wide", mdbox.New(), true},
 	}
 	for _, tc := range cases {
