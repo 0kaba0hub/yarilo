@@ -2,6 +2,7 @@ package lmtp
 
 import (
 	"bytes"
+	"encoding/hex"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -93,8 +94,14 @@ func TestAutoindexCarriesTheFolderGUID(t *testing.T) {
 	if len(refs) != 1 {
 		t.Fatalf("indexed %d times, want 1", len(refs))
 	}
-	if refs[0].GUID == "" {
-		t.Error("the index was asked for a folder with no GUID: the service refuses this, and delivered mail stays unsearchable")
+	// Identity, not mere presence: the defect was a reference built from the
+	// wrong thing, so any non-empty GUID would pass a presence check while
+	// naming another folder -- or a message.
+	if want := hex.EncodeToString(folder.GUID[:]); refs[0].GUID != want {
+		t.Errorf("indexed GUID %q, want the delivered folder's %q", refs[0].GUID, want)
+	}
+	if refs[0].UIDValidity != folder.UIDValidity {
+		t.Errorf("indexed UIDVALIDITY %d, want %d", refs[0].UIDValidity, folder.UIDValidity)
 	}
 	if refs[0].Name != "INBOX" {
 		t.Errorf("indexed folder %q, want INBOX", refs[0].Name)

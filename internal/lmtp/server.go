@@ -805,12 +805,12 @@ func (s *session) ftsAutoindex(username string, folder mailbox.Folder, uid uint3
 	// keyed by (#1183). Without one there is nothing to index into, so the
 	// delivery says so once rather than letting the service refuse every
 	// message for a reason nobody reads.
-	guid := hex.EncodeToString(folder.GUID[:])
 	if folder.GUID == ([16]byte{}) {
 		slog.Warn("lmtp: folder has no GUID, delivered mail will not be searchable",
 			"user", username, "folder", folder.Name, "uid", uid)
 		return
 	}
+	guid := hex.EncodeToString(folder.GUID[:])
 	client, maxRecent := s.opts.FTSClient, s.opts.FTSMaxRecent
 	ref := fts.MailboxRef{Name: folder.Name, GUID: guid, UIDValidity: folder.UIDValidity}
 	go func() {
