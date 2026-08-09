@@ -180,17 +180,22 @@ func (m *snippetMarker) mark(text string, maxChars int) *string {
 func windowAround(s string, maxChars int) string {
 	hit := strings.Index(s, "<mark>")
 	if hit < 0 {
-		return truncateMarked(s, maxChars)
+		out, _ := truncateMarked(s, maxChars)
+		return out
 	}
 	// A quarter of the window as lead-in, so the hit is not flush left, backed
 	// up to a word boundary: a fragment starting mid-word reads as damaged.
 	lead := maxChars / 4
 	start := backUpVisible(s, hit, lead)
-	out := truncateMarked(s[start:], maxChars)
+	out, spent := truncateMarked(s[start:], maxChars)
 	if start > 0 {
 		out = ellipsis + out
 	}
-	if end := start + visibleLen(out); end < len(s) {
+	// Bytes against bytes: the markup inside the window costs bytes and no
+	// visible characters, so measuring the window in one and the text in the
+	// other claimed there was more to come in every answer, the last one
+	// included.
+	if start+spent < len(s) {
 		out += ellipsis
 	}
 	return out
@@ -209,14 +214,29 @@ func backUpVisible(s string, hit, n int) int {
 		for j > 0 && !utf8.RuneStart(s[j]) {
 			j--
 		}
-		// Stepping back into markup or an entity would leave a fragment of it.
-		if s[j] == '>' || s[j] == ';' {
+		// Stepping back into markup would leave a fragment of it.
+		if s[j] == '>' {
 			break
+		}
+		// A semicolon may end an entity or just be prose; only the former is a
+		// reason to stop, and it is recognised from its '&'.
+		if s[j] == ';' {
+			if amp := strings.LastIndexByte(s[:j], '&'); amp >= 0 && j-amp <= 10 {
+				break
+			}
 		}
 		i = j
 	}
-	for i > 0 && i < len(s) && !isBoundary(rune(s[i-1])) {
-		i++
+	// Forward to just past the next boundary, so the window starts at a word.
+	// Decoded, not byte-wise: a byte of a multi-byte rune is neither space nor
+	// punctuation, so a byte test walks to the hit and drops the lead-in for
+	// every non-Latin message.
+	for i < hit {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		if isBoundary(r) {
+			break
+		}
 	}
 	if i >= hit {
 		return hit
@@ -312,7 +332,7 @@ func splitTokens(text string) []token {
 // truncateMarked cuts to maxChars of visible text, counting neither the markup
 // nor the escapes -- a limit that counted them would shrink with every
 // ampersand in the message.
-func truncateMarked(s string, maxChars int) string {
+func truncateMarked(s string, maxChars int) (string, int) {
 	var out strings.Builder
 	visible := 0
 	for i := 0; i < len(s); {
@@ -342,9 +362,11 @@ func truncateMarked(s string, maxChars int) string {
 		}
 	}
 	res := out.String()
-	// A cut inside a highlight would ship an unclosed tag.
+	spent := len(res)
+	// A cut inside a highlight would ship an unclosed tag. The closing tag is
+	// ours, not the message's, so it does not count as text consumed.
 	if strings.Count(res, "<mark>") > strings.Count(res, "</mark>") {
 		res += "</mark>"
 	}
-	return res
+	return res, spent
 }

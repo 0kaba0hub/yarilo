@@ -17,7 +17,7 @@ import (
 // delivering to a different -fts-user would query one account for a message
 // that arrived in another. -fts-user is read as the deployment's statement
 // that full-text search is configured at all.
-func checkJMAPFTSQuery(user, _ string) error {
+func checkJMAPFTSQuery(user string) error {
 	marker := fmt.Sprintf("jmapftsmarker%d", time.Now().UnixNano())
 	absent := marker + "notdelivered"
 	subject := "jmap fts smoke " + marker
@@ -38,12 +38,26 @@ func assertFTSQueryFindsOnly(user, marker, absent, subject string) error {
 	var ids []string
 	var lastErr error
 	for time.Now().Before(deadline) {
-		ids, lastErr = jmapQueryText(user, marker)
+		var kind string
+		ids, kind, lastErr = jmapQueryText(user, marker)
+		switch {
+		case lastErr != nil && kind == "":
+			// Transport or protocol trouble: waiting cannot mend it.
+			return lastErr
+		case kind == jmapServerFail:
+			// #1204 separated the two on purpose: this one does not pass on its
+			// own, so retrying it only reports the wrong cause three timeouts
+			// later.
+			return fmt.Errorf("Email/query failed: %w", lastErr)
+		case lastErr != nil:
+			// serverUnavailable and anything else transient: retry.
+		case len(ids) > 0:
+			lastErr = nil
+		default:
+			lastErr = fmt.Errorf("Email/query text %q: no match yet", marker)
+		}
 		if lastErr == nil && len(ids) > 0 {
 			break
-		}
-		if lastErr == nil {
-			lastErr = fmt.Errorf("Email/query text %q: no match yet", marker)
 		}
 		time.Sleep(time.Second)
 	}
@@ -67,7 +81,7 @@ func assertFTSQueryFindsOnly(user, marker, absent, subject string) error {
 	// A marker that was never delivered must find nothing. Without this a
 	// backend that ignores the condition and returns everything passes the
 	// assertion above.
-	other, err := jmapQueryText(user, absent)
+	other, _, err := jmapQueryText(user, absent)
 	if err != nil {
 		return fmt.Errorf("Email/query for an absent marker: %w", err)
 	}
@@ -78,24 +92,38 @@ func assertFTSQueryFindsOnly(user, marker, absent, subject string) error {
 	return nil
 }
 
-// jmapQueryText runs Email/query with one text condition and returns the ids.
-func jmapQueryText(user, text string) ([]string, error) {
+// jmapServerFail is the type a client may treat as final (RFC 8620 3.6.2),
+// as opposed to serverUnavailable, which says to retry.
+const jmapServerFail = "serverFail"
+
+// jmapQueryText runs Email/query with one text condition. It returns the
+// method error's type alongside the error, because the wait above must tell a
+// lagging index from a broken one -- the distinction #1204 exists to carry.
+func jmapQueryText(user, text string) (ids []string, errType string, err error) {
 	filter, err := json.Marshal(map[string]string{"text": text})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	args, err := jmapCall(`{"using":["urn:ietf:params:jmap:mail"],"methodCalls":[` +
+	name, args, err := jmapCallRaw(`{"using":["urn:ietf:params:jmap:mail"],"methodCalls":[` +
 		`["Email/query",{"accountId":"` + user + `","filter":` + string(filter) + `},"c0"]]}`)
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	if name == "error" {
+		var merr struct {
+			Type        string `json:"type"`
+			Description string `json:"description"`
+		}
+		_ = json.Unmarshal(args, &merr)
+		return nil, merr.Type, fmt.Errorf("%s: %s", merr.Type, merr.Description)
 	}
 	var out struct {
 		IDs []string `json:"ids"`
 	}
 	if err := json.Unmarshal(args, &out); err != nil {
-		return nil, fmt.Errorf("decode Email/query: %w", err)
+		return nil, "", fmt.Errorf("decode Email/query: %w", err)
 	}
-	return out.IDs, nil
+	return out.IDs, "", nil
 }
 
 // jmapSubjectOf reads one message's subject, which is what identifies the hit

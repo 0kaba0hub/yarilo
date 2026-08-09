@@ -3,6 +3,7 @@ package jmap
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/yarilomail/yarilo/pkg/fts"
 )
@@ -149,8 +150,8 @@ func TestSearchSnippetBoundsTheIDCount(t *testing.T) {
 // in them, stated as a search result -- worse than null, because the field
 // claims a match.
 func TestSearchSnippetWindowsAroundTheHit(t *testing.T) {
-	filler := strings.Repeat("padding words here ", 120) // ~2 KB before the hit
-	s := snippetServer(t, "Subject: hi\r\nFrom: alice@example.com\r\n\r\n"+filler+"the needle at last\r\n")
+	filler := strings.Repeat("padding words here ", 120) // ~2 KB either side
+	s := snippetServer(t, "Subject: hi\r\nFrom: alice@example.com\r\n\r\n"+filler+"the needle at last "+filler+"\r\n")
 	id := snippetIDs(t, s)
 	preview, _ := firstSnippet(t, snippetGet(t, s, `{"accountId":"u1@example.com","emailIds":["`+id+`"],
 		"filter":{"text":"needle"}}`))["preview"].(string)
@@ -163,6 +164,10 @@ func TestSearchSnippetWindowsAroundTheHit(t *testing.T) {
 	}
 	if !strings.HasPrefix(preview, "\u2026") {
 		t.Errorf("preview %q does not say it starts mid-message", preview)
+	}
+	// And the message does continue past the window, so it must say so.
+	if !strings.HasSuffix(preview, "\u2026") {
+		t.Errorf("preview %q does not say the message continues", preview)
 	}
 }
 
@@ -205,5 +210,49 @@ func TestSearchSnippetStripsAnHTMLOnlyBody(t *testing.T) {
 	}
 	if strings.Contains(preview, "&lt;") {
 		t.Errorf("preview %q shows escaped tags instead of text", preview)
+	}
+}
+
+// A message that fits inside the window is not cut, so it must not claim there
+// is more to come. The markup costs bytes and no visible characters, which is
+// how a byte-against-character comparison came to say "more follows" in every
+// answer, the last one included.
+func TestSearchSnippetDoesNotClaimMoreTextThanThereIs(t *testing.T) {
+	s := snippetServer(t, "Subject: hi\r\nFrom: alice@example.com\r\n\r\nthe needle is right here\r\n")
+	id := snippetIDs(t, s)
+	preview, _ := firstSnippet(t, snippetGet(t, s, `{"accountId":"u1@example.com","emailIds":["`+id+`"],
+		"filter":{"text":"needle"}}`))["preview"].(string)
+
+	if strings.HasSuffix(preview, "\u2026") {
+		t.Errorf("preview %q ends with an ellipsis although the message ends there", preview)
+	}
+	if !strings.Contains(preview, "<mark>needle</mark>") {
+		t.Errorf("preview %q lost the highlight", preview)
+	}
+}
+
+// The lead-in must land on a word boundary, and boundaries are runes. Where
+// the separators are non-ASCII -- an em dash between words, ordinary in
+// Ukrainian prose -- a byte-wise test walks past them and the window opens in
+// the middle of a word: "\u2026\u043e\u0432\u043e\u2014\u0441\u043b" instead of "\u2026\u0441\u043b\u043e\u0432\u043e\u2014".
+func TestSearchSnippetOpensOnAWordBoundaryInNonLatinText(t *testing.T) {
+	filler := strings.Repeat("\u0441\u043b\u043e\u0432\u043e\u2014", 80)
+	s := snippetServer(t, "Subject: hi\r\nFrom: alice@example.com\r\n\r\n\u043f\u043e\u0447\u0430\u0442\u043e\u043a "+filler+"needle \u043a\u0456\u043d\u0435\u0446\u044c\r\n")
+	id := snippetIDs(t, s)
+	preview, _ := firstSnippet(t, snippetGet(t, s, `{"accountId":"u1@example.com","emailIds":["`+id+`"],
+		"filter":{"text":"needle"}}`))["preview"].(string)
+
+	trimmed := strings.TrimPrefix(preview, "\u2026")
+	if !strings.HasPrefix(trimmed, "\u0441\u043b\u043e\u0432\u043e") && !strings.HasPrefix(trimmed, "<mark>") {
+		t.Errorf("preview %q opens inside a word", preview)
+	}
+	if strings.HasPrefix(trimmed, "<mark>") {
+		t.Errorf("preview %q starts at the hit: the lead-in was dropped", preview)
+	}
+	if !utf8.ValidString(preview) {
+		t.Errorf("preview is not valid UTF-8: %q", preview)
+	}
+	if !strings.Contains(preview, "<mark>needle</mark>") {
+		t.Errorf("preview %q lost the highlight", preview)
 	}
 }

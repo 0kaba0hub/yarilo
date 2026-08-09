@@ -243,14 +243,14 @@ func register() []check {
 	want("jmap", jmap, "jmap Mailbox/query + back-referenced get", "needs -jmap", checkJMAPMailboxQuery)
 	want("jmap", jmap, "jmap Email/query -> Email/get -> download", "needs -jmap", checkJMAPEmailDiscovery)
 	want("jmap", jmap, "jmap download refuses another account's blob", "needs -jmap", checkJMAPDownloadIsolation)
-	// Gated on credentials, not on cost: components.jmap ships disabled, so a
-	// deployment that never enabled JMAP would fail smoke over a service it
-	// does not run.
 	want("jmap", jmap && *flagJMAPUser != "" && *flagFTSUser != "",
 		"jmap Email/query over full-text search",
 		"needs -jmap, -jmap-user and -fts-user (the latter states that FTS is configured)", func() error {
-			return checkJMAPFTSQuery(*flagJMAPUser, *flagJMAPPass)
+			return checkJMAPFTSQuery(*flagJMAPUser)
 		})
+	// Gated on credentials, not on cost: components.jmap ships disabled, so a
+	// deployment that never enabled JMAP would fail smoke over a service it
+	// does not run.
 	want("jmap", jmap && *flagJMAPUser != "", "jmap header:* forms, headers, projection and property validation",
 		"needs -jmap and -jmap-user", checkJMAPHeaderForms)
 

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -14,9 +15,11 @@ import (
 // subjects, so the check's judgement can be exercised without a cluster --
 // the class of defect #1043 was about, where a live-only check hid a reading
 // error behind a deploy.
-func ftsQueryStub(t *testing.T, hits func(text string) []string, subjects map[string]string) {
+func ftsQueryStub(t *testing.T, hits func(text string) []string, subjects map[string]string) *int32 {
 	t.Helper()
+	var calls int32
 	stubJMAP(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
 		raw, _ := io.ReadAll(r.Body)
 		var req struct {
 			MethodCalls [][]json.RawMessage `json:"methodCalls"`
@@ -48,6 +51,57 @@ func ftsQueryStub(t *testing.T, hits func(text string) []string, subjects map[st
 			fmt.Fprintf(w, `{"methodResponses":[["Email/get",{"list":[%s]},"c0"]]}`, strings.Join(list, ",")) //nolint:errcheck
 		default:
 			fmt.Fprint(w, `{"methodResponses":[["error",{"type":"unknownMethod"},"c0"]]}`) //nolint:errcheck
+		}
+	})
+	return &calls
+}
+
+// failingStub answers every call with one method error type.
+func failingStub(t *testing.T, errType string) *int32 {
+	t.Helper()
+	var calls int32
+	stubJMAP(t, func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"methodResponses":[["error",{"type":%q,"description":"stub"},"c0"]]}`, errType) //nolint:errcheck
+	})
+	return &calls
+}
+
+// The two types #1204 separated must lead to different behaviour here, or the
+// distinction has no consumer: a broken lookup is final and must be reported
+// as itself, not as "indexing never completed" three timeouts later.
+func TestJMAPFTSQueryStopsOnAFinalFailure(t *testing.T) {
+	t.Run("serverFail is reported at once", func(t *testing.T) {
+		calls := failingStub(t, "serverFail")
+		setFlag(t, flagTimeout, 300*time.Millisecond)
+
+		err := assertFTSQueryFindsOnly("u1@example.com", ftsProbeMarker, ftsProbeAbsent, ftsProbeSubject)
+		if err == nil {
+			t.Fatal("a failing backend passed")
+		}
+		if !strings.Contains(err.Error(), "serverFail") {
+			t.Errorf("error %q does not name the failure it got", err)
+		}
+		if strings.Contains(err.Error(), "indexing never completed") {
+			t.Errorf("error %q blames indexing for a broken lookup", err)
+		}
+		if n := atomic.LoadInt32(calls); n != 1 {
+			t.Errorf("made %d calls, want 1: a final failure was retried", n)
+		}
+	})
+
+	// The transient one keeps its retry, or the fix above would have bought
+	// speed by giving up on a lag that passes on its own.
+	t.Run("serverUnavailable is retried", func(t *testing.T) {
+		calls := failingStub(t, "serverUnavailable")
+		setFlag(t, flagTimeout, 700*time.Millisecond)
+
+		if err := assertFTSQueryFindsOnly("u1@example.com", ftsProbeMarker, ftsProbeAbsent, ftsProbeSubject); err == nil {
+			t.Fatal("a permanently unavailable backend passed")
+		}
+		if n := atomic.LoadInt32(calls); n < 2 {
+			t.Errorf("made %d calls, want more than one: a transient failure was not retried", n)
 		}
 	})
 }
@@ -102,7 +156,7 @@ func TestJMAPFTSQueryRefusesTheWrongAnswers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ftsQueryStub(t, tc.hits, tc.subjects)
+			_ = ftsQueryStub(t, tc.hits, tc.subjects)
 			setFlag(t, flagTimeout, 200*time.Millisecond)
 
 			err := assertFTSQueryFindsOnly("u1@example.com", ftsProbeMarker, ftsProbeAbsent, ftsProbeSubject)
