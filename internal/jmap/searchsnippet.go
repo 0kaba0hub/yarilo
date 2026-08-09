@@ -228,9 +228,9 @@ func backUpVisible(s string, hit, n int) int {
 		i = j
 	}
 	// Forward to just past the next boundary, so the window starts at a word.
-	// Decoded, not byte-wise: a byte of a multi-byte rune is neither space nor
-	// punctuation, so a byte test walks to the hit and drops the lead-in for
-	// every non-Latin message.
+	// Decoded, not byte-wise: where the separator is not ASCII -- an em dash
+	// between words -- a byte test walks past it and opens the window inside
+	// the preceding word.
 	for i < hit {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		i += size

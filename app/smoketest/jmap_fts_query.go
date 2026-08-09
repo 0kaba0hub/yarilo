@@ -41,16 +41,15 @@ func assertFTSQueryFindsOnly(user, marker, absent, subject string) error {
 		var kind string
 		ids, kind, lastErr = jmapQueryText(user, marker)
 		switch {
-		case lastErr != nil && kind == "":
-			// Transport or protocol trouble: waiting cannot mend it.
-			return lastErr
-		case kind == jmapServerFail:
-			// #1204 separated the two on purpose: this one does not pass on its
-			// own, so retrying it only reports the wrong cause three timeouts
-			// later.
+		// Only the type that says "retry" is retried. Waiting out anything
+		// else -- a transport failure, an unconfigured search, a bad argument
+		// -- ends three timeouts later blaming indexing for something that was
+		// never about indexing (#1204 separated the types precisely so this
+		// distinction could be made).
+		case lastErr != nil && kind != jmapServerUnavailable:
 			return fmt.Errorf("Email/query failed: %w", lastErr)
 		case lastErr != nil:
-			// serverUnavailable and anything else transient: retry.
+			// serverUnavailable: the index is catching up, so wait.
 		case len(ids) > 0:
 			lastErr = nil
 		default:
@@ -92,9 +91,10 @@ func assertFTSQueryFindsOnly(user, marker, absent, subject string) error {
 	return nil
 }
 
-// jmapServerFail is the type a client may treat as final (RFC 8620 3.6.2),
-// as opposed to serverUnavailable, which says to retry.
-const jmapServerFail = "serverFail"
+// jmapServerUnavailable is the one type that means "retry" (RFC 8620 3.6.2).
+// Every other answer, error type or not, is final as far as this check is
+// concerned.
+const jmapServerUnavailable = "serverUnavailable"
 
 // jmapQueryText runs Email/query with one text condition. It returns the
 // method error's type alongside the error, because the wait above must tell a

@@ -72,24 +72,28 @@ func failingStub(t *testing.T, errType string) *int32 {
 // distinction has no consumer: a broken lookup is final and must be reported
 // as itself, not as "indexing never completed" three timeouts later.
 func TestJMAPFTSQueryStopsOnAFinalFailure(t *testing.T) {
-	t.Run("serverFail is reported at once", func(t *testing.T) {
-		calls := failingStub(t, "serverFail")
-		setFlag(t, flagTimeout, 300*time.Millisecond)
+	// Every type but serverUnavailable is final here, and each must arrive as
+	// itself: waiting one out reports the wrong cause three timeouts later.
+	for _, errType := range []string{"serverFail", "unsupportedFilter", "invalidArguments"} {
+		t.Run(errType+" is reported at once", func(t *testing.T) {
+			calls := failingStub(t, errType)
+			setFlag(t, flagTimeout, 300*time.Millisecond)
 
-		err := assertFTSQueryFindsOnly("u1@example.com", ftsProbeMarker, ftsProbeAbsent, ftsProbeSubject)
-		if err == nil {
-			t.Fatal("a failing backend passed")
-		}
-		if !strings.Contains(err.Error(), "serverFail") {
-			t.Errorf("error %q does not name the failure it got", err)
-		}
-		if strings.Contains(err.Error(), "indexing never completed") {
-			t.Errorf("error %q blames indexing for a broken lookup", err)
-		}
-		if n := atomic.LoadInt32(calls); n != 1 {
-			t.Errorf("made %d calls, want 1: a final failure was retried", n)
-		}
-	})
+			err := assertFTSQueryFindsOnly("u1@example.com", ftsProbeMarker, ftsProbeAbsent, ftsProbeSubject)
+			if err == nil {
+				t.Fatal("a failing backend passed")
+			}
+			if !strings.Contains(err.Error(), errType) {
+				t.Errorf("error %q does not name the failure it got", err)
+			}
+			if strings.Contains(err.Error(), "indexing never completed") {
+				t.Errorf("error %q blames indexing for %s", err, errType)
+			}
+			if n := atomic.LoadInt32(calls); n != 1 {
+				t.Errorf("made %d calls, want 1: a final failure was retried", n)
+			}
+		})
+	}
 
 	// The transient one keeps its retry, or the fix above would have bought
 	// speed by giving up on a lag that passes on its own.
