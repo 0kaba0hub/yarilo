@@ -15,7 +15,7 @@ func ObserveReadPart(part string, d time.Duration) {
 }
 
 // observePart records one named part of a freshness check -- and only when a
-// check is what is running. Replay and reindex are also reached from opening
+// check is what is running. Replay is also reached from opening
 // the map, where no whole is being timed: counting them there would let the
 // parts exceed the total, and the unnamed remainder between them is the whole
 // point of the split. A negative remainder says nothing.
@@ -69,7 +69,7 @@ var (
 	metricMapReload = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "mdbox_map_reload_total",
 		Help: "Map freshness checks by outcome.",
-	}, []string{"result"}) // fast | replay | reopen
+	}, []string{"result"}) // fast | replay | fold | reopen
 	metricMapReplayBytes = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "mdbox_map_replay_bytes_total",
 		Help: "Bytes of append log replayed into the in-memory map.",
@@ -83,12 +83,12 @@ var (
 	// storage first (#1205).
 	metricMapOpenSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "mdbox_map_open_seconds",
-		Help:    "Time to open the map for a handle, whole: reading the base index, replaying the log and rebuilding the UID index.",
+		Help:    "Time to open the map for a handle, whole: reading the base index and replaying the log.",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 11), // 100us .. ~100s
 	})
 	metricMapOpenPart = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "mdbox_map_open_part_seconds",
-		Help:    "Time in one part of opening the map: base, replay or reindex.",
+		Help:    "Time in one part of opening the map: base or replay.",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 11),
 	}, []string{"part"})
 
@@ -104,7 +104,7 @@ var (
 	})
 	metricMapReloadPart = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "mdbox_map_reload_part_seconds",
-		Help:    "Time in one part of a map freshness check: stat, replay or reindex.",
+		Help:    "Time in one part of a map freshness check: stat or replay.",
 		Buckets: prometheus.ExponentialBuckets(0.00001, 4, 11),
 	}, []string{"part"})
 

@@ -274,8 +274,10 @@ func histVecSum(t *testing.T, v *prometheus.HistogramVec, label string) (float64
 
 // The parts must reconcile with the whole, or an analysis is left with a
 // nameless remainder and no way to tell a fourth cost from a measurement bug.
-// The three named parts are stat, replay and reindex; what the total holds
-// beyond them is the finding, and it cannot be negative.
+// The two named parts are stat and replay; what the total holds beyond them is
+// the finding, and it cannot be negative. There is no third part any more: the
+// fixed-width base is its own lookup structure, so nothing is rebuilt after a
+// replay.
 func TestReloadPartsFitInsideTheWhole(t *testing.T) {
 	m, dir := openTestMap(t)
 	if _, err := m.AppendRecord(1, 0, 10, [16]byte{1}); err != nil {
@@ -296,7 +298,6 @@ func TestReloadPartsFitInsideTheWhole(t *testing.T) {
 	whole, wholeCount := histSum(t, metricMapReloadSeconds)
 	stat, statCount := histVecSum(t, metricMapReloadPart, "stat")
 	replay, replayCount := histVecSum(t, metricMapReloadPart, "replay")
-	reindex, reindexCount := histVecSum(t, metricMapReloadPart, "reindex")
 
 	if _, ok, err := m.Lookup(uid); err != nil || !ok {
 		t.Fatalf("Lookup: ok=%v err=%v", ok, err)
@@ -305,7 +306,6 @@ func TestReloadPartsFitInsideTheWhole(t *testing.T) {
 	wholeAfter, wholeCountAfter := histSum(t, metricMapReloadSeconds)
 	statAfter, statCountAfter := histVecSum(t, metricMapReloadPart, "stat")
 	replayAfter, replayCountAfter := histVecSum(t, metricMapReloadPart, "replay")
-	reindexAfter, reindexCountAfter := histVecSum(t, metricMapReloadPart, "reindex")
 
 	if wholeCountAfter == wholeCount {
 		t.Fatal("the freshness check was not timed at all")
@@ -314,17 +314,12 @@ func TestReloadPartsFitInsideTheWhole(t *testing.T) {
 	if statCountAfter != statCount+(wholeCountAfter-wholeCount) {
 		t.Errorf("%d checks recorded %d stat samples", wholeCountAfter-wholeCount, statCountAfter-statCount)
 	}
-	// Each part must be recorded where it happens: reading a sibling's tail
-	// replays it and then walks every record to rebuild the UID index, and a
-	// part left unattributed turns into a nameless remainder that reads as a
-	// fourth cost.
+	// Each part must be recorded where it happens: a part left unattributed
+	// turns into a nameless remainder that reads as a third cost.
 	if replayCountAfter == replayCount {
 		t.Error("the log was replayed and the replay was not timed")
 	}
-	if reindexCountAfter == reindexCount {
-		t.Error("the index was rebuilt after the replay and the rebuild was not timed")
-	}
-	parts := (statAfter - stat) + (replayAfter - replay) + (reindexAfter - reindex)
+	parts := (statAfter - stat) + (replayAfter - replay)
 	total := wholeAfter - whole
 	if parts > total {
 		t.Errorf("parts sum to %.6fs inside a whole of %.6fs: the spans overlap", parts, total)
@@ -351,7 +346,7 @@ func TestReadPartsAreRecordedSeparately(t *testing.T) {
 	}
 }
 
-// Opening a map replays and reindexes too, and no whole is being timed there.
+// Opening a map replays too, and no whole is being timed there.
 // Counting those parts would let the sum exceed the total, and the unnamed
 // remainder between them -- the point of the split -- would go negative and
 // say nothing.
@@ -365,10 +360,9 @@ func TestPartsAreNotCountedOutsideAFreshnessCheck(t *testing.T) {
 	}
 
 	_, replayBefore := histVecSum(t, metricMapReloadPart, "replay")
-	_, reindexBefore := histVecSum(t, metricMapReloadPart, "reindex")
 	_, wholeBefore := histSum(t, metricMapReloadSeconds)
 
-	// Opening reads the base and rebuilds the index; that is not a check.
+	// Opening reads the base; that is not a check.
 	again, err := Open(dir, "alice@example.com")
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
@@ -376,15 +370,14 @@ func TestPartsAreNotCountedOutsideAFreshnessCheck(t *testing.T) {
 	defer again.Close() //nolint:errcheck
 
 	_, replayAfter := histVecSum(t, metricMapReloadPart, "replay")
-	_, reindexAfter := histVecSum(t, metricMapReloadPart, "reindex")
 	_, wholeAfter := histSum(t, metricMapReloadSeconds)
 
 	if wholeAfter != wholeBefore {
 		t.Fatalf("opening the map timed %d freshness checks", wholeAfter-wholeBefore)
 	}
-	if replayAfter != replayBefore || reindexAfter != reindexBefore {
-		t.Errorf("opening the map recorded %d replay and %d reindex parts with no whole to sit inside",
-			replayAfter-replayBefore, reindexAfter-reindexBefore)
+	if replayAfter != replayBefore {
+		t.Errorf("opening the map recorded %d replay parts with no whole to sit inside",
+			replayAfter-replayBefore)
 	}
 }
 
@@ -405,7 +398,6 @@ func TestOpeningTheMapIsTimedWholeAndInParts(t *testing.T) {
 	whole, wholeCount := histSum(t, metricMapOpenSeconds)
 	base, baseCount := histVecSum(t, metricMapOpenPart, "base")
 	replay, replayCount := histVecSum(t, metricMapOpenPart, "replay")
-	reindex, reindexCount := histVecSum(t, metricMapOpenPart, "reindex")
 
 	again, err := Open(dir, "alice@example.com")
 	if err != nil {
@@ -419,17 +411,15 @@ func TestOpeningTheMapIsTimedWholeAndInParts(t *testing.T) {
 	}
 	baseAfter, baseCountAfter := histVecSum(t, metricMapOpenPart, "base")
 	replayAfter, replayCountAfter := histVecSum(t, metricMapOpenPart, "replay")
-	reindexAfter, reindexCountAfter := histVecSum(t, metricMapOpenPart, "reindex")
 	for name, moved := range map[string]bool{
-		"base":    baseCountAfter > baseCount,
-		"replay":  replayCountAfter > replayCount,
-		"reindex": reindexCountAfter > reindexCount,
+		"base":   baseCountAfter > baseCount,
+		"replay": replayCountAfter > replayCount,
 	} {
 		if !moved {
 			t.Errorf("opening the map did not time its %s part", name)
 		}
 	}
-	parts := (baseAfter - base) + (replayAfter - replay) + (reindexAfter - reindex)
+	parts := (baseAfter - base) + (replayAfter - replay)
 	if total := wholeAfter - whole; parts > total {
 		t.Errorf("parts sum to %.6fs inside a whole of %.6fs: the spans overlap", parts, total)
 	}

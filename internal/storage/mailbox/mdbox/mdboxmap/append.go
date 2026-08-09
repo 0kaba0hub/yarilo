@@ -1,10 +1,6 @@
 package mdboxmap
 
-import (
-	"fmt"
-
-	"github.com/yarilomail/yarilo/internal/storage/mailindex"
-)
+import "fmt"
 
 // AppendBatch is one in-flight save transaction:
 //
@@ -71,25 +67,18 @@ func (m *Map) AppendRecords(layouts []RecordLayout) ([]uint32, error) {
 		if err := m.reloadLocked(); err != nil {
 			return err
 		}
+		added := make([]MapEntry, 0, len(layouts))
 		for i, l := range layouts {
-			mapUID := m.nextMapUID
-			rec := &mailindex.Record{
-				UID: mapUID,
-				Ext: map[string][]byte{
-					extMap:  encodeMapExt(l.FileID, l.Offset, l.Size),
-					extRef:  encodeRefExt(1),
-					extGUID: encodeGUIDExt(l.GUID),
-				},
-			}
-			m.f.Records = append(m.f.Records, rec)
-			m.byMapUID[mapUID] = len(m.f.Records) - 1
+			e := MapEntry{UID: m.nextMapUID, FileID: l.FileID, Offset: l.Offset, Size: l.Size, RefCount: 1, GUID: l.GUID}
+			m.st.insert(e)
+			added = append(added, e)
 			m.nextMapUID++
 			if l.FileID > m.highestFileID {
 				m.highestFileID = l.FileID
 			}
-			out[i] = mapUID
+			out[i] = e.UID
 		}
-		return m.commitAppendLocked(len(layouts))
+		return m.commitAppendLocked(added)
 	})
 	if err != nil {
 		return nil, err
@@ -200,6 +189,7 @@ func (b *AppendBatch) Finish() ([]uint32, error) {
 		}
 		// Append records under freshly-assigned map_uids.
 		mapUIDs = make([]uint32, len(b.pending))
+		added := make([]MapEntry, 0, len(b.pending))
 		maxFileID := b.m.highestFileID
 		if maxFileID == 0 {
 			maxFileID = 1
@@ -212,22 +202,14 @@ func (b *AppendBatch) Finish() ([]uint32, error) {
 			if fileID > maxFileID {
 				maxFileID = fileID
 			}
-			mapUID := b.m.nextMapUID
-			rec := &mailindex.Record{
-				UID: mapUID,
-				Ext: map[string][]byte{
-					extMap:  encodeMapExt(fileID, p.offset, p.size),
-					extRef:  encodeRefExt(1),
-					extGUID: encodeGUIDExt(p.guid),
-				},
-			}
-			b.m.f.Records = append(b.m.f.Records, rec)
-			b.m.byMapUID[mapUID] = len(b.m.f.Records) - 1
+			e := MapEntry{UID: b.m.nextMapUID, FileID: fileID, Offset: p.offset, Size: p.size, RefCount: 1, GUID: p.guid}
+			b.m.st.insert(e)
+			added = append(added, e)
 			b.m.nextMapUID++
-			mapUIDs[i] = mapUID
+			mapUIDs[i] = e.UID
 		}
 		b.m.highestFileID = maxFileID
-		return b.m.commitAppendLocked(len(b.pending))
+		return b.m.commitAppendLocked(added)
 	})
 	if err != nil {
 		return nil, err

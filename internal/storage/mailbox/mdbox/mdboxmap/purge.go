@@ -42,43 +42,30 @@ func (m *Map) AppendMove(moved []MovedRecord, expunged []uint32) error {
 		}
 		// 1) Rewrite physical pointers and GUID for moved records.
 		for _, mv := range moved {
-			idx, ok := m.byMapUID[mv.UID]
+			i, ok := m.findLocked(mv.UID)
 			if !ok {
 				return fmt.Errorf("mdboxmap/move: map_uid %d not found", mv.UID)
 			}
-			rec := m.f.Records[idx]
-			rec.Ext[extMap] = encodeMapExt(mv.FileID, mv.Offset, mv.Size)
+			e := m.st.at(i)
+			e.FileID, e.Offset, e.Size = mv.FileID, mv.Offset, mv.Size
 			if mv.GUID != ([16]byte{}) {
-				rec.Ext[extGUID] = encodeGUIDExt(mv.GUID)
+				e.GUID = mv.GUID
 			}
+			m.st.setAt(i, e)
 			if mv.FileID > m.highestFileID {
 				m.highestFileID = mv.FileID
 			}
 		}
-		// 2) Expunge zero-ref records. Build a set so we can
-		//    rebuild the records slice in one pass; preserves
-		//    relative order for everything else.
+		// 2) Expunge zero-ref records.
 		if len(expunged) > 0 {
 			drop := make(map[uint32]bool, len(expunged))
 			for _, uid := range expunged {
-				if _, ok := m.byMapUID[uid]; !ok {
+				if _, ok := m.findLocked(uid); !ok {
 					return fmt.Errorf("mdboxmap/move: expunge target %d not found", uid)
 				}
 				drop[uid] = true
 			}
-			kept := m.f.Records[:0]
-			for _, rec := range m.f.Records {
-				if drop[rec.UID] {
-					continue
-				}
-				kept = append(kept, rec)
-			}
-			m.f.Records = kept
-		}
-		// 3) Rebuild byMapUID since indexes shifted.
-		m.byMapUID = make(map[uint32]int, len(m.f.Records))
-		for i, rec := range m.f.Records {
-			m.byMapUID[rec.UID] = i
+			m.st.removeFunc(func(uid uint32) bool { return drop[uid] })
 		}
 		return m.flushLocked()
 	})
@@ -100,21 +87,9 @@ func (m *Map) ExpungeVanished(presentUIDs map[uint32]bool) (int, error) {
 		if err := m.reloadLocked(); err != nil {
 			return err
 		}
-		kept := m.f.Records[:0]
-		for _, rec := range m.f.Records {
-			if presentUIDs[rec.UID] {
-				kept = append(kept, rec)
-				continue
-			}
-			dropped++
-		}
+		dropped = m.st.removeFunc(func(uid uint32) bool { return !presentUIDs[uid] })
 		if dropped == 0 {
 			return nil
-		}
-		m.f.Records = kept
-		m.byMapUID = make(map[uint32]int, len(m.f.Records))
-		for i, rec := range m.f.Records {
-			m.byMapUID[rec.UID] = i
 		}
 		return m.flushLocked()
 	})
@@ -131,14 +106,14 @@ func (m *Map) ExpungeVanished(presentUIDs map[uint32]bool) (int, error) {
 func (m *Map) CompactGarbage() []uint32 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.f == nil {
+	if !m.loaded {
 		return nil
 	}
 	var out []uint32
-	for _, rec := range m.f.Records {
-		if decodeRefExt(rec.Ext[extRef]) == 0 {
-			out = append(out, rec.UID)
+	m.st.each(func(e MapEntry) {
+		if e.RefCount == 0 {
+			out = append(out, e.UID)
 		}
-	}
+	})
 	return out
 }
