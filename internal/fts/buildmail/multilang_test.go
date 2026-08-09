@@ -46,7 +46,7 @@ func TestBuildSelectsLanguagePerMessage(t *testing.T) {
 	b := New(Options{}, chain)
 
 	upd := &fakeUpdate{}
-	if err := b.Build(1, strings.NewReader(germanMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(germanMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	tokens := upd.bodyTokens()
@@ -68,7 +68,7 @@ func TestBuildSingleLanguageConfigUnchanged(t *testing.T) {
 	b := New(Options{}, chain)
 
 	upd := &fakeUpdate{}
-	if err := b.Build(1, strings.NewReader(germanMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(germanMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	// No assertion on the exact stem — just confirm indexing succeeded and
@@ -86,7 +86,7 @@ func TestBuildBothLanguagesIndexCorrectly(t *testing.T) {
 	b := New(Options{}, chain)
 
 	upd := &fakeUpdate{}
-	if err := b.Build(1, strings.NewReader(englishMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(englishMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	tokens := upd.bodyTokens()
@@ -114,7 +114,7 @@ func TestBuildMultiLanguageDoesNotBufferWholeMessage(t *testing.T) {
 	b := New(Options{MaxSize: 100}, chain)
 
 	br := &boundedReader{t: t, r: strings.NewReader(msg), max: int64(defaultDetectionSampleBytes*detectionRetryFactor) + 64*1024}
-	if err := b.Build(1, br, upd); err != nil {
+	if _, err := b.Build(1, br, upd); err != nil {
 		t.Fatal(err)
 	}
 	tokens := upd.bodyTokens()
@@ -133,7 +133,7 @@ func TestBuildUkrainianIndexedUnstemmed(t *testing.T) {
 	b := New(Options{}, chain)
 
 	upd := &fakeUpdate{}
-	if err := b.Build(1, strings.NewReader(ukrainianMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(ukrainianMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	tokens := upd.bodyTokens()
@@ -154,7 +154,7 @@ func TestBuildRussianStillStemsInMixedUkRuConfig(t *testing.T) {
 	b := New(Options{}, chain)
 
 	upd := &fakeUpdate{}
-	if err := b.Build(1, strings.NewReader(russianMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(russianMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	tokens := upd.bodyTokens()
@@ -184,7 +184,7 @@ func TestBuildLanguageFiltersOverride(t *testing.T) {
 	// snowball) — not the stemmed "fuch" #718's own test expects when
 	// snowball IS in play.
 	upd := &fakeUpdate{}
-	if err := b.Build(1, strings.NewReader(germanMsg), upd); err != nil {
+	if _, err := b.Build(1, strings.NewReader(germanMsg), upd); err != nil {
 		t.Fatal(err)
 	}
 	tokens := upd.bodyTokens()
@@ -197,7 +197,7 @@ func TestBuildLanguageFiltersOverride(t *testing.T) {
 
 	// English message: not overridden, still stems via the global list.
 	upd2 := &fakeUpdate{}
-	if err := b.Build(2, strings.NewReader(englishMsg), upd2); err != nil {
+	if _, err := b.Build(2, strings.NewReader(englishMsg), upd2); err != nil {
 		t.Fatal(err)
 	}
 	tokens2 := upd2.bodyTokens()

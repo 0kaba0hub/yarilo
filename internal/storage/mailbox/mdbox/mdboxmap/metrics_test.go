@@ -257,3 +257,133 @@ func TestHoldIsNotReportedWithoutALockService(t *testing.T) {
 		t.Errorf("recorded %d mutex waits, want 1", count-writeBefore)
 	}
 }
+
+// histVecSum reads one labelled histogram's total seconds and sample count.
+func histVecSum(t *testing.T, v *prometheus.HistogramVec, label string) (float64, uint64) {
+	t.Helper()
+	h, err := v.GetMetricWithLabelValues(label)
+	if err != nil {
+		t.Fatalf("get %s: %v", label, err)
+	}
+	var m dto.Metric
+	if err := h.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("write %s: %v", label, err)
+	}
+	return m.GetHistogram().GetSampleSum(), m.GetHistogram().GetSampleCount()
+}
+
+// The parts must reconcile with the whole, or an analysis is left with a
+// nameless remainder and no way to tell a fourth cost from a measurement bug.
+// The three named parts are stat, replay and reindex; what the total holds
+// beyond them is the finding, and it cannot be negative.
+func TestReloadPartsFitInsideTheWhole(t *testing.T) {
+	m, dir := openTestMap(t)
+	if _, err := m.AppendRecord(1, 0, 10, [16]byte{1}); err != nil {
+		t.Fatalf("AppendRecord: %v", err)
+	}
+
+	// A sibling appends so the next check does real work in every part.
+	sibling, err := Open(dir, "alice@example.com")
+	if err != nil {
+		t.Fatalf("Open sibling: %v", err)
+	}
+	defer sibling.Close() //nolint:errcheck
+	uid, err := sibling.AppendRecord(2, 0, 10, [16]byte{2})
+	if err != nil {
+		t.Fatalf("sibling AppendRecord: %v", err)
+	}
+
+	whole, wholeCount := histSum(t, metricMapReloadSeconds)
+	stat, statCount := histVecSum(t, metricMapReloadPart, "stat")
+	replay, replayCount := histVecSum(t, metricMapReloadPart, "replay")
+	reindex, reindexCount := histVecSum(t, metricMapReloadPart, "reindex")
+
+	if _, ok, err := m.Lookup(uid); err != nil || !ok {
+		t.Fatalf("Lookup: ok=%v err=%v", ok, err)
+	}
+
+	wholeAfter, wholeCountAfter := histSum(t, metricMapReloadSeconds)
+	statAfter, statCountAfter := histVecSum(t, metricMapReloadPart, "stat")
+	replayAfter, replayCountAfter := histVecSum(t, metricMapReloadPart, "replay")
+	reindexAfter, reindexCountAfter := histVecSum(t, metricMapReloadPart, "reindex")
+
+	if wholeCountAfter == wholeCount {
+		t.Fatal("the freshness check was not timed at all")
+	}
+	// Every check pays the stats, so their count must move with the whole.
+	if statCountAfter != statCount+(wholeCountAfter-wholeCount) {
+		t.Errorf("%d checks recorded %d stat samples", wholeCountAfter-wholeCount, statCountAfter-statCount)
+	}
+	// Each part must be recorded where it happens: reading a sibling's tail
+	// replays it and then walks every record to rebuild the UID index, and a
+	// part left unattributed turns into a nameless remainder that reads as a
+	// fourth cost.
+	if replayCountAfter == replayCount {
+		t.Error("the log was replayed and the replay was not timed")
+	}
+	if reindexCountAfter == reindexCount {
+		t.Error("the index was rebuilt after the replay and the rebuild was not timed")
+	}
+	parts := (statAfter - stat) + (replayAfter - replay) + (reindexAfter - reindex)
+	total := wholeAfter - whole
+	if parts > total {
+		t.Errorf("parts sum to %.6fs inside a whole of %.6fs: the spans overlap", parts, total)
+	}
+}
+
+// A read is three named parts, and each must be recorded where it happens: a
+// number that lumps them says the driver is slower without saying which step,
+// which is what the comparison with maildir needs (#1205).
+func TestReadPartsAreRecordedSeparately(t *testing.T) {
+	ObserveReadPart("lookup", 5*time.Millisecond)
+	ObserveReadPart("open", 7*time.Millisecond)
+	ObserveReadPart("body", 11*time.Millisecond)
+
+	for part, want := range map[string]float64{"lookup": 0.005, "open": 0.007, "body": 0.011} {
+		sum, count := histVecSum(t, metricReadPart, part)
+		if count == 0 {
+			t.Errorf("%s was not recorded", part)
+			continue
+		}
+		if sum < want {
+			t.Errorf("%s recorded %.6fs, want at least %.6fs", part, sum, want)
+		}
+	}
+}
+
+// Opening a map replays and reindexes too, and no whole is being timed there.
+// Counting those parts would let the sum exceed the total, and the unnamed
+// remainder between them -- the point of the split -- would go negative and
+// say nothing.
+func TestPartsAreNotCountedOutsideAFreshnessCheck(t *testing.T) {
+	m, dir := openTestMap(t)
+	if _, err := m.AppendRecord(1, 0, 10, [16]byte{1}); err != nil {
+		t.Fatalf("AppendRecord: %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, replayBefore := histVecSum(t, metricMapReloadPart, "replay")
+	_, reindexBefore := histVecSum(t, metricMapReloadPart, "reindex")
+	_, wholeBefore := histSum(t, metricMapReloadSeconds)
+
+	// Opening reads the base and rebuilds the index; that is not a check.
+	again, err := Open(dir, "alice@example.com")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer again.Close() //nolint:errcheck
+
+	_, replayAfter := histVecSum(t, metricMapReloadPart, "replay")
+	_, reindexAfter := histVecSum(t, metricMapReloadPart, "reindex")
+	_, wholeAfter := histSum(t, metricMapReloadSeconds)
+
+	if wholeAfter != wholeBefore {
+		t.Fatalf("opening the map timed %d freshness checks", wholeAfter-wholeBefore)
+	}
+	if replayAfter != replayBefore || reindexAfter != reindexBefore {
+		t.Errorf("opening the map recorded %d replay and %d reindex parts with no whole to sit inside",
+			replayAfter-replayBefore, reindexAfter-reindexBefore)
+	}
+}

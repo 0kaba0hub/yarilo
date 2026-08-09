@@ -22,6 +22,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/fts/decoder"
 	"github.com/yarilomail/yarilo/internal/fts/language"
 	"github.com/yarilomail/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/pkg/mimesalvage"
 )
 
 // Options selects which headers are indexed and how much body text is fed.
@@ -124,7 +125,21 @@ const detectionRetryFactor = 4
 // caller owns the update session (commit/rollback). Each body/attachment part
 // detects its own language lazily, from its own text (see detectPartChain);
 // headers always use dataChain.
-func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
+// Report says how the message had to be treated to be indexed. The caller
+// carries the identity that makes it actionable -- the mailbox, the GUID, the
+// file -- so it does the reporting; this only says what happened.
+type Report struct {
+	// Repaired is true when the message did not parse as it stood and was read
+	// by dropping what could not be a header.
+	Repaired bool
+	// DroppedHeaderLines is how many lines that repair discarded.
+	DroppedHeaderLines int
+	// Cause is why the parser refused it in the first place.
+	Cause error
+}
+
+func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) (Report, error) {
+	var report Report
 	remaining := b.opts.MaxSize
 	if remaining <= 0 {
 		remaining = -1 // unlimited
@@ -137,17 +152,34 @@ func (b *Builder) Build(uid uint32, raw io.Reader, upd fts.Update) error {
 	t0 := time.Now()
 	defer func() { st.stages.observe(time.Since(t0)) }()
 
-	var e *message.Entity
+	var (
+		e   *message.Entity
+		res mimesalvage.Result
+	)
 	perr := track(&st.stages.parse, func() error {
 		var rerr error
-		e, rerr = message.Read(raw)
+		e, res, rerr = mimesalvage.Read(raw)
 		return rerr
 	})
 	if perr != nil && !message.IsUnknownCharset(perr) {
-		return fmt.Errorf("fts/buildmail: parse: %w", perr)
+		// Nothing that could be a message: not damage, and reporting it as a
+		// partial index would hide a hole no counter would then report.
+		return report, fmt.Errorf("fts/buildmail: parse: %w", perr)
+	}
+	if res.Salvaged {
+		// The message was damaged and was read anyway, by dropping what could
+		// not be a header. It is indexed as an ordinary message -- parts,
+		// types and encodings intact -- so a client finds it by its words
+		// rather than not at all (#1219). The caller is told, because the
+		// mailbox and the message identity live there, and an operator has to
+		// be able to find this message and see for themselves.
+		metricDegraded.WithLabelValues("parse").Inc()
+		report.Repaired = true
+		report.DroppedHeaderLines = res.DroppedHeaderLines
+		report.Cause = perr
 	}
 
-	return b.walkEntity(st, e, 0, upd)
+	return report, b.walkEntity(st, e, 0, upd)
 }
 
 // readPrefix reads up to n bytes from r, tolerating a short read at EOF (a
@@ -441,10 +473,12 @@ func (b *Builder) buildDecodedAttachment(st *buildState, e *message.Entity, medi
 				"uid", st.uid, "content_type", mediaType, "filename", filename, "err", err)
 			return nil
 		}
-		// Any other decoder error is a hard failure (bad config, a permanent
-		// 4xx, a script protocol error): abort this message so autoindex
-		// retries it later, rather than commit a silently-incomplete document.
-		return fmt.Errorf("fts/buildmail: decode attachment: %w", err)
+		// One part that will not decode is not a reason to lose the rest of
+		// the message: the others are already indexed and this one is not.
+		metricDegraded.WithLabelValues("attachment").Inc()
+		slog.Warn("fts/buildmail: attachment could not be decoded, indexing the message without it",
+			"uid", st.uid, "content_type", mediaType, "err", err)
+		return nil
 	}
 	if !ok || len(text) == 0 {
 		// Unsupported content type/extension: index what else was readable and

@@ -605,7 +605,14 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 	if err != nil {
 		return nil, err
 	}
+	// Three parts with fixed boundaries, so the totals reconcile and the
+	// comparison with maildir says which step costs: lookup resolves the map
+	// entry (a freshness check included, when the map misses), open opens the
+	// packed file, body seeks to the record and reads it. In maildir the first
+	// two are one open by name and the third does not exist (#1205).
+	lookupStart := time.Now()
 	entry, ok, err := m.Lookup(mapUID)
+	mdboxmap.ObserveReadPart("lookup", time.Since(lookupStart))
 	if err != nil {
 		return nil, fmt.Errorf("mdbox/fetch: lookup: %w", err)
 	}
@@ -631,8 +638,13 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 	// best-effort: a stale flag or a corrupt alt copy falls through to primary
 	// rather than surfacing as corruption.
 	if altTier && u.AltEnabled() {
-		if f, ferr := os.Open(alt); ferr == nil {
+		openStart := time.Now()
+		f, ferr := os.Open(alt)
+		mdboxmap.ObserveReadPart("open", time.Since(openStart))
+		if ferr == nil {
+			bodyStart := time.Now()
 			body, berr := readRecordBody(f, entry.Offset)
+			mdboxmap.ObserveReadPart("body", time.Since(bodyStart))
 			_ = f.Close()
 			if berr == nil {
 				return io.NopCloser(bytes.NewReader(body)), nil
@@ -640,6 +652,7 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 		}
 	}
 
+	openStart := time.Now()
 	f, ferr := os.Open(primary)
 	if ferr != nil {
 		// Safety fallback: flag may lag reality if altmove ran before the
@@ -648,6 +661,7 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 			f, ferr = os.Open(alt)
 		}
 		if ferr != nil {
+			mdboxmap.ObserveReadPart("open", time.Since(openStart))
 			// A vanished m.<N> the map still points at is corruption; any other
 			// open error (EIO, EACCES) is transient and must not trigger a rebuild.
 			if errors.Is(ferr, os.ErrNotExist) {
@@ -656,7 +670,10 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 			return nil, fmt.Errorf("mdbox/fetch: open m.%d: %w", entry.FileID, ferr)
 		}
 	}
+	mdboxmap.ObserveReadPart("open", time.Since(openStart))
+	bodyStart := time.Now()
 	body, err := readRecordBody(f, entry.Offset)
+	mdboxmap.ObserveReadPart("body", time.Since(bodyStart))
 	_ = f.Close()
 	if err != nil {
 		return nil, corruptFetchErr(entry.FileID, err)

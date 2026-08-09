@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -750,24 +751,25 @@ func (s *Service) runIndex(j job) error {
 			if err != nil {
 				var buildErr *buildError
 				if errors.As(err, &buildErr) {
-					// A hard buildmail failure must never let a partially
-					// built document flush into the shard on the NEXT
-					// message's first SetBuildKey — Rollback discards it.
-					// Commit + checkpoint whatever was fully built before
-					// this UID, then halt: the checkpoint must not advance
-					// past the failed message, so a future index run
-					// (autoindex, delivery, search catch-up) retries it —
-					// e.g. after a decoder config fix — instead of silently
-					// skipping it forever. Anything reaching here is a hard
-					// failure; retriable decoder errors degrade earlier
-					// without erroring out of Build.
-					return s.haltIndexRunOnBuildFailure(j, h, upd, indexed, curUIDV, checksum, m.UID, buildErr.err)
+					// A partially built document must not flush into the shard
+					// on the next message's first SetBuildKey.
+					if rerr := upd.Rollback(); rerr != nil {
+						slog.Error("fts: rollback after a build failure also failed",
+							"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "uid", m.UID, "err", rerr)
+					}
 				}
 				skippedCount++
-				// One unreadable message must not stall the mailbox forever:
-				// log and move the checkpoint past it (rescan can revisit).
-				slog.Warn("fts: message skipped",
-					"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "uid", m.UID, "err", err)
+				metricIndexSkipped.WithLabelValues(skipReason(err)).Inc()
+				// The run continues and the checkpoint moves past it. Halting
+				// here meant a message that can never succeed stopped its
+				// folder forever, and a search spanning folders turned that
+				// into no search at all for the account (#1219). What is lost
+				// is a hole in the index, so it is counted and logged loudly:
+				// a rescan is how a hole is filled, and the counter is what
+				// says one is needed.
+				slog.Warn("fts: message skipped, its content will not be searchable until a rescan",
+					"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "uid", m.UID,
+					"reason", skipReason(err), "err", err)
 				// Flag the folder for a reactive heal once per scan, not per
 				// message: a mailbox full of vanished files must not pay an
 				// OpenFolder+mark for each one.
@@ -829,10 +831,19 @@ func (s *Service) indexOne(mbox fts.MailboxRef, item fetched, upd fts.Update) er
 	}
 
 	tBuild := time.Now()
-	err := s.builder.Build(m.UID, bytes.NewReader(item.body), upd)
+	report, err := s.builder.Build(m.UID, bytes.NewReader(item.body), upd)
 	metricBuild.Observe(time.Since(tBuild).Seconds())
 	if err != nil {
 		return &buildError{err: err}
+	}
+	if report.Repaired {
+		// Reported here because this is where the message can be found again:
+		// the mailbox, its GUID and the file are what an operator opens to see
+		// for themselves why it was damaged.
+		slog.Warn("fts: message MIME was damaged, indexed after repair",
+			"folder", mbox.Name, "mailbox_guid", mbox.GUID,
+			"uid", m.UID, "guid", mailbox.FormatObjectID(m.GUID), "file", m.Filename,
+			"dropped_header_lines", report.DroppedHeaderLines, "err", report.Cause)
 	}
 	// Per-message breadcrumb: which UID/file was fed to the engine. Metadata
 	// only (size is the index-time signal for "was there anything to
@@ -852,30 +863,17 @@ type buildError struct{ err error }
 func (e *buildError) Error() string { return e.err.Error() }
 func (e *buildError) Unwrap() error { return e.err }
 
-// haltIndexRunOnBuildFailure discards the partially built document for the
-// failed UID so it can never leak into a later message's flush, commits and
-// checkpoints whatever was fully built before it, and halts the run — the
-// checkpoint does NOT advance past uid, so a future index run retries it once
-// the cause is fixed.
-//
-// This stays loud: a deterministic per-document failure (bad decoder config, a
-// permanent 4xx) halts at the same UID on every retry until fixed, so every
-// occurrence — not just the first — logs at Error and bumps
-// metricIndexBuildHalts. A stuck mailbox must surface as a rising counter and
-// a repeating log line, not a single message that scrolls by once.
-func (s *Service) haltIndexRunOnBuildFailure(j job, h *userHandle, upd fts.Update, indexed, curUIDV, checksum uint32, uid uint32, buildErr error) error {
-	if rerr := upd.Rollback(); rerr != nil {
-		slog.Error("fts: rollback after build failure also failed",
-			"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "uid", uid, "err", rerr)
+// skipReason classifies why a message could not be indexed, for the counter.
+// Coarse on purpose: an operator needs to know whether the holes are storage
+// (a disk or a mount) or content, not the exact error string, which is in the
+// log line beside it.
+func skipReason(err error) string {
+	switch {
+	case errors.Is(err, mailbox.ErrCorruptStorage), errors.Is(err, os.ErrNotExist):
+		return "read"
+	case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
+		return "read"
+	default:
+		return "other"
 	}
-	if err := upd.Commit(); err != nil {
-		return err
-	}
-	if err := h.ui.SetCheckpoint(j.mbox, indexed, curUIDV, checksum); err != nil {
-		return err
-	}
-	metricIndexBuildHalts.Inc()
-	slog.Error("fts: message build failed, halting mailbox index run without advancing past it",
-		"job_id", j.id, "user", j.user, "folder", j.mbox.Name, "uid", uid, "last_good_uid", indexed, "err", buildErr)
-	return fmt.Errorf("ftsservice: build uid %d: %w", uid, buildErr)
 }

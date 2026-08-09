@@ -153,13 +153,14 @@ var (
 		Name: "fts_index_dropped_total",
 		Help: "FTS index passes given up on after repeated lock contention.",
 	})
-	// metricIndexBuildHalts: hard buildmail failure halted a mailbox run
-	// without advancing the checkpoint. Expected zero; a deterministic
-	// failure keeps incrementing on every retry of the same UID.
-	metricIndexBuildHalts = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "fts_index_build_halts_total",
-		Help: "Mailbox index runs halted by a hard buildmail failure, without advancing the checkpoint past the failed message.",
-	})
+	// metricIndexSkipped: messages the index passed over. Each one is a hole:
+	// its content is not searchable until a rescan fills it. Expected zero,
+	// and a rising count is the signal to run one -- nothing else reports a
+	// hole, and a silent one is indistinguishable from an empty mailbox.
+	metricIndexSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "fts_index_skipped_total",
+		Help: "Messages passed over by indexing, by reason. Their content is unsearchable until a rescan.",
+	}, []string{"reason"})
 	metricQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "fts_index_queue_depth",
 		Help: "Mailboxes waiting for an index pass. A running pass is not pending, and one mailbox counts once however many requests it received.",

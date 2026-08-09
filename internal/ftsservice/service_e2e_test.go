@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/testutil"
-
 	"github.com/yarilomail/yarilo/internal/fts/buildmail"
 	"github.com/yarilomail/yarilo/internal/fts/flatcurve"
 	"github.com/yarilomail/yarilo/internal/fts/language"
@@ -422,13 +420,19 @@ const brokenAttachmentMsg = "From: a@test.com\r\n" +
 	"never reached body text\r\n" +
 	"--BOUND--\r\n"
 
-// TestIndexHaltsOnBuildFailureWithoutPartialDocument (#721) reproduces the
-// bug directly: a decoder hard failure on UID 2's attachment must not let
-// UID 2's already-built header terms leak into the shard via UID 3's first
-// SetBuildKey flush. The run must halt at UID 2 — UID 1 stays indexed, UID
-// 2 has NOTHING in the index (not even headers), UID 3 is never reached,
-// and the checkpoint sits at UID 1.
-func TestIndexHaltsOnBuildFailureWithoutPartialDocument(t *testing.T) {
+// A decoder that will not decode UID 2's attachment costs that attachment and
+// nothing else: UID 2 is indexed by what could be read, UID 3 is reached, and
+// the checkpoint passes all three.
+//
+// #721 made this halt, on the reasoning that a hard failure must not be
+// skipped silently. #1219 showed what that costs: the run stopped at the same
+// message on every retry, requeued every few seconds, and a query that spans
+// folders turned one bad message into no search at all for the account. The
+// halt is gone. Completeness is held by two other things now -- the builder
+// degrades instead of refusing, so the data is always indexed, and what is
+// still lost is counted and visible (fts_index_degraded_total,
+// fts_index_skipped_total) rather than silent.
+func TestBuildFailureCostsThePartNotTheRun(t *testing.T) {
 	root := t.TempDir()
 	resolver := &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"}
 	mb := maildir.New()
@@ -462,36 +466,24 @@ func TestIndexHaltsOnBuildFailureWithoutPartialDocument(t *testing.T) {
 
 	saveMessage(t, box, uidx, 1, "firstmessagefine")
 	saveRawMessage(t, box, uidx, 2, brokenAttachmentMsg)
-	saveMessage(t, box, uidx, 3, "thirdmessagenotreached")
+	saveMessage(t, box, uidx, 3, "thirdmessagezz")
 
-	before := testutil.ToFloat64(metricIndexBuildHalts)
 	if err := svc.Index(testUser, testMbox, 3, 0); err != nil {
 		t.Fatal(err)
 	}
-
-	// The run halts synchronously inside the worker; wait for the metric
-	// to move rather than assuming a fixed delay.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if testutil.ToFloat64(metricIndexBuildHalts) > before {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if got := testutil.ToFloat64(metricIndexBuildHalts); got <= before {
-		t.Fatalf("fts_index_build_halts_total did not increment: before=%v after=%v", before, got)
-	}
+	waitIndexed(t, svc, 3)
 
 	last, _, err := svc.Status(testUser, testMbox)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if last != 1 {
-		t.Fatalf("checkpoint = %d, want 1 (must not advance past the halted UID 2)", last)
+	if last != 3 {
+		t.Fatalf("checkpoint = %d, want 3: one undecodable attachment stopped the run", last)
 	}
 
-	// UID 2's headers must NOT be searchable — Rollback must have discarded
-	// the partial document instead of it leaking into UID 3's flush.
+	// UID 2 is findable by what could be read -- its own headers. This is the
+	// difference between degrading and skipping: a skipped message is in no
+	// index at all, and nothing tells a user why their mail cannot be found.
 	res, err := svc.Lookup(testUser, testMbox, fts.Query{
 		Terms:    []fts.Term{{Field: fts.FieldHeader, HdrName: "subject", Words: []fts.Word{{Variants: []string{"gizmoxyzzy"}}}}},
 		AndTerms: true,
@@ -499,55 +491,61 @@ func TestIndexHaltsOnBuildFailureWithoutPartialDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Definite) != 0 {
-		t.Fatalf("lookup found UID 2's partial document via its headers: %v, want none", res.Definite)
+	if len(res.Definite) != 1 || res.Definite[0] != 2 {
+		t.Fatalf("lookup = %v, want [2]: the message was refused instead of indexed without its attachment", res.Definite)
 	}
 
-	// UID 3 (after the halted UID) must never have been reached either.
-	res, err = svc.Lookup(testUser, testMbox, lookupWord("thirdmessagenotreached"))
+	// And the message after it was reached, which the halt used to prevent.
+	res, err = svc.Lookup(testUser, testMbox, lookupWord("thirdmessagezz"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Definite) != 0 {
-		t.Fatalf("UID 3 was indexed despite the run halting on UID 2: %v", res.Definite)
+	if len(res.Definite) != 1 {
+		t.Fatalf("lookup = %v, want the message after the degraded one", res.Definite)
 	}
 }
 
-// TestIndexHaltsOnUnparseableTopLevelMessage (#721) documents a deliberate
-// behavior change: a genuinely unparseable top-level message (not just an
-// unknown charset, which buildmail already tolerates) now HALTS the run
-// instead of being skipped-and-checkpoint-advanced like an unreadable
-// file. This is intentional — see #721's PR description — since by the
-// time an error reaches indexOne from Build() at all, it's already a hard,
-// non-degradable failure (#697), and the previous skip+advance behavior is
-// exactly the bug this issue fixes.
-func TestIndexHaltsOnUnparseableTopLevelMessage(t *testing.T) {
+// A message whose MIME cannot be read is indexed by its own bytes: the words
+// are there whatever the structure says, and a client looking for them finds
+// the message. It halted the run under #721; #1219 showed what that costs --
+// a message that will never parse turns "halt until fixed" into "never index
+// this folder again", and a query spanning folders spreads it to the whole
+// account. Completeness is held by the builder degrading rather than refusing,
+// and by what is still lost being counted rather than silent.
+func TestUnparseableMessageIsIndexedAsOpaqueText(t *testing.T) {
 	svc, box, uidx := newTestService(t)
 	saveMessage(t, box, uidx, 1, "firstmessagefine")
-	saveRawMessage(t, box, uidx, 2, "NoColonHeaderLine\r\n\r\nbroken message body\r\n")
-	saveMessage(t, box, uidx, 3, "thirdmessagenotreached")
+	saveRawMessage(t, box, uidx, 2, "NoColonHeaderLine\r\n\r\nbroken opaquemarkerzz body\r\n")
+	saveMessage(t, box, uidx, 3, "thirdmessagezz")
 
-	before := testutil.ToFloat64(metricIndexBuildHalts)
 	if err := svc.Index(testUser, testMbox, 3, 0); err != nil {
 		t.Fatal(err)
 	}
-
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if testutil.ToFloat64(metricIndexBuildHalts) > before {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if got := testutil.ToFloat64(metricIndexBuildHalts); got <= before {
-		t.Fatalf("fts_index_build_halts_total did not increment: before=%v after=%v", before, got)
-	}
+	waitIndexed(t, svc, 3)
 
 	last, _, err := svc.Status(testUser, testMbox)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if last != 1 {
-		t.Fatalf("checkpoint = %d, want 1 — an unparseable top-level message must halt the run, not be silently skipped", last)
+	if last != 3 {
+		t.Fatalf("checkpoint = %d, want 3: the unparseable message stopped the run", last)
+	}
+
+	// Found by a word from its body -- the difference between degrading and
+	// skipping, and the reason the run may continue past it.
+	res, err := svc.Lookup(testUser, testMbox, lookupWord("opaquemarkerzz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Definite) != 1 || res.Definite[0] != 2 {
+		t.Fatalf("lookup = %v, want [2]: the unparseable message was not indexed at all", res.Definite)
+	}
+
+	res, err = svc.Lookup(testUser, testMbox, lookupWord("thirdmessagezz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Definite) != 1 {
+		t.Fatalf("lookup = %v, want the message after the unparseable one", res.Definite)
 	}
 }
