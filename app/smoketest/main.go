@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -80,7 +82,9 @@ var (
 
 	// A deployment that wants the whole gate says so once, instead of
 	// diffing the skipped list by hand on every rollout (#1197).
-	flagRequireAll = flag.Bool("require-all", false, "treat a check disabled by a missing flag as a failure")
+	flagRequireAll       = flag.Bool("require-all", false, "treat a check disabled by a missing flag as a failure")
+	flagRequireAllExcept = flag.String("require-all-except", "",
+		"comma-separated check areas -require-all does not demand (e.g. jmap), for deployments that do not run them")
 
 	flagFTSUser = flag.String("fts-user", "", "IMAP username for the full-text search check (enables it)")
 	flagFTSPass = flag.String("fts-pass", "", "password for -fts-user")
@@ -93,6 +97,7 @@ var (
 // configure it: the item stays in the list so the summary describes the
 // intended gate, with skip naming the flag that would enable it (#1197).
 type check struct {
+	area string
 	name string
 	fn   func() error
 	skip string
@@ -102,6 +107,9 @@ type check struct {
 // counts are assertable.
 type summary struct {
 	total, passed, failed, skipped int
+	// exempt counts the skips forgiven by -require-all-except; they are part
+	// of skipped, not a separate bucket.
+	exempt int
 }
 
 type result struct {
@@ -127,95 +135,135 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	flag.Parse()
 
-	// Every check is registered, enabled or not: a summary that counts only
-	// what ran cannot report what was not asked for, so a rollout that loses
-	// a flag keeps saying green with fewer checks than last time (#1197).
-	var checks []check
-	want := func(enabled bool, name, needs string, fn func() error) {
-		if enabled {
-			checks = append(checks, check{name: name, fn: fn})
-			return
-		}
-		checks = append(checks, check{name: name, skip: needs})
+	checks := register()
+	exempt, err := parseExemptions(*flagRequireAllExcept, checks)
+	if err != nil {
+		slog.Error("smoke: bad -require-all-except", "err", err)
+		os.Exit(2)
 	}
-
-	telemetry := *flagTelemetry != ""
-	want(telemetry, "telemetry /healthz", "needs -telemetry", checkHealth)
-	want(telemetry, "telemetry /readyz", "needs -telemetry", checkReady)
-	want(*flagSMTPMX, "smtp MX EHLO", "needs -smtp-mx", checkSMTPMX)
-	want(*flagSMTPSub, "smtp submission EHLO+STARTTLS", "needs -smtp-submission", checkSMTPSubmission)
-	want(*flagProxyProtocol, "smtp MX PROXY protocol", "needs -proxy-protocol", checkSMTPProxyProtocol)
-	want(*flagXClient, "smtp MX XCLIENT cap", "needs -xclient", checkSMTPXClient)
-	want(*flagPOP3S, "pop3s CAPA", "needs -pop3s", checkPOP3S)
-	want(*flagLMTPLogin, "lmtp-login LHLO", "needs -lmtp-login", checkLMTPLogin)
-	want(*flagManageSieve, "managesieve auth+CRUD", "needs -managesieve", checkManageSieve)
-	want(*flagSieve, "sieve plugins", "needs -sieve", checkSieve)
-	want(*flagPasswdFileUser != "", "imap login (passwd-file passdb)", "needs -passwd-file-user", func() error {
-		return checkIMAPLogin(*flagPasswdFileUser, *flagPasswdFilePass)
-	})
-	want(*flagStaticUser != "", "imap login (static passdb)", "needs -static-user", func() error {
-		return checkIMAPLogin(*flagStaticUser, *flagStaticPass)
-	})
-	want(*flagQuotaUser != "", "imap QUOTA (GETQUOTA)", "needs -quota-user", func() error {
-		return checkQuota(*flagQuotaUser, *flagQuotaPass)
-	})
-	want(*flagQuotaOverUser != "", "imap QUOTA enforcement (OVERQUOTA)", "needs -quota-over-user", func() error {
-		return checkQuotaOver(*flagQuotaOverUser, *flagQuotaOverPass)
-	})
-	want(*flagACLUser != "", "imap ACL (MYRIGHTS + SETACL round-trip)", "needs -acl-user", func() error {
-		return checkACL(*flagACLUser, *flagACLPass)
-	})
-	want(*flagACLUser != "" && *flagACLPeerUser != "" && *flagACLSharedPrefix != "",
-		"imap ACL disclosure (shared namespace, peer vs absent mailbox)",
-		"needs -acl-user, -acl-peer-user and -acl-shared-prefix", func() error {
-			return checkACLDisclosure(*flagACLUser, *flagACLPass,
-				*flagACLPeerUser, *flagACLPeerPass, *flagACLSharedPrefix)
-		})
-	want(*flagEnvelopeUser != "", "imap FETCH (ENVELOPE BODYSTRUCTURE) on an existing INBOX",
-		"needs -envelope-user", func() error {
-			return checkFetchEnvelope(*flagEnvelopeUser, *flagEnvelopePass)
-		})
-	want(*flagFTSUser != "", "imap FTS (SEARCH BODY/TEXT/HEADER/FROM)", "needs -fts-user", func() error {
-		return checkFTS(*flagFTSUser, *flagFTSPass)
-	})
-	want(*flagDirectorAPI != "", "director admin API status (authenticated)", "needs -director-api", checkDirectorAPI)
-
-	jmap := *flagJMAP
-	want(jmap, "jmap endpoint refuses anonymous access", "needs -jmap", checkJMAPUnauthenticated)
-	want(jmap, "jmap session resource (/.well-known/jmap)", "needs -jmap", checkJMAPSession)
-	want(jmap, "jmap batch + back-reference (Core/echo x2)", "needs -jmap", checkJMAPBatch)
-	want(jmap, "jmap body cap refused at the login edge", "needs -jmap", checkJMAPBodyCap)
-	want(jmap, "jmap Mailbox/get (roles, ids, parent tree)", "needs -jmap", checkJMAPMailboxes)
-	want(jmap, "jmap Mailbox/query + back-referenced get", "needs -jmap", checkJMAPMailboxQuery)
-	want(jmap, "jmap Email/query -> Email/get -> download", "needs -jmap", checkJMAPEmailDiscovery)
-	want(jmap, "jmap download refuses another account's blob", "needs -jmap", checkJMAPDownloadIsolation)
-	// Gated on credentials, not on cost: components.jmap ships disabled, so a
-	// deployment that never enabled JMAP would fail smoke over a service it
-	// does not run.
-	want(jmap && *flagJMAPUser != "", "jmap header:* forms, headers, projection and property validation",
-		"needs -jmap and -jmap-user", checkJMAPHeaderForms)
-
-	if s := runChecks(checks, *flagRequireAll, os.Stderr); s.failed > 0 {
+	if s := runChecks(checks, *flagRequireAll, exempt, os.Stderr); s.failed > 0 {
 		os.Exit(1)
 	}
 }
 
+// register lists the gate. Every check is registered, enabled or not: a
+// summary that counts only what ran cannot report what was not asked for, so
+// a rollout that loses a flag keeps saying green with fewer checks than last
+// time (#1197).
+func register() []check {
+	var checks []check
+	want := func(area string, enabled bool, name, needs string, fn func() error) {
+		if enabled {
+			checks = append(checks, check{area: area, name: name, fn: fn})
+			return
+		}
+		checks = append(checks, check{area: area, name: name, skip: needs})
+	}
+
+	telemetry := *flagTelemetry != ""
+	want("telemetry", telemetry, "telemetry /healthz", "needs -telemetry", checkHealth)
+	want("telemetry", telemetry, "telemetry /readyz", "needs -telemetry", checkReady)
+	want("smtp", *flagSMTPMX, "smtp MX EHLO", "needs -smtp-mx", checkSMTPMX)
+	want("smtp", *flagSMTPSub, "smtp submission EHLO+STARTTLS", "needs -smtp-submission", checkSMTPSubmission)
+	want("smtp", *flagProxyProtocol, "smtp MX PROXY protocol", "needs -proxy-protocol", checkSMTPProxyProtocol)
+	want("smtp", *flagXClient, "smtp MX XCLIENT cap", "needs -xclient", checkSMTPXClient)
+	want("pop3s", *flagPOP3S, "pop3s CAPA", "needs -pop3s", checkPOP3S)
+	want("lmtp-login", *flagLMTPLogin, "lmtp-login LHLO", "needs -lmtp-login", checkLMTPLogin)
+	want("managesieve", *flagManageSieve, "managesieve auth+CRUD", "needs -managesieve", checkManageSieve)
+	want("sieve", *flagSieve, "sieve plugins", "needs -sieve", checkSieve)
+	want("imap", *flagPasswdFileUser != "", "imap login (passwd-file passdb)", "needs -passwd-file-user", func() error {
+		return checkIMAPLogin(*flagPasswdFileUser, *flagPasswdFilePass)
+	})
+	want("imap", *flagStaticUser != "", "imap login (static passdb)", "needs -static-user", func() error {
+		return checkIMAPLogin(*flagStaticUser, *flagStaticPass)
+	})
+	want("imap", *flagQuotaUser != "", "imap QUOTA (GETQUOTA)", "needs -quota-user", func() error {
+		return checkQuota(*flagQuotaUser, *flagQuotaPass)
+	})
+	want("imap", *flagQuotaOverUser != "", "imap QUOTA enforcement (OVERQUOTA)", "needs -quota-over-user", func() error {
+		return checkQuotaOver(*flagQuotaOverUser, *flagQuotaOverPass)
+	})
+	want("imap", *flagACLUser != "", "imap ACL (MYRIGHTS + SETACL round-trip)", "needs -acl-user", func() error {
+		return checkACL(*flagACLUser, *flagACLPass)
+	})
+	want("imap", *flagACLUser != "" && *flagACLPeerUser != "" && *flagACLSharedPrefix != "", "imap ACL disclosure (shared namespace, peer vs absent mailbox)",
+		"needs -acl-user, -acl-peer-user and -acl-shared-prefix", func() error {
+			return checkACLDisclosure(*flagACLUser, *flagACLPass,
+				*flagACLPeerUser, *flagACLPeerPass, *flagACLSharedPrefix)
+		})
+	want("imap", *flagEnvelopeUser != "", "imap FETCH (ENVELOPE BODYSTRUCTURE) on an existing INBOX",
+		"needs -envelope-user", func() error {
+			return checkFetchEnvelope(*flagEnvelopeUser, *flagEnvelopePass)
+		})
+	want("imap", *flagFTSUser != "", "imap FTS (SEARCH BODY/TEXT/HEADER/FROM)", "needs -fts-user", func() error {
+		return checkFTS(*flagFTSUser, *flagFTSPass)
+	})
+	want("director", *flagDirectorAPI != "", "director admin API status (authenticated)", "needs -director-api", checkDirectorAPI)
+
+	jmap := *flagJMAP
+	want("jmap", jmap, "jmap endpoint refuses anonymous access", "needs -jmap", checkJMAPUnauthenticated)
+	want("jmap", jmap, "jmap session resource (/.well-known/jmap)", "needs -jmap", checkJMAPSession)
+	want("jmap", jmap, "jmap batch + back-reference (Core/echo x2)", "needs -jmap", checkJMAPBatch)
+	want("jmap", jmap, "jmap body cap refused at the login edge", "needs -jmap", checkJMAPBodyCap)
+	want("jmap", jmap, "jmap Mailbox/get (roles, ids, parent tree)", "needs -jmap", checkJMAPMailboxes)
+	want("jmap", jmap, "jmap Mailbox/query + back-referenced get", "needs -jmap", checkJMAPMailboxQuery)
+	want("jmap", jmap, "jmap Email/query -> Email/get -> download", "needs -jmap", checkJMAPEmailDiscovery)
+	want("jmap", jmap, "jmap download refuses another account's blob", "needs -jmap", checkJMAPDownloadIsolation)
+	// Gated on credentials, not on cost: components.jmap ships disabled, so a
+	// deployment that never enabled JMAP would fail smoke over a service it
+	// does not run.
+	want("jmap", jmap && *flagJMAPUser != "", "jmap header:* forms, headers, projection and property validation",
+		"needs -jmap and -jmap-user", checkJMAPHeaderForms)
+
+	return checks
+}
+
+// parseExemptions reads -require-all-except. An area no check declares is an
+// error, not a silent no-op: the flag exists to narrow a gate, so a typo in
+// it must not read as a narrower gate that quietly still demands everything.
+func parseExemptions(list string, checks []check) (map[string]bool, error) {
+	known := map[string]bool{}
+	for _, c := range checks {
+		known[c.area] = true
+	}
+	exempt := map[string]bool{}
+	for _, a := range strings.Split(list, ",") {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if !known[a] {
+			areas := slices.Sorted(maps.Keys(known))
+			return nil, fmt.Errorf("no smoke check belongs to area %q; known areas: %s", a, strings.Join(areas, ", "))
+		}
+		exempt[a] = true
+	}
+	return exempt, nil
+}
+
 // runChecks runs the gate and reports it whole: what ran, what failed, and
 // what the deployment never asked for.
-func runChecks(checks []check, requireAll bool, out io.Writer) summary {
+func runChecks(checks []check, requireAll bool, exempt map[string]bool, out io.Writer) summary {
 	slog.Info("smoke: start", "total", len(checks))
 	var failures []result
-	var skipped []check
-	passed := 0
+	var skipped, tolerated []check
+	passed, exempted := 0, 0
 	for i, c := range checks {
 		if c.skip != "" {
 			skipped = append(skipped, c)
-			if requireAll {
+			// An exemption forgives an area the deployment does not run; it
+			// never forgives a check that ran and failed.
+			if requireAll && !exempt[c.area] {
 				slog.Error("smoke: SKIP", "n", i+1, "total", len(checks), "check", c.name, "reason", c.skip)
 				failures = append(failures, result{c.name, fmt.Errorf("not configured: %s", c.skip)})
 				continue
 			}
-			slog.Warn("smoke: SKIP", "n", i+1, "total", len(checks), "check", c.name, "reason", c.skip)
+			if exempt[c.area] {
+				exempted++
+			}
+			tolerated = append(tolerated, c)
+			slog.Warn("smoke: SKIP", "n", i+1, "total", len(checks), "check", c.name,
+				"reason", c.skip, "area", c.area, "exempt", exempt[c.area])
 			continue
 		}
 		slog.Info("smoke: run", "n", i+1, "total", len(checks), "check", c.name)
@@ -230,12 +278,16 @@ func runChecks(checks []check, requireAll bool, out io.Writer) summary {
 
 	// The whole intended gate, not the part that happened to be configured.
 	slog.Info("smoke: summary", "checks", len(checks), "passed", passed,
-		"failed", len(failures), "skipped", len(skipped))
-	// Under -require-all a skip is already itemised as a failure; listing it
-	// twice reads as two distinct problems.
-	if len(skipped) > 0 && !requireAll {
-		fmt.Fprintf(out, "\n%d smoke check(s) skipped:\n", len(skipped))
-		for _, c := range skipped {
+		"failed", len(failures), "skipped", len(skipped), "exempt", exempted)
+	// Only the skips not itemised as failures below: listing one twice reads
+	// as two distinct problems.
+	if len(tolerated) > 0 {
+		fmt.Fprintf(out, "\n%d smoke check(s) skipped:\n", len(tolerated))
+		for _, c := range tolerated {
+			if exempt[c.area] {
+				fmt.Fprintf(out, "  - %s (%s; area %s exempt from -require-all)\n", c.name, c.skip, c.area)
+				continue
+			}
 			fmt.Fprintf(out, "  - %s (%s)\n", c.name, c.skip)
 		}
 	}
@@ -245,7 +297,8 @@ func runChecks(checks []check, requireAll bool, out io.Writer) summary {
 			fmt.Fprintf(out, "  - %s: %v\n", f.name, f.err)
 		}
 	}
-	return summary{total: len(checks), passed: passed, failed: len(failures), skipped: len(skipped)}
+	return summary{total: len(checks), passed: passed, failed: len(failures),
+		skipped: len(skipped), exempt: exempted}
 }
 
 // ---- IMAP login (passdb drivers) -----------------------------------------
