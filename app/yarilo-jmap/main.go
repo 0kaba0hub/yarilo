@@ -151,6 +151,7 @@ func main() {
 		OnListen:          func() { ready.Store(true) },
 		Storage:           store,
 		FTS:               ftsOpts,
+		SnippetMaxChars:   cfg.Protocol.JMAP.SnippetMaxChars,
 		MaxBodyValueBytes: uint32(cfg.Protocol.JMAP.MaxBodyValueBytes), //nolint:gosec // config-bounded
 		QueryMaxLimit:     uint(cfg.Protocol.JMAP.QueryMaxLimit),       //nolint:gosec // config-bounded
 	})

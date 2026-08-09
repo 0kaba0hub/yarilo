@@ -42,6 +42,9 @@ type Options struct {
 	// limit wins when smaller; a client naming none gets this rather than
 	// everything, and the response reports the limit that was applied.
 	QueryMaxLimit uint
+	// SnippetMaxChars bounds the preview a SearchSnippet carries. The subject
+	// is not cut: it is short already, and a truncated one reads as damaged.
+	SnippetMaxChars int
 	// FTS answers the full-text conditions of Email/query. Nil leaves the
 	// index-only evaluator, which refuses those conditions by name.
 	FTS *FTS

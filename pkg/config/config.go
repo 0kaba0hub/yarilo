@@ -379,6 +379,11 @@ type JMAPProtocolConfig struct {
 	// both numbers, never answered from a truncated fan-out. Counts only the
 	// folders a full-text condition would search. Default 64.
 	MaxQueryFolders int `koanf:"jmap_max_query_folders"`
+	// SnippetMaxChars bounds the preview a SearchSnippet carries, in visible
+	// characters -- markup and escapes are not counted, or the limit would
+	// shrink with every ampersand in the message. The subject is not cut.
+	// Default 256, the same as the Email preview.
+	SnippetMaxChars int `koanf:"jmap_snippet_max_chars"`
 	// PushTimeout is the idle timeout for a push connection, in seconds.
 	// Default 90. Unused until the push phase.
 	PushTimeout int `koanf:"jmap_push_timeout"`
@@ -2047,6 +2052,7 @@ func Load(path string) (*Config, error) {
 				MaxBodyValueBytesRaw:  "256K",
 				QueryMaxLimit:         256,
 				MaxQueryFolders:       64,
+				SnippetMaxChars:       256,
 				PushTimeout:           90,
 			},
 			IMAP: IMAPProtocolConfig{

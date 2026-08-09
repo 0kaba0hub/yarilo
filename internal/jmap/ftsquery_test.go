@@ -365,11 +365,23 @@ func TestEmailQueryWithoutFTSRefusesTextConditions(t *testing.T) {
 
 // emailQueryError runs an Email/query expected to fail and returns the method
 // error object, since callAPI treats a failure as fatal.
+func snippetGetError(t *testing.T, s *Server, args string) map[string]any {
+	t.Helper()
+	return methodError(t, s, "SearchSnippet/get", args)
+}
+
 func emailQueryError(t *testing.T, s *Server, args string) map[string]any {
+	t.Helper()
+	return methodError(t, s, "Email/query", args)
+}
+
+// methodError runs a call expected to fail and returns the error object, since
+// callAPI treats a failure as fatal.
+func methodError(t *testing.T, s *Server, method, args string) map[string]any {
 	t.Helper()
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, apiRequest(`{"using":["urn:ietf:params:jmap:mail"],"methodCalls":[
-		["Email/query",`+args+`,"c0"]]}`))
+		["`+method+`",`+args+`,"c0"]]}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body)
 	}
