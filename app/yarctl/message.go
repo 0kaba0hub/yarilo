@@ -9,20 +9,19 @@ import (
 )
 
 func dispatchMailbox(args []string) error {
+	// A wrong subcommand exits non-zero: a script around yarctl reads the exit
+	// code, and printing usage while reporting success is how a typo passes
+	// for a run.
 	if len(args) == 0 || args[0] != "message" {
 		printMailboxUsage()
-		return nil
+		return fmt.Errorf("usage: yarctl backend mailbox message get <mime|raw> ...")
 	}
 	rest := args[1:]
-	if len(rest) == 0 || rest[0] != "get" {
+	if len(rest) < 2 || rest[0] != "get" {
 		printMailboxUsage()
-		return nil
+		return fmt.Errorf("usage: yarctl backend mailbox message get <mime|raw> ...")
 	}
 	rest = rest[1:]
-	if len(rest) == 0 {
-		printMailboxUsage()
-		return nil
-	}
 	switch rest[0] {
 	case "mime", "raw":
 		return messageGet(rest[0], rest[1:])

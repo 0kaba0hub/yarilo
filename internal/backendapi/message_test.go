@@ -31,6 +31,18 @@ const damagedMsg = "From: alice@example.com\r\n" +
 // message's identity, so a test can ask for it either way.
 func messageServer(t *testing.T) (*httptest.Server, string, uint32, string) {
 	t.Helper()
+	return messageServerRaw(t, damagedMsg)
+}
+
+// messageServerWith stores one message of the caller's choosing.
+func messageServerWith(t *testing.T, raw string) (*httptest.Server, string, uint32) {
+	t.Helper()
+	ts, user, uid, _ := messageServerRaw(t, raw)
+	return ts, user, uid
+}
+
+func messageServerRaw(t *testing.T, msg string) (*httptest.Server, string, uint32, string) {
+	t.Helper()
 	root := t.TempDir()
 	mb := maildir.New()
 	idx := file.New()
@@ -43,7 +55,7 @@ func messageServer(t *testing.T) (*httptest.Server, string, uint32, string) {
 		t.Fatalf("init: %v", err)
 	}
 	ui := idx.OpenUser(info)
-	name, vsize, guid, err := box.Save("INBOX", strings.NewReader(damagedMsg), 1, int64(len(damagedMsg)), nil, [16]byte{})
+	name, vsize, guid, err := box.Save("INBOX", strings.NewReader(msg), 1, int64(len(msg)), nil, [16]byte{})
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -52,7 +64,7 @@ func messageServer(t *testing.T) (*httptest.Server, string, uint32, string) {
 		t.Fatalf("open folder: %v", err)
 	}
 	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{
-		UID: 1, Filename: name, Size: uint32(len(damagedMsg)), VSize: vsize, GUID: guid,
+		UID: 1, Filename: name, Size: uint32(len(msg)), VSize: vsize, GUID: guid,
 	}); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -174,4 +186,33 @@ func folderStateOf(t *testing.T, ts *httptest.Server, user string) string {
 	_, out := doJSON(t, ts, http.MethodPost, "/api/backend/folder/info", "",
 		map[string]any{"user": user, "folder": "INBOX"})
 	return string(out)
+}
+
+// unparseableMsg is the shape the parser refuses: the first line cannot be a
+// header. The stored fixture above is only damaged in meaning -- it parses --
+// so it never reaches the fallback this test is about.
+const unparseableMsg = "NoColonHeaderLine\r\nFrom: alice@example.com\r\n\r\nbody wordzz\r\n"
+
+// The command exists for messages whose structure will not parse, so that path
+// must hand over the message -- from its first byte. The parser consumes part
+// of the stream before it gives up, and streaming what is left would show an
+// operator a message that starts mid-header: damage that is not there.
+func TestMessageGetMIMEFallsBackToTheWholeMessage(t *testing.T) {
+	ts, user, uid := messageServerWith(t, unparseableMsg)
+
+	code, got := getMessage(t, ts, map[string]any{
+		"user": user, "folder": "INBOX", "uid": uid, "mode": "mime",
+	})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d: %s", code, got)
+	}
+	if !strings.Contains(got, "MIME structure unreadable") {
+		t.Errorf("the output does not say why it is not an outline:\n%s", got)
+	}
+	if !strings.Contains(got, "NoColonHeaderLine") {
+		t.Errorf("the output starts past the beginning of the message:\n%s", got)
+	}
+	if !strings.Contains(got, "body wordzz") {
+		t.Errorf("the output does not carry the whole message:\n%s", got)
+	}
 }

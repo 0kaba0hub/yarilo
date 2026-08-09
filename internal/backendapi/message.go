@@ -100,8 +100,20 @@ func (s *Server) handleMessageGet(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rc.Close() //nolint:errcheck
 
-	w.Header().Set("Content-Type", "message/rfc822")
-	written, werr := writeMessage(w, rc, req.Mode)
+	// The outline is our own rendering, not a message: calling it rfc822 would
+	// misdescribe it to anything that reads this API other than yarctl.
+	if req.Mode == modeMIME {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	} else {
+		w.Header().Set("Content-Type", "message/rfc822")
+	}
+	// A second read of the same message, for the case where the structure
+	// cannot be parsed: the first reader is spent by then, and what is left in
+	// it starts in the middle of a header.
+	reopen := func() (io.ReadCloser, error) {
+		return bundle.box.Fetch(req.Folder, meta.Filename, meta.AltTier)
+	}
+	written, werr := writeMessage(w, rc, req.Mode, reopen)
 
 	// The only route that hands over the content of somebody's mail, so it
 	// leaves a trace: who was read, which message, in what form, how much.
@@ -131,23 +143,33 @@ func findMessage(metas []*mailbox.MessageMeta, uid uint32, guid string) *mailbox
 // they are on disk; mime keeps every header line as written and replaces each
 // part's body with its size, which is what makes the structure readable
 // without carrying megabytes of base64 across the wire.
-func writeMessage(w io.Writer, rc io.Reader, mode string) (int64, error) {
+func writeMessage(w io.Writer, rc io.Reader, mode string, reopen func() (io.ReadCloser, error)) (int64, error) {
 	if mode == modeRaw {
 		return io.Copy(w, rc)
 	}
-	return writeMIMEOutline(w, rc)
+	return writeMIMEOutline(w, rc, reopen)
 }
 
-func writeMIMEOutline(w io.Writer, rc io.Reader) (int64, error) {
+func writeMIMEOutline(w io.Writer, rc io.Reader, reopen func() (io.ReadCloser, error)) (int64, error) {
 	e, err := message.Read(rc)
 	if err != nil && e == nil {
-		// Unreadable structure is the case this exists for: hand over what
-		// there is rather than an error, since the bytes are the evidence.
-		n, cerr := io.Copy(w, rc)
-		if cerr != nil {
-			return n, cerr
+		// A structure that will not parse is the case this command exists for,
+		// so the message is handed over whole -- read again from the start,
+		// because the parser has already consumed part of the first reader and
+		// what remains begins in the middle of a header. Handing that over
+		// would show an operator damage that is not there.
+		src, ferr := reopen()
+		if ferr != nil {
+			return 0, ferr
 		}
-		return n, err
+		defer src.Close() //nolint:errcheck
+		cw := &countingWriter{w: w}
+		cw.printf("<... MIME structure unreadable: %v; the raw message follows ...>\r\n", err)
+		n, cerr := io.Copy(cw, src)
+		if cerr != nil {
+			return cw.n + n, cerr
+		}
+		return cw.n + n, nil
 	}
 	cw := &countingWriter{w: w}
 	writeEntityOutline(cw, e, 0)
@@ -196,4 +218,14 @@ func (c *countingWriter) write(p []byte) {
 
 func (c *countingWriter) printf(format string, args ...any) {
 	c.write([]byte(fmt.Sprintf(format, args...)))
+}
+
+// Write makes countingWriter an io.Writer, so io.Copy can stream through it
+// and its byte count stays the one the audit line reports.
+func (c *countingWriter) Write(p []byte) (int, error) {
+	c.write(p)
+	if c.err != nil {
+		return 0, c.err
+	}
+	return len(p), nil
 }
