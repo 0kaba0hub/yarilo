@@ -19,7 +19,18 @@ var (
 	})
 	metricMapLockHold = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "mdbox_map_lock_hold_seconds",
-		Help:    "Time one map operation held the map lock, doing its work.",
+		Help:    "Time one map operation held the cross-process map lock, doing its work. Not observed where no lock service is configured.",
+		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 10),
+	})
+
+	// Writers queue behind one another on the same in-process mutex, before
+	// any of them reaches the lock service. Kept apart from the read wait
+	// below rather than sharing one histogram with a label: reads and writes
+	// are different populations, and merging them is the same conflation the
+	// wait/hold split exists to avoid.
+	metricMapWriteBlocked = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "mdbox_map_write_blocked_seconds",
+		Help:    "Time a map write waited for the in-process map mutex, before reaching the lock service.",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 10),
 	})
 

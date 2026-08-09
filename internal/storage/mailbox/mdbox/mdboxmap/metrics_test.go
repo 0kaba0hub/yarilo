@@ -197,3 +197,63 @@ func TestFlushIsCounted(t *testing.T) {
 		t.Error("flush duration was not recorded")
 	}
 }
+
+// Writers queue on the in-process mutex before any of them reaches the lock
+// service, and that time belongs to no other counter: without it the totals
+// cannot reconcile with the window they were taken over, which is the one
+// thing the measurement plan asked for.
+func TestWriteBlockedTimeIsRecorded(t *testing.T) {
+	const delay = 80 * time.Millisecond
+	dir := t.TempDir()
+	m, err := Open(dir, "alice@example.com", WithLocker(&slowLocker{delay: delay}), WithOwner("test"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	before, countBefore := histSum(t, metricMapWriteBlocked)
+
+	var wg sync.WaitGroup
+	for i := range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := m.AppendRecord(uint32(i+1), 0, 10, [16]byte{byte(i + 5)}); err != nil {
+				t.Errorf("AppendRecord: %v", err)
+			}
+		}()
+		time.Sleep(delay / 4) // the first writer reaches the lock service first
+	}
+	wg.Wait()
+
+	blocked, count := histSum(t, metricMapWriteBlocked)
+	if count != countBefore+2 {
+		t.Fatalf("recorded %d write waits for 2 writes", count-countBefore)
+	}
+	// The second writer waited out the first one's lock round trip on the
+	// mutex; a run where nobody waits records ~0 and fails here.
+	if got := blocked - before; got < (delay / 2).Seconds() {
+		t.Errorf("two concurrent writes recorded %.3fs of mutex waiting, want at least %v", got, delay/2)
+	}
+}
+
+// Without a lock service there is no cross-process hold, so none is reported:
+// an operator must not see time attributed to a lock their deployment has not
+// got.
+func TestHoldIsNotReportedWithoutALockService(t *testing.T) {
+	m, _ := openTestMap(t) // no WithLocker
+	_, countBefore := histSum(t, metricMapLockHold)
+	_, writeBefore := histSum(t, metricMapWriteBlocked)
+
+	if _, err := m.AppendRecord(1, 0, 10, [16]byte{9}); err != nil {
+		t.Fatalf("AppendRecord: %v", err)
+	}
+
+	if _, count := histSum(t, metricMapLockHold); count != countBefore {
+		t.Errorf("recorded %d holds of a lock that does not exist", count-countBefore)
+	}
+	// The mutex is still taken, so that number is still real.
+	if _, count := histSum(t, metricMapWriteBlocked); count != writeBefore+1 {
+		t.Errorf("recorded %d mutex waits, want 1", count-writeBefore)
+	}
+}

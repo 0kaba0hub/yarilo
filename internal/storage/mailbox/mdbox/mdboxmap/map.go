@@ -257,10 +257,18 @@ func findExt(exts []mailindex.Extension, name string) *mailindex.Extension {
 // lock. The HoldsResource shortcut keeps re-entrant calls from the same
 // goroutine from deadlocking on the cross-process lock (POP3 QUIT pattern).
 func (m *Map) withMapLock(fn func() error) error {
+	// Writers queue here first, before anyone reaches the lock service. Left
+	// unmeasured, this time belongs to no counter and the totals cannot
+	// reconcile with the window they were taken over.
+	blocked := time.Now()
 	m.mu.Lock()
+	metricMapWriteBlocked.Observe(time.Since(blocked).Seconds())
 	defer m.mu.Unlock()
 	if m.locker == nil {
-		return timed(metricMapLockHold, fn)
+		// No lock service: there is no cross-process hold to report, and
+		// reporting one would put an operator's eye on a lock that does not
+		// exist in their deployment.
+		return fn()
 	}
 	key := locks.MdboxMapKey(m.username)
 	if m.locker.HoldsResource(key) {
@@ -455,7 +463,12 @@ func (m *Map) reloadLocked() error {
 		if err != nil && !errors.Is(err, errLogIndexMismatch) {
 			return err
 		}
-		metricMapReplayBytes.Add(float64(applied - m.logSize))
+		// replayLogLocked returns an offset no smaller than the one it was
+		// given, but that is an invariant of another file, and a negative Add
+		// panics.
+		if delta := applied - m.logSize; delta > 0 {
+			metricMapReplayBytes.Add(float64(delta))
+		}
 		m.logSize = applied
 		m.reindex()
 	}
