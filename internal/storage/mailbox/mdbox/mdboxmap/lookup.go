@@ -2,9 +2,20 @@ package mdboxmap
 
 import (
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
+
+// lockRead takes the in-process map mutex and records the wait. A read needs no
+// cross-process lock, but it queues behind a writer that is waiting for one --
+// which is the whole question in #1205, and unanswerable without this number.
+func lockRead(mu *sync.Mutex) {
+	start := time.Now()
+	mu.Lock()
+	metricMapReadBlocked.Observe(time.Since(start).Seconds())
+}
 
 // Lookup resolves one map_uid to its on-disk location and current
 // refcount. Returns (entry, true, nil) on success, (_, false, nil)
@@ -13,7 +24,7 @@ import (
 // when a sibling process appends concurrently, but never a torn
 // record (mailindex Recreate is atomic .tmp+rename).
 func (m *Map) Lookup(mapUID uint32) (MapEntry, bool, error) {
-	m.mu.Lock()
+	lockRead(&m.mu)
 	defer m.mu.Unlock()
 	entry, ok, err := m.lookupLocked(mapUID)
 	if err != nil || ok {
@@ -47,7 +58,7 @@ func (m *Map) lookupLocked(mapUID uint32) (MapEntry, bool, error) {
 // Returns one MapEntry per requested UID; entries that did not
 // resolve carry UID=0. The result slice mirrors the input order.
 func (m *Map) LookupMany(mapUIDs []uint32) ([]MapEntry, error) {
-	m.mu.Lock()
+	lockRead(&m.mu)
 	defer m.mu.Unlock()
 	out := make([]MapEntry, len(mapUIDs))
 	refreshed := false
