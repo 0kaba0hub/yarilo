@@ -141,6 +141,16 @@ func msieveDeactivateAndDelete(name string) {
 
 // ── SMTP injector (via MX) ────────────────────────────────────────────────
 
+// deliveryGreeting is what the delivery listener expects. An LMTP server
+// answers EHLO with "500 5.5.1 This is a LMTP server, use LHLO", which is what
+// a deployment whose only ingress is yarilo-lmtp-login used to get (#1202).
+func deliveryGreeting() string {
+	if *flagSieveSMTPLMTP {
+		return "LHLO smoketest"
+	}
+	return "EHLO smoketest"
+}
+
 func lmtpSend(id, from, to, subject, body string) error {
 	addr := net.JoinHostPort(smtpHost(), *flagSieveSMTPPort)
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
@@ -172,8 +182,8 @@ func lmtpSend(id, from, to, subject, body string) error {
 	if _, err := readResp(); err != nil {
 		return fmt.Errorf("greeting: %w", err)
 	}
-	if resp, err := cmd("EHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
-		return fmt.Errorf("EHLO: %s %v", resp, err)
+	if resp, err := cmd(deliveryGreeting()); err != nil || !strings.HasPrefix(resp, "250") {
+		return fmt.Errorf("%s: %s %v", deliveryGreeting(), resp, err)
 	}
 	if resp, err := cmd("MAIL FROM:<" + from + ">"); err != nil || !strings.HasPrefix(resp, "250") {
 		return fmt.Errorf("MAIL FROM: %s %v", resp, err)
@@ -1009,8 +1019,8 @@ func lmtpSendRaw(from, to, raw string) error {
 	if _, err := readResp(); err != nil {
 		return fmt.Errorf("greeting: %w", err)
 	}
-	if resp, err := cmd("EHLO smoketest"); err != nil || !strings.HasPrefix(resp, "250") {
-		return fmt.Errorf("EHLO: %s %v", resp, err)
+	if resp, err := cmd(deliveryGreeting()); err != nil || !strings.HasPrefix(resp, "250") {
+		return fmt.Errorf("%s: %s %v", deliveryGreeting(), resp, err)
 	}
 	if resp, err := cmd("MAIL FROM:<" + from + ">"); err != nil || !strings.HasPrefix(resp, "250") {
 		return fmt.Errorf("MAIL FROM: %s %v", resp, err)

@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -51,6 +52,11 @@ var (
 	flagManageSieve     = flag.Bool("managesieve", false, "check ManageSieve auth + script CRUD (port -managesieve-port)")
 	flagSieve           = flag.Bool("sieve", false, "check Sieve plugin execution via SMTP injection + IMAP verify")
 	flagSieveSMTPPort   = flag.String("sieve-smtp-port", "25", "SMTP MX port for Sieve mail injection")
+	// Declared, not probed: the greeting a listener wants is a property of the
+	// deployment's ingress, and a helper that guesses would hide the mismatch
+	// it is meant to surface (#1202).
+	flagSieveSMTPLMTP = flag.Bool("sieve-smtp-lmtp", false,
+		"the delivery listener at -sieve-smtp-port speaks LMTP, so greet it with LHLO (yarilo-lmtp-login does)")
 
 	flagJMAP           = flag.Bool("jmap", false, "check the JMAP session resource (GET /.well-known/jmap)")
 	flagJMAPHost       = flag.String("jmap-host", "", "JMAP hostname (defaults to -host)")
@@ -377,15 +383,47 @@ func checkDirectorAPI() error {
 		return err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	// A three-member ring already exceeds 512 bytes, and a body cut mid-record
+	// cannot be decoded at all (#1203).
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
 		return fmt.Errorf("director API rejected the token (HTTP %d) — the #755 plumbing is broken: %s", resp.StatusCode, body)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
 	}
-	if !bytes.Contains(body, []byte("peers")) {
-		return fmt.Errorf("director API status returned 200 but no member list: %s", body)
+	return checkDirectorStatusBody(body)
+}
+
+// directorStatus is the part of the admin API status response this check
+// asserts on. The field is "members" -- internal/director/membership.go and
+// yarctl both name it that.
+type directorStatus struct {
+	Self    string `json:"self"`
+	Size    int    `json:"size"`
+	Members []struct {
+		Addr string `json:"addr"`
+	} `json:"members"`
+}
+
+// checkDirectorStatusBody asserts the ring the response describes, rather than
+// looking for a word in it: a substring match passes on any payload that
+// happens to contain it, an error one included (#1203).
+func checkDirectorStatusBody(body []byte) error {
+	var st directorStatus
+	if err := json.Unmarshal(body, &st); err != nil {
+		return fmt.Errorf("director API status is not decodable: %w: %s", err, body)
+	}
+	if st.Size < 1 {
+		return fmt.Errorf("director API reports a ring of %d members: %s", st.Size, body)
+	}
+	if len(st.Members) != st.Size {
+		return fmt.Errorf("director API reports size %d but lists %d members: %s", st.Size, len(st.Members), body)
+	}
+	for i, m := range st.Members {
+		if m.Addr == "" {
+			return fmt.Errorf("director API member %d has no address: %s", i, body)
+		}
 	}
 	return nil
 }
