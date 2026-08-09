@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 	"github.com/yarilomail/yarilo/pkg/locks"
 )
@@ -255,23 +257,44 @@ func findExt(exts []mailindex.Extension, name string) *mailindex.Extension {
 // lock. The HoldsResource shortcut keeps re-entrant calls from the same
 // goroutine from deadlocking on the cross-process lock (POP3 QUIT pattern).
 func (m *Map) withMapLock(fn func() error) error {
+	// Writers queue here first, before anyone reaches the lock service. Left
+	// unmeasured, this time belongs to no counter and the totals cannot
+	// reconcile with the window they were taken over.
+	blocked := time.Now()
 	m.mu.Lock()
+	metricMapWriteBlocked.Observe(time.Since(blocked).Seconds())
 	defer m.mu.Unlock()
 	if m.locker == nil {
+		// No lock service: there is no cross-process hold to report, and
+		// reporting one would put an operator's eye on a lock that does not
+		// exist in their deployment.
 		return fn()
 	}
 	key := locks.MdboxMapKey(m.username)
 	if m.locker.HoldsResource(key) {
-		return fn()
+		// Already ours: no round trip, so nothing waited.
+		return timed(metricMapLockHold, fn)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
+	start := time.Now()
 	lk, err := locks.Acquire(ctx, m.locker, key, m.owner, 30*time.Second)
+	metricMapLockWait.Observe(time.Since(start).Seconds())
 	if err != nil {
 		return fmt.Errorf("mdboxmap/lock: %w", err)
 	}
 	defer func() { _ = m.locker.Unlock(ctx, lk.ID) }()
-	return fn()
+	return timed(metricMapLockHold, fn)
+}
+
+// timed runs fn and records how long it took. Separate from the waiting above
+// because the two answer different questions: one is the lock service under
+// load, the other is this process's own work.
+func timed(h prometheus.Observer, fn func() error) error {
+	start := time.Now()
+	err := fn()
+	h.Observe(time.Since(start).Seconds())
+	return err
 }
 
 // flushLocked rewrites the whole base index from m.f and drops the append log:
@@ -279,6 +302,11 @@ func (m *Map) withMapLock(fn func() error) error {
 // compaction point and the full-state persist for refcount/purge/file-id
 // allocation. Caller MUST hold m.mu.
 func (m *Map) flushLocked() error {
+	start := time.Now()
+	defer func() {
+		metricMapFlush.Inc()
+		metricMapFlushSeconds.Observe(time.Since(start).Seconds())
+	}()
 	if err := m.setMapHeaderLocked(); err != nil {
 		return err
 	}
@@ -396,11 +424,13 @@ func (m *Map) reloadLocked() error {
 
 	// Fast path: nothing changed on disk.
 	if m.f != nil && baseMod.Equal(m.baseMod) && logSize == m.logSize {
+		metricMapReload.WithLabelValues("fast").Inc()
 		return nil
 	}
 
 	// Base changed (or first load): re-open it, then replay the whole log.
 	if m.f == nil || !baseMod.Equal(m.baseMod) {
+		metricMapReload.WithLabelValues("reopen").Inc()
 		if baseErr != nil {
 			return fmt.Errorf("mdboxmap/reload: %w", baseErr)
 		}
@@ -420,6 +450,7 @@ func (m *Map) reloadLocked() error {
 		} else if err != nil {
 			return err
 		}
+		metricMapReplayBytes.Add(float64(applied))
 		m.logSize = applied
 		m.reindex()
 		return nil
@@ -427,9 +458,16 @@ func (m *Map) reloadLocked() error {
 
 	// Base unchanged, log grew: replay only the new tail.
 	if logSize > m.logSize {
+		metricMapReload.WithLabelValues("replay").Inc()
 		applied, err := m.replayLogLocked(m.logSize)
 		if err != nil && !errors.Is(err, errLogIndexMismatch) {
 			return err
+		}
+		// replayLogLocked returns an offset no smaller than the one it was
+		// given, but that is an invariant of another file, and a negative Add
+		// panics.
+		if delta := applied - m.logSize; delta > 0 {
+			metricMapReplayBytes.Add(float64(delta))
 		}
 		m.logSize = applied
 		m.reindex()
