@@ -1,8 +1,11 @@
 package backendapi
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -215,4 +218,58 @@ func TestMessageGetMIMEFallsBackToTheWholeMessage(t *testing.T) {
 	if !strings.Contains(got, "body wordzz") {
 		t.Errorf("the output does not carry the whole message:\n%s", got)
 	}
+}
+
+// The audit line's byte count is the point of the audit line: it says how much
+// of a mailbox left the server. A count that is not the number of bytes
+// written is worse than none, because it reads as precise.
+func TestMessageGetAuditCountMatchesWhatWasSent(t *testing.T) {
+	for _, tc := range []struct{ name, msg, mode string }{
+		{"raw", damagedMsg, "raw"},
+		{"outline", damagedMsg, "mime"},
+		// The fallback writes a marker and then the message: two writes, one
+		// count, and the easiest place to add them up twice.
+		{"unreadable structure", unparseableMsg, "mime"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, user, uid := messageServerWith(t, tc.msg)
+
+			var logs bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			code, got := getMessage(t, ts, map[string]any{
+				"user": user, "folder": "INBOX", "uid": uid, "mode": tc.mode,
+			})
+			if code != http.StatusOK {
+				t.Fatalf("status = %d: %s", code, got)
+			}
+			reported := auditBytes(t, logs.String())
+			if reported != len(got) {
+				t.Errorf("audit says %d bytes, %d were sent", reported, len(got))
+			}
+		})
+	}
+}
+
+// auditBytes reads the count out of the access line.
+func auditBytes(t *testing.T, logs string) int {
+	t.Helper()
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.Contains(line, "message content read") {
+			continue
+		}
+		for _, field := range strings.Fields(line) {
+			if rest, ok := strings.CutPrefix(field, "bytes="); ok {
+				n, err := strconv.Atoi(rest)
+				if err != nil {
+					t.Fatalf("bytes=%q is not a number", rest)
+				}
+				return n
+			}
+		}
+	}
+	t.Fatalf("no access line in the log:\n%s", logs)
+	return 0
 }

@@ -165,11 +165,12 @@ func writeMIMEOutline(w io.Writer, rc io.Reader, reopen func() (io.ReadCloser, e
 		defer src.Close() //nolint:errcheck
 		cw := &countingWriter{w: w}
 		cw.printf("<... MIME structure unreadable: %v; the raw message follows ...>\r\n", err)
-		n, cerr := io.Copy(cw, src)
-		if cerr != nil {
-			return cw.n + n, cerr
-		}
-		return cw.n + n, nil
+		// The copy goes through cw, so cw.n already holds the marker and the
+		// message. Adding io.Copy's own count on top would report twice what
+		// was handed over -- in the line an audit reads for exactly that
+		// number.
+		_, cerr := io.Copy(cw, src)
+		return cw.n, cerr
 	}
 	cw := &countingWriter{w: w}
 	writeEntityOutline(cw, e, 0)
