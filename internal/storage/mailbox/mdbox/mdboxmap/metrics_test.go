@@ -387,3 +387,50 @@ func TestPartsAreNotCountedOutsideAFreshnessCheck(t *testing.T) {
 			replayAfter-replayBefore, reindexAfter-reindexBefore)
 	}
 }
+
+// Opening the map is the cost that sat outside every counter: it is not a
+// freshness check, so the parts of one deliberately skip it, and it happens
+// once per handle rather than once per operation. A workload that opens a
+// session per operation pays it per operation, hidden inside whichever
+// command touched storage first.
+func TestOpeningTheMapIsTimedWholeAndInParts(t *testing.T) {
+	m, dir := openTestMap(t)
+	if _, err := m.AppendRecord(1, 0, 10, [16]byte{1}); err != nil {
+		t.Fatalf("AppendRecord: %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	whole, wholeCount := histSum(t, metricMapOpenSeconds)
+	base, baseCount := histVecSum(t, metricMapOpenPart, "base")
+	replay, replayCount := histVecSum(t, metricMapOpenPart, "replay")
+	reindex, reindexCount := histVecSum(t, metricMapOpenPart, "reindex")
+
+	again, err := Open(dir, "alice@example.com")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer again.Close() //nolint:errcheck
+
+	wholeAfter, wholeCountAfter := histSum(t, metricMapOpenSeconds)
+	if wholeCountAfter != wholeCount+1 {
+		t.Fatalf("one open recorded %d timings", wholeCountAfter-wholeCount)
+	}
+	baseAfter, baseCountAfter := histVecSum(t, metricMapOpenPart, "base")
+	replayAfter, replayCountAfter := histVecSum(t, metricMapOpenPart, "replay")
+	reindexAfter, reindexCountAfter := histVecSum(t, metricMapOpenPart, "reindex")
+	for name, moved := range map[string]bool{
+		"base":    baseCountAfter > baseCount,
+		"replay":  replayCountAfter > replayCount,
+		"reindex": reindexCountAfter > reindexCount,
+	} {
+		if !moved {
+			t.Errorf("opening the map did not time its %s part", name)
+		}
+	}
+	parts := (baseAfter - base) + (replayAfter - replay) + (reindexAfter - reindex)
+	if total := wholeAfter - whole; parts > total {
+		t.Errorf("parts sum to %.6fs inside a whole of %.6fs: the spans overlap", parts, total)
+	}
+}

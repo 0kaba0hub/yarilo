@@ -18,6 +18,6 @@ import (
 // the rest.
 var metricCommandSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 	Name:    "imap_command_seconds",
-	Help:    "Server-side duration of one IMAP command, by command and storage driver. IDLE, NOTIFY and POLL wait on the client or the mailbox and are long by design.",
+	Help:    "Server-side duration of one IMAP command, by command and storage driver. IDLE, NOTIFY and POLL wait on the client or the mailbox and are long by design; APPEND includes reading the message literal from the client, so a slow client shows up here as slow storage.",
 	Buckets: prometheus.ExponentialBuckets(0.0001, 4, 12), // 100us .. ~7min
 }, []string{"command", "driver"})
