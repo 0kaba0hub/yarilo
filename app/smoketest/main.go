@@ -51,12 +51,15 @@ var (
 	flagLMTPLogin       = flag.Bool("lmtp-login", false, "check yarilo-lmtp-login LHLO greeting (port -lmtp-login-port)")
 	flagManageSieve     = flag.Bool("managesieve", false, "check ManageSieve auth + script CRUD (port -managesieve-port)")
 	flagSieve           = flag.Bool("sieve", false, "check Sieve plugin execution via SMTP injection + IMAP verify")
-	flagSieveSMTPPort   = flag.String("sieve-smtp-port", "25", "SMTP MX port for Sieve mail injection")
-	// Declared, not probed: the greeting a listener wants is a property of the
-	// deployment's ingress, and a helper that guesses would hide the mismatch
-	// it is meant to surface (#1202).
-	flagSieveSMTPLMTP = flag.Bool("sieve-smtp-lmtp", false,
-		"the delivery listener at -sieve-smtp-port speaks LMTP, so greet it with LHLO (yarilo-lmtp-login does)")
+	// The delivery endpoint is named for its role, not for the check that
+	// happened to use it first: sieve and FTS both inject a message into a
+	// user's mailbox, which is one role (#1202).
+	flagDeliveryHost = flag.String("delivery-host", "", "host that accepts the injected mail (defaults to -smtp-host, then -host)")
+	flagDeliveryPort = flag.String("delivery-port", "25", "port that accepts the injected mail")
+	// Declared, not inferred from the port number: 24/25 is a guess about the
+	// topology, and a site running LMTP on 2424 or submission on 587 would get
+	// the wrong greeting and an error pointing elsewhere.
+	flagDeliveryProto = flag.String("delivery-proto", "smtp", `protocol the delivery endpoint speaks: "smtp" (EHLO) or "lmtp" (LHLO)`)
 
 	flagJMAP           = flag.Bool("jmap", false, "check the JMAP session resource (GET /.well-known/jmap)")
 	flagJMAPHost       = flag.String("jmap-host", "", "JMAP hostname (defaults to -host)")
@@ -130,6 +133,15 @@ func imapHost() string {
 	return *flagHost
 }
 
+// deliveryHost resolves the injection endpoint, preferring its own flag and
+// falling back to what the checks used before it existed.
+func deliveryHost() string {
+	if *flagDeliveryHost != "" {
+		return *flagDeliveryHost
+	}
+	return smtpHost()
+}
+
 func smtpHost() string {
 	if *flagSMTPHost != "" {
 		return *flagSMTPHost
@@ -141,6 +153,10 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	flag.Parse()
 
+	if err := validateDeliveryProto(*flagDeliveryProto); err != nil {
+		slog.Error("smoke: bad -delivery-proto", "err", err)
+		os.Exit(2)
+	}
 	checks := register()
 	exempt, err := parseExemptions(*flagRequireAllExcept, *flagRequireAll, checks)
 	if err != nil {
@@ -149,6 +165,18 @@ func main() {
 	}
 	if s := runChecks(checks, *flagRequireAll, exempt, os.Stderr); s.failed > 0 {
 		os.Exit(1)
+	}
+}
+
+// validateDeliveryProto refuses a protocol nobody implements rather than
+// falling back to EHLO: a typo would otherwise read as "SMTP" and produce the
+// LMTP mismatch this flag exists to prevent (#1202).
+func validateDeliveryProto(proto string) error {
+	switch strings.ToLower(strings.TrimSpace(proto)) {
+	case "smtp", "lmtp":
+		return nil
+	default:
+		return fmt.Errorf("-delivery-proto %q is neither smtp nor lmtp", proto)
 	}
 }
 

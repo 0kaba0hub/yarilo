@@ -145,14 +145,14 @@ func msieveDeactivateAndDelete(name string) {
 // answers EHLO with "500 5.5.1 This is a LMTP server, use LHLO", which is what
 // a deployment whose only ingress is yarilo-lmtp-login used to get (#1202).
 func deliveryGreeting() string {
-	if *flagSieveSMTPLMTP {
+	if strings.EqualFold(*flagDeliveryProto, "lmtp") {
 		return "LHLO smoketest"
 	}
 	return "EHLO smoketest"
 }
 
 func lmtpSend(id, from, to, subject, body string) error {
-	addr := net.JoinHostPort(smtpHost(), *flagSieveSMTPPort)
+	addr := net.JoinHostPort(deliveryHost(), *flagDeliveryPort)
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
 	if err != nil {
 		return fmt.Errorf("connect %s: %w", addr, err)
@@ -994,7 +994,7 @@ func checkSieve() error {
 // lmtpSendRaw injects a complete raw message (headers + body) via LMTP, for
 // tests that need custom headers (Content-Type multipart, X-Spam-Score, ...).
 func lmtpSendRaw(from, to, raw string) error {
-	addr := net.JoinHostPort(smtpHost(), *flagSieveSMTPPort)
+	addr := net.JoinHostPort(deliveryHost(), *flagDeliveryPort)
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
 	if err != nil {
 		return fmt.Errorf("connect %s: %w", addr, err)

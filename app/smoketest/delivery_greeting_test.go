@@ -76,10 +76,14 @@ func fakeDeliveryServer(t *testing.T, lmtp bool) (host, port string) {
 // pointDeliveryAt makes the injector talk to the fake, and restores the flags.
 func pointDeliveryAt(t *testing.T, host, port string, lmtp bool) {
 	t.Helper()
-	oldHost, oldPort, oldLMTP := *flagSMTPHost, *flagSieveSMTPPort, *flagSieveSMTPLMTP
-	*flagSMTPHost, *flagSieveSMTPPort, *flagSieveSMTPLMTP = host, port, lmtp
+	proto := "smtp"
+	if lmtp {
+		proto = "lmtp"
+	}
+	oldHost, oldPort, oldProto := *flagDeliveryHost, *flagDeliveryPort, *flagDeliveryProto
+	*flagDeliveryHost, *flagDeliveryPort, *flagDeliveryProto = host, port, proto
 	t.Cleanup(func() {
-		*flagSMTPHost, *flagSieveSMTPPort, *flagSieveSMTPLMTP = oldHost, oldPort, oldLMTP
+		*flagDeliveryHost, *flagDeliveryPort, *flagDeliveryProto = oldHost, oldPort, oldProto
 	})
 }
 
@@ -118,16 +122,53 @@ func TestDeliveryGreetingMatchesTheListener(t *testing.T) {
 }
 
 func TestDeliveryGreetingIsDeclaredNotGuessed(t *testing.T) {
-	old := *flagSieveSMTPLMTP
-	t.Cleanup(func() { *flagSieveSMTPLMTP = old })
+	old := *flagDeliveryProto
+	t.Cleanup(func() { *flagDeliveryProto = old })
 
-	*flagSieveSMTPLMTP = true
-	if got := deliveryGreeting(); got != "LHLO smoketest" {
-		t.Errorf("greeting = %q, want LHLO", got)
+	for proto, want := range map[string]string{
+		"lmtp": "LHLO smoketest",
+		"LMTP": "LHLO smoketest", // the value is a name, not a token to match exactly
+		"smtp": "EHLO smoketest",
+	} {
+		*flagDeliveryProto = proto
+		if got := deliveryGreeting(); got != want {
+			t.Errorf("-delivery-proto %q greets with %q, want %q", proto, got, want)
+		}
 	}
-	*flagSieveSMTPLMTP = false
-	if got := deliveryGreeting(); got != "EHLO smoketest" {
-		t.Errorf("greeting = %q, want EHLO", got)
+}
+
+// A protocol nobody implements must stop the run: falling back to EHLO would
+// read as "smtp" and reproduce the mismatch the flag exists to prevent.
+func TestDeliveryProtoIsValidated(t *testing.T) {
+	for _, proto := range []string{"smtp", "lmtp", " LMTP "} {
+		if err := validateDeliveryProto(proto); err != nil {
+			t.Errorf("validateDeliveryProto(%q) = %v, want accepted", proto, err)
+		}
+	}
+	for _, proto := range []string{"lmpt", "esmtp", "", "smtp lmtp"} {
+		if err := validateDeliveryProto(proto); err == nil {
+			t.Errorf("validateDeliveryProto(%q) accepted a protocol nothing speaks", proto)
+		}
+	}
+}
+
+// The delivery endpoint has its own host, and falls back to what the checks
+// used before it existed rather than changing an operator's run.
+func TestDeliveryHostPrefersItsOwnFlag(t *testing.T) {
+	oldDelivery, oldSMTP, oldHost := *flagDeliveryHost, *flagSMTPHost, *flagHost
+	t.Cleanup(func() { *flagDeliveryHost, *flagSMTPHost, *flagHost = oldDelivery, oldSMTP, oldHost })
+
+	*flagHost, *flagSMTPHost, *flagDeliveryHost = "plain", "smtp", "delivery"
+	if got := deliveryHost(); got != "delivery" {
+		t.Errorf("deliveryHost() = %q, want its own flag", got)
+	}
+	*flagDeliveryHost = ""
+	if got := deliveryHost(); got != "smtp" {
+		t.Errorf("deliveryHost() = %q, want the smtp fallback", got)
+	}
+	*flagSMTPHost = ""
+	if got := deliveryHost(); got != "plain" {
+		t.Errorf("deliveryHost() = %q, want -host", got)
 	}
 }
 
