@@ -196,6 +196,8 @@ func dispatchBackend(args []string) error {
 	switch args[0] {
 	case "dict":
 		return dispatchDict(args[1:])
+	case "mailbox":
+		return dispatchMailbox(args[1:])
 	case "folder":
 		return dispatchFolder(args[1:])
 	case "user":
