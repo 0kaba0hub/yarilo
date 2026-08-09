@@ -128,9 +128,11 @@ func Open(dir, username string, opts ...Option) (*Map, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("mdboxmap/open: mkdir: %w", err)
 	}
+	start := time.Now()
 	if err := m.loadOrInit(); err != nil {
 		return nil, err
 	}
+	metricMapOpenSeconds.Observe(time.Since(start).Seconds())
 	return m, nil
 }
 
@@ -164,7 +166,9 @@ func (m *Map) loadOrInit() error {
 	} else if err != nil {
 		return fmt.Errorf("mdboxmap/load: stat: %w", err)
 	}
+	tBase := time.Now()
 	f, err := mailindex.Open(m.path)
+	metricMapOpenPart.WithLabelValues("base").Observe(time.Since(tBase).Seconds())
 	if err != nil {
 		return fmt.Errorf("mdboxmap/load: open: %w", err)
 	}
@@ -172,7 +176,9 @@ func (m *Map) loadOrInit() error {
 	if st, serr := os.Stat(m.path); serr == nil {
 		m.baseMod = st.ModTime()
 	}
+	tReplay := time.Now()
 	applied, rerr := m.replayLogLocked(0)
+	metricMapOpenPart.WithLabelValues("replay").Observe(time.Since(tReplay).Seconds())
 	if errors.Is(rerr, errLogIndexMismatch) {
 		_ = os.Remove(m.logPath())
 		applied = 0
@@ -180,7 +186,9 @@ func (m *Map) loadOrInit() error {
 		return rerr
 	}
 	m.logSize = applied
+	tReindex := time.Now()
 	m.reindex()
+	metricMapOpenPart.WithLabelValues("reindex").Observe(time.Since(tReindex).Seconds())
 	return nil
 }
 

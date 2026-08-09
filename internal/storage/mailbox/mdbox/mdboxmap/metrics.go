@@ -75,6 +75,23 @@ var (
 		Help: "Bytes of append log replayed into the in-memory map.",
 	})
 
+	// Opening the map is not a freshness check and was measured by nothing:
+	// it reads the user's whole map index, replays the log and rebuilds the
+	// UID index. It happens once per handle -- lazily, on the first touch of
+	// storage -- so a workload that opens a session per operation pays it per
+	// operation, and it would sit invisibly inside whichever command touched
+	// storage first (#1205).
+	metricMapOpenSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "mdbox_map_open_seconds",
+		Help:    "Time to open the map for a handle, whole: reading the base index, replaying the log and rebuilding the UID index.",
+		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 11), // 100us .. ~100s
+	})
+	metricMapOpenPart = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "mdbox_map_open_part_seconds",
+		Help:    "Time in one part of opening the map: base, replay or reindex.",
+		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 11),
+	}, []string{"part"})
+
 	// Freshness costs, split so the totals can be reconciled: two stats are
 	// paid even on the fast path, replaying a sibling's tail is a read, and
 	// rebuilding the UID index after it is neither. Whatever the total holds
