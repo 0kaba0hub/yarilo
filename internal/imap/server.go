@@ -450,9 +450,9 @@ func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver
 		}); err != nil {
 			return nil, nil, err
 		}
-		return sess, &imapserver.GreetingData{PreAuth: true}, nil
+		return &timedSession{s: sess}, &imapserver.GreetingData{PreAuth: true}, nil
 	}
-	return sess, &imapserver.GreetingData{PreAuth: false}, nil
+	return &timedSession{s: sess}, &imapserver.GreetingData{PreAuth: false}, nil
 }
 
 // unwrapPreambleConn walks the net.Conn wrapper chain looking for a
