@@ -82,7 +82,7 @@ func expandTemplate(tmpl string, vars TemplateVars, keepHome bool) (string, erro
 				i += end
 				continue
 			}
-			out, err := evalExpr(tmpl[i+2:i+end], vars, local, domain)
+			out, err := evalExpr(tmpl[i+2:i+end], vars)
 			if err != nil {
 				return "", fmt.Errorf("path template %q: %w", tmpl, err)
 			}
@@ -129,7 +129,7 @@ func ValidateTemplate(tmpl string) error {
 
 // evalExpr evaluates the inside of a %{...}: a variable followed by filters,
 // separated by "|".
-func evalExpr(expr string, vars TemplateVars, local, domain string) (string, error) {
+func evalExpr(expr string, vars TemplateVars) (string, error) {
 	parts := strings.Split(expr, "|")
 	name := strings.TrimSpace(parts[0])
 
