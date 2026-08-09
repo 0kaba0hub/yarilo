@@ -76,6 +76,11 @@ const (
 	ErrAccountNotFound             = "accountNotFound"
 	ErrAccountNotSupportedByMethod = "accountNotSupportedByMethod"
 	ErrRequestTooLarge             = "requestTooLarge"
+	// ErrServerUnavailable is the temporary one (RFC 8620 §3.6.2): the client
+	// may retry the same call unchanged. Distinct from serverFail, which a
+	// client is entitled to treat as final -- an index still catching up is
+	// not the same news as a broken lookup.
+	ErrServerUnavailable = "serverUnavailable"
 )
 
 func (e *MethodError) Error() string {

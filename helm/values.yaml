@@ -1956,6 +1956,11 @@ protocol:
     ## the whole result set, and the response reports the limit that was
     ## applied, so the client knows to page with position.
     jmap_query_max_limit: 256
+    ## How many mailboxes one Email/query may search with full text. A query
+    ## over more is refused, never answered from part of them. This is a bound
+    ## on one request; fts_max_conns bounds what one process takes from the
+    ## service, and the two move for different reasons.
+    jmap_max_query_folders: 64
     ## Idle timeout for a push connection, seconds. Unused until the push phase.
     jmap_push_timeout: 90
     ## Browser origins allowed to call the JMAP endpoint. Empty denies every
@@ -2396,7 +2401,9 @@ fts:
   ## serialises request/response pairs, so this is what decides how many
   ## lookups actually run at once: a search fanning out over several folders is
   ## queued, not parallel, until this is above one. Connections open on demand,
-  ## so raising it costs nothing until that many calls overlap.
+  ## so raising it costs nothing until that many calls overlap. Per process,
+  ## not per deployment: yarilo-jmap opens its own pool of this size for
+  ## Email/query in addition to the session backend's.
   fts_max_conns: 4
   ## Mailboxes yarilo-fts indexes at once. The engine holds one mutex per user,
   ## so this parallelises across users, not across one user's mailboxes — a
