@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -772,13 +773,13 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 					slog.Warn("lmtp: create folder", "folder", d.Folder, "err", err)
 				}
 			}
-			uid, err := deliverOne(tBox, tIdx, rel, bytes.NewReader(deliverMsg), int64(len(deliverMsg)), s.opts.Locker, username, s.from, d.Flags)
+			uid, folder, err := deliverOne(tBox, tIdx, rel, bytes.NewReader(deliverMsg), int64(len(deliverMsg)), s.opts.Locker, username, s.from, d.Flags)
 			closeTarget()
 			if err != nil {
 				deliverErr = err
 				break
 			}
-			s.ftsAutoindex(username, rel, uid)
+			s.ftsAutoindex(username, folder, uid)
 		}
 		rcptBox.Close() //nolint:errcheck
 		rcptIdx.Close() //nolint:errcheck
@@ -796,19 +797,34 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 }
 
 // ftsAutoindex is the delivery-time FTS hook: fire-and-forget.
-func (s *session) ftsAutoindex(username, folder string, uid uint32) {
+func (s *session) ftsAutoindex(username string, folder mailbox.Folder, uid uint32) {
 	if s.opts.FTSClient == nil || !s.opts.FTSAutoindex || uid == 0 {
 		return
 	}
+	// The GUID is the folder's identity for the index and what its path is
+	// keyed by (#1183). Without one there is nothing to index into, so the
+	// delivery says so once rather than letting the service refuse every
+	// message for a reason nobody reads.
+	guid := hex.EncodeToString(folder.GUID[:])
+	if folder.GUID == ([16]byte{}) {
+		slog.Warn("lmtp: folder has no GUID, delivered mail will not be searchable",
+			"user", username, "folder", folder.Name, "uid", uid)
+		return
+	}
 	client, maxRecent := s.opts.FTSClient, s.opts.FTSMaxRecent
+	ref := fts.MailboxRef{Name: folder.Name, GUID: guid, UIDValidity: folder.UIDValidity}
 	go func() {
-		if err := client.Index(username, fts.MailboxRef{Name: folder}, uid, maxRecent); err != nil {
-			slog.Debug("lmtp: fts autoindex failed", "user", username, "folder", folder, "uid", uid, "err", err)
+		if err := client.Index(username, ref, uid, maxRecent); err != nil {
+			// Delivered mail that never reaches the index is not visible to
+			// search and nothing else reports it: a Debug line here is how a
+			// silent gap survives a green gate (#1206).
+			slog.Warn("lmtp: fts autoindex failed, message will not be searchable",
+				"user", username, "folder", ref.Name, "uid", uid, "err", err)
 			return
 		}
 		// Breadcrumb (#625): the delivery→index handoff fired, so an indexing gap
 		// (delivered but never queued to FTS) is visible from the lmtp log.
-		slog.Debug("lmtp: fts autoindex queued", "user", username, "folder", folder, "uid", uid, "max_recent", maxRecent)
+		slog.Debug("lmtp: fts autoindex queued", "user", username, "folder", ref.Name, "uid", uid, "max_recent", maxRecent)
 	}()
 }
 
