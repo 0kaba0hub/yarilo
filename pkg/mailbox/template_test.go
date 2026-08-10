@@ -1,6 +1,11 @@
 package mailbox
 
-import "testing"
+import (
+	"crypto/sha1"
+	"encoding/binary"
+	"fmt"
+	"testing"
+)
 
 // The bucket a user lands in has to be the one the reference would pick, or a
 // migrated config quietly redistributes every user and the layout it describes
@@ -27,16 +32,24 @@ func TestHashBucketMatchesTheReference(t *testing.T) {
 	}
 }
 
-// Reading the digest from the wrong end is the mistake that produces a
-// plausible-looking bucket for every user and the right one for none, so the
-// two ends must not agree on the input the test uses.
+// Reading the digest from the wrong end produces a plausible-looking bucket for
+// every user and the right one for none. The guard is derived rather than
+// written down: it computes what the head would give and demands the answer
+// differ, so it cannot rot into agreement with the value it is meant to reject.
 func TestHashBucketDependsOnTheDigestTail(t *testing.T) {
-	got, err := ExpandTemplate("%{user | sha1 % 256 | hex(2)}", TemplateVars{User: "u1@d00001.test"})
+	const user = "u1@d00001.test"
+	sum := sha1.Sum([]byte(user))
+	fromHead := fmt.Sprintf("%02x", binary.BigEndian.Uint64(sum[:8])%256)
+
+	got, err := ExpandTemplate("%{user | sha1 % 256 | hex(2)}", TemplateVars{User: user})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == "e4" {
-		t.Error("the bucket came from the head of the digest, not its tail")
+	if got == fromHead {
+		t.Fatalf("the bucket is %q, which is what reading the head of the digest gives", got)
+	}
+	if got != "d5" {
+		t.Errorf("bucket %q, want d5", got)
 	}
 }
 
