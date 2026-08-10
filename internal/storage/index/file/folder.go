@@ -212,6 +212,9 @@ func (u *userIndex) readBase(fs *folderState) error {
 				slog.Warn("fileindex: discarding log with mismatched IndexID on open",
 					"folder", fs.folder)
 				fs.closeFDs()
+				// A zero lineage here is fine and intended, not a gap: the base
+				// may predate the extension, and a log that pairs with nothing
+				// simply sends readers back to the locked path.
 				if truncErr := truncateLogLineage(fs.indexPath, fs.file.Header.IndexID, fs.lineage.Lineage); truncErr != nil {
 					return fmt.Errorf("fileindex/openfolder: truncate after indexid mismatch: %w", truncErr)
 				}
@@ -472,6 +475,18 @@ func (fs *folderState) flush(wholeNames bool) error {
 	// the message-count recount below.
 	fs.recalcVsizeLocked()
 	fs.persistVsizeLocked()
+	// Mint the next lineage and record which log this base absorbs, and how far
+	// into it, before the base is built from fs.file. A crash between the
+	// rewrite and the log truncation then leaves a base that knows what it
+	// already contains, rather than one the whole log is applied to again.
+	prev := readLineage(fs.file)
+	next := lineageHdr{Lineage: prev.Lineage + 1, FoldedLineage: prev.Lineage, FoldedOffset: uint64(fs.logSize)}
+	if next.Lineage == lineageUnknown {
+		next.Lineage = 1
+	}
+	if err := setLineage(fs.file, next); err != nil {
+		return fmt.Errorf("fileindex/flush: lineage: %w", err)
+	}
 	ri := fs.file.ToRecreateInput(fs.indexPath)
 	// Recount from actual records so counter drift is corrected on every
 	// flush rather than persisted to the next base file.
@@ -493,25 +508,6 @@ func (fs *folderState) flush(wholeNames bool) error {
 		if err := os.MkdirAll(fs.volatileDir, 0o700); err != nil {
 			return fmt.Errorf("fileindex/flush: mkdir volatile: %w", err)
 		}
-		ri.TmpDir = fs.volatileDir
-	}
-	// Mint the next lineage and record which log this base absorbed, and how
-	// far into it. Written before the base is, so a crash between the rewrite
-	// and the log truncation leaves a base that knows what it already contains
-	// rather than one that will have the whole log applied to it again.
-	prev := readLineage(fs.file)
-	next := lineageHdr{Lineage: prev.Lineage + 1, FoldedLineage: prev.Lineage, FoldedOffset: uint64(fs.logSize)}
-	if next.Lineage == lineageUnknown {
-		next.Lineage = 1
-	}
-	if err := setLineage(fs.file, next); err != nil {
-		return fmt.Errorf("fileindex/flush: lineage: %w", err)
-	}
-	ri = fs.file.ToRecreateInput(fs.indexPath)
-	ri.Header.MessagesCount = fs.file.Header.MessagesCount
-	ri.Header.SeenMessagesCount = fs.file.Header.SeenMessagesCount
-	ri.Header.DeletedMessagesCount = fs.file.Header.DeletedMessagesCount
-	if fs.volatileDir != "" {
 		ri.TmpDir = fs.volatileDir
 	}
 	if _, err := mailindex.Recreate(ri); err != nil {
