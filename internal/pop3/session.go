@@ -946,11 +946,14 @@ func (s *session) cmdRset() {
 				continue
 			}
 			m := s.msgs[i]
-			newFlags := removeFlag(m.Flags, `\Seen`)
-			if err := s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
+			// The flags in hand are from the login snapshot, which for POP3 is
+			// the whole session old. Clear the one flag rather than declare the
+			// set, or every change another session made meanwhile is dropped
+			// (#1250).
+			if err := s.idx.RemoveFlags(s.folder.ID, m.UID, []string{`\Seen`}, nil); err != nil {
 				slog.Error("pop3: rset remove seen", "uid", m.UID, "err", err)
 			} else {
-				m.Flags = newFlags
+				m.Flags = removeFlag(m.Flags, `\Seen`)
 			}
 			s.seenMsgs[i] = false
 		}
@@ -1025,10 +1028,10 @@ func (s *session) cmdQuit() {
 		for i, seen := range s.seenMsgs {
 			if seen && !s.deleted[i] {
 				m := s.msgs[i]
-				newFlags := appendFlag(m.Flags, `\Seen`)
-				if err := s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
+				if err := s.idx.AddFlags(s.folder.ID, m.UID, []string{`\Seen`}, nil); err != nil {
 					slog.Error("pop3: set seen", "uid", m.UID, "err", err)
 				} else {
+					m.Flags = appendFlag(m.Flags, `\Seen`)
 					seenCount++
 				}
 			}
@@ -1058,8 +1061,7 @@ func (s *session) cmdQuit() {
 				continue
 			}
 			m := s.msgs[i]
-			newFlags := appendFlag(m.Flags, deletedFlag)
-			if err := s.idx.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); err != nil {
+			if err := s.idx.AddFlags(s.folder.ID, m.UID, []string{deletedFlag}, nil); err != nil {
 				slog.Error("pop3: flag deleted", "uid", m.UID, "err", err)
 				errCount++
 			} else {

@@ -272,6 +272,14 @@ func (h *userHandle) UpdateFlags(folderID uint64, uid uint32, flags, keywords []
 	return h.ui.UpdateFlags(folderID, uid, flags, keywords)
 }
 
+func (h *userHandle) AddFlags(folderID uint64, uid uint32, flags, keywords []string) error {
+	return h.ui.AddFlags(folderID, uid, flags, keywords)
+}
+
+func (h *userHandle) RemoveFlags(folderID uint64, uid uint32, flags, keywords []string) error {
+	return h.ui.RemoveFlags(folderID, uid, flags, keywords)
+}
+
 func (h *userHandle) UpdateFilename(folderID uint64, uid uint32, filename string) error {
 	return h.ui.UpdateFilename(folderID, uid, filename)
 }
@@ -283,7 +291,7 @@ func (h *userHandle) MarkFolderCorrupt(folderID uint64) error {
 func (h *userHandle) ClearFolderCorrupt(folderID uint64) error {
 	return h.ui.ClearFolderCorrupt(folderID)
 }
-func (h *userHandle) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]uint64, error) {
+func (h *userHandle) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]mailbox.FlagsResult, error) {
 	return h.ui.UpdateFlagsMulti(folderID, updates)
 }
 func (h *userHandle) SetAltTier(folderID uint64, filenames []string, altTier bool) error {

@@ -914,10 +914,59 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 // UpdateFlags replaces the flag set + keyword set for one UID.
 // Bumps modseq for that record + the folder header.
 func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error {
+	return u.writeFlags(folderID, uid, flags, keywords, flagsReplace)
+}
+
+// AddFlags adds flags and keywords to a message, keeping whatever it already
+// carries. The union is computed from the record as the lock finds it, which is
+// the difference that matters: UpdateFlags writes an absolute list, so a caller
+// that built one from an earlier read overwrites every change made in between.
+// The implicit \Seen of a non-PEEK FETCH is exactly that caller (#1250).
+func (u *userIndex) AddFlags(folderID uint64, uid uint32, flags, keywords []string) error {
+	return u.writeFlags(folderID, uid, flags, keywords, flagsAdd)
+}
+
+// RemoveFlags clears flags and keywords from a message, leaving the rest as the
+// lock finds them. The counterpart of AddFlags, and needed for the same reason:
+// a caller clearing one flag through UpdateFlags has to send the whole
+// remaining set, which is a set it read earlier.
+func (u *userIndex) RemoveFlags(folderID uint64, uid uint32, flags, keywords []string) error {
+	return u.writeFlags(folderID, uid, flags, keywords, flagsRemove)
+}
+
+// flagWriteMode selects what writeFlags does with the flags it is given.
+type flagWriteMode int
+
+const (
+	flagsReplace flagWriteMode = iota
+	flagsAdd
+	flagsRemove
+)
+
+// writeFlags is the shared body: replace the flag set, union with it, or
+// subtract from it.
+func (u *userIndex) writeFlags(folderID uint64, uid uint32, flags, keywords []string, mode flagWriteMode) error {
 	return u.withFolder(folderID, func(fs *folderState) error {
 		modseq, err := fs.bumpModSeqHeader()
 		if err != nil {
 			return err
+		}
+		if mode != flagsReplace {
+			// Read the record's own keywords under the lock and fold the
+			// caller's into them, so a keyword set between the caller's read
+			// and this write is not dropped by a list that predates it.
+			for _, rec := range fs.file.Records {
+				if rec.UID != uid {
+					continue
+				}
+				have := keywordsFromBitmask(fs.keywords, decodeKeywordsRec(rec.Ext[extNameKeywords]))
+				if mode == flagsAdd {
+					keywords = unionStrings(have, keywords)
+				} else {
+					keywords = subtractStrings(have, keywords)
+				}
+				break
+			}
 		}
 		kwBits, kwReg, err := keywordsBitmaskFor(fs.keywords, keywords)
 		if err != nil {
@@ -937,6 +986,12 @@ func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []s
 			// Preserve the backend-private AltTier bit; IMAP STORE must not
 			// clear a tier marker it knows nothing about.
 			newFlags |= rec.Flags & mailindex.FlagBackend
+			switch mode {
+			case flagsAdd:
+				newFlags |= rec.Flags
+			case flagsRemove:
+				newFlags = rec.Flags &^ mailindex.MailFlag(imapFlagsToIndex(flags))
+			}
 			rec.Flags = newFlags
 			rec.Ext[extNameModSeq] = encodeModseqRec(modseq)
 			rec.Ext[extNameKeywords] = encodeKeywordsRec(kwBits)
@@ -1012,8 +1067,8 @@ func (u *userIndex) ClearFolderCorrupt(folderID uint64) error {
 // lock/reload/flush cycle. Each UID gets an individual modseq bump so clients
 // can use CONDSTORE to pinpoint which messages changed. Returns the new modseq
 // per UID; UIDs not found in the index are silently skipped.
-func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]uint64, error) {
-	result := make(map[uint32]uint64, len(updates))
+func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]mailbox.FlagsResult, error) {
+	result := make(map[uint32]mailbox.FlagsResult, len(updates))
 	err := u.withFolder(folderID, func(fs *folderState) error {
 		// Collect all unique keyword sets across the batch to register them first.
 		allKWs := make([]string, 0)
@@ -1048,13 +1103,32 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 			if err != nil {
 				return err
 			}
-			kwBits, _, err := keywordsBitmaskFor(fs.keywords, upd.Keywords)
+			// Under Add/Remove the caller named only what changes, so the set
+			// is resolved here, against the record the lock is holding. A set
+			// computed by the caller would be as old as its last read.
+			kwWanted := upd.Keywords
+			if upd.Mode != mailbox.FlagsSet {
+				have := keywordsFromBitmask(fs.keywords, decodeKeywordsRec(rec.Ext[extNameKeywords]))
+				if upd.Mode == mailbox.FlagsAdd {
+					kwWanted = unionStrings(have, upd.Keywords)
+				} else {
+					kwWanted = subtractStrings(have, upd.Keywords)
+				}
+			}
+			kwBits, kwReg2, err := keywordsBitmaskFor(fs.keywords, kwWanted)
 			if err != nil {
 				return err
 			}
+			fs.keywords = kwReg2
 			newFlags := mailindex.MailFlag(imapFlagsToIndex(upd.Flags))
 			oldSeen := rec.Flags&mailindex.FlagSeen != 0
 			oldDel := rec.Flags&mailindex.FlagDeleted != 0
+			switch upd.Mode {
+			case mailbox.FlagsAdd:
+				newFlags |= rec.Flags
+			case mailbox.FlagsRemove:
+				newFlags = rec.Flags &^ newFlags
+			}
 			newFlags |= rec.Flags & mailindex.FlagBackend
 			rec.Flags = newFlags
 			rec.Ext[extNameModSeq] = encodeModseqRec(modseq)
@@ -1073,7 +1147,11 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 			case !oldDel && newDel:
 				fs.file.Header.DeletedMessagesCount++
 			}
-			result[rec.UID] = modseq
+			result[rec.UID] = mailbox.FlagsResult{
+				ModSeq:   modseq,
+				Flags:    indexFlagsToIMAP(uint8(newFlags)),
+				Keywords: kwWanted,
+			}
 			modseqUpdates = append(modseqUpdates, mailindex.TxModseqUpdate{
 				UID: rec.UID, ModSeqLow32: uint32(modseq), ModSeqHigh32: uint32(modseq >> 32),
 			})
@@ -2175,4 +2253,35 @@ func (u *userIndex) EnsureCacheExtension(folderID uint64) (indexID, resetID uint
 		return nil
 	})
 	return indexID, resetID, err
+}
+
+// subtractStrings returns a without any member of b.
+func subtractStrings(a, b []string) []string {
+	drop := make(map[string]bool, len(b))
+	for _, s := range b {
+		drop[s] = true
+	}
+	out := make([]string, 0, len(a))
+	for _, s := range a {
+		if !drop[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// unionStrings returns a ∪ b with the order of a preserved, then whatever b
+// adds. Used where a flag or keyword write must keep what the record already
+// carries.
+func unionStrings(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, s := range append(append([]string(nil), a...), b...) {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
