@@ -1,8 +1,12 @@
 package specialuse
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -92,5 +96,42 @@ func TestOneReadStillLayersOverridesOverDefaults(t *testing.T) {
 		if got := attrs[folder]; got != want {
 			t.Errorf("%s = %q, want %q", folder, got, want)
 		}
+	}
+}
+
+// failingLocker makes the read fail the way an unreachable lock service would.
+type failingLocker struct {
+	locks.Locker
+}
+
+func (failingLocker) HoldsResource(_ string) bool { return false }
+
+func (failingLocker) Lock(_ context.Context, _, _ string, _ time.Duration) (locks.Lock, error) {
+	return locks.Lock{}, errors.New("lock service unreachable")
+}
+
+func (f failingLocker) LockShared(ctx context.Context, resource, owner string, ttl time.Duration) (locks.Lock, error) {
+	return f.Lock(ctx, resource, owner, ttl)
+}
+
+// Falling back to the defaults is the right answer — a presentation hint is not
+// worth failing a LIST over — but it must not be a silent one. A degraded
+// answer nobody is told about cannot be told apart from a correct one, which is
+// the failure this whole change is about.
+func TestUnreadableOverridesFallBackLoudly(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(old)
+
+	store := New(t.TempDir(), "alice@example.com", "owner", failingLocker{},
+		map[string]string{"Sent": `\Sent`})
+
+	attrs := store.Attrs()
+	if got := attrs["Sent"]; got != `\Sent` {
+		t.Errorf("Sent = %q, want the configured default", got)
+	}
+	if !strings.Contains(buf.String(), "specialuse") || !strings.Contains(buf.String(), "alice@example.com") {
+		t.Errorf("the fallback was not reported: %q", buf.String())
 	}
 }

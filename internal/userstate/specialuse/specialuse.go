@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -99,7 +100,10 @@ func (s *Store) Delete(folder string) error {
 //
 // A read that fails falls back to the defaults, which is what the caller would
 // have shown anyway; special-use attributes are a hint about presentation, and
-// losing an override is not worth failing a LIST over.
+// losing an override is not worth failing a LIST over. The fall back is not
+// silent, though: the caller is answered and the operator is told, because a
+// degraded answer nobody is told about is indistinguishable from a correct one.
+// Once per LIST rather than once per folder, so it cannot storm.
 func (s *Store) Attrs() map[string]imaplib.MailboxAttr {
 	out := make(map[string]imaplib.MailboxAttr, len(s.defaults))
 	for folder, attr := range s.defaults {
@@ -107,6 +111,8 @@ func (s *Store) Attrs() map[string]imaplib.MailboxAttr {
 	}
 	overrides, err := s.Snapshot()
 	if err != nil {
+		slog.Warn("specialuse: overrides unreadable, answering with the configured defaults only",
+			"user", s.username, "path", s.path, "err", err)
 		return out
 	}
 	for folder, attr := range overrides {
