@@ -171,8 +171,10 @@ func startTelemetry(cfg config.TelemetryConfig) *telemetry.Server {
 		Addr:      telemetry.Addr(cfg.Listen),
 		Lifecycle: true,
 		Pprof: telemetry.PprofOptions{
-			Enabled: cfg.PprofEnabled,
-			Heap:    cfg.PprofHeapEnabled,
+			Enabled:       cfg.PprofEnabled,
+			Heap:          cfg.PprofHeapEnabled,
+			BlockRate:     cfg.PprofBlockProfileRate,
+			MutexFraction: cfg.PprofMutexProfileFraction,
 		},
 	})
 	go func() {

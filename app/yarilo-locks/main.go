@@ -193,8 +193,10 @@ func runTelemetry(cfg config.TelemetryConfig, reg *prometheus.Registry, backendR
 		Registry: reg,
 		Checks:   []telemetry.Check{telemetry.FuncCheck("backend", backendReady)},
 		Pprof: telemetry.PprofOptions{
-			Enabled: cfg.PprofEnabled,
-			Heap:    cfg.PprofHeapEnabled,
+			Enabled:       cfg.PprofEnabled,
+			Heap:          cfg.PprofHeapEnabled,
+			BlockRate:     cfg.PprofBlockProfileRate,
+			MutexFraction: cfg.PprofMutexProfileFraction,
 		},
 	})
 	if err := tel.ListenAndServe(context.Background()); err != nil {

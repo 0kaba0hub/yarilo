@@ -500,8 +500,10 @@ func New(cfg *config.Config) (*Server, error) {
 		Addr:      telemAddr,
 		Lifecycle: true,
 		Pprof: telemetry.PprofOptions{
-			Enabled: cfg.Telemetry.PprofEnabled,
-			Heap:    cfg.Telemetry.PprofHeapEnabled,
+			Enabled:       cfg.Telemetry.PprofEnabled,
+			Heap:          cfg.Telemetry.PprofHeapEnabled,
+			BlockRate:     cfg.Telemetry.PprofBlockProfileRate,
+			MutexFraction: cfg.Telemetry.PprofMutexProfileFraction,
 		},
 	}
 	// Liveness watchdog: stats the mail store base (catches hung NFS via the

@@ -2266,6 +2266,14 @@ telemetry:
   pprof:
     enabled: false
     heapEnabled: false
+    # Sampling rates for the block and mutex profiles. The routes above answer
+    # 200 with an EMPTY profile while these are 0 — a diagnostic that looks like
+    # an answer. Set them for a measurement window and clear them afterwards:
+    # every blocking operation and every contended mutex pays while they are on.
+    # blockProfileRate: 10000   # nanoseconds of blocked time per sample
+    # mutexProfileFraction: 100 # one in N contention events
+    blockProfileRate: 0
+    mutexProfileFraction: 0
   # Timer-driven liveness watchdog (#904). Disabled by default: it restarts a
   # pod whose request path is wedged (a deadlock, a hung NFS handle) while the
   # process and this HTTP server keep answering — so it is only meaningful once a

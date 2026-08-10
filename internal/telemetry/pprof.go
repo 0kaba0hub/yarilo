@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
+	"runtime"
 )
 
 // PprofOptions opts a component into the Go runtime profilers. Off unless a
@@ -18,6 +19,20 @@ type PprofOptions struct {
 	// Enabled registers the profilers that describe execution — CPU, execution
 	// trace, and the allocation, goroutine, block and mutex profiles.
 	Enabled bool
+	// BlockRate sets runtime.SetBlockProfileRate: one blocking event in this
+	// many nanoseconds of blocked time is sampled. 0 leaves the profile off,
+	// which is the state it must be left in.
+	//
+	// It is separate from Enabled because registering the route and collecting
+	// the samples are different costs. Without a rate, /debug/pprof/block
+	// answers 200 with an empty profile — the worst shape a diagnostic can
+	// take, since it looks like an answer. With one, every blocking operation
+	// in the process pays for the sampling.
+	BlockRate int
+	// MutexFraction sets runtime.SetMutexProfileFraction: one in this many
+	// mutex contention events is sampled. 0 leaves it off. Same reasoning as
+	// BlockRate.
+	MutexFraction int
 	// Heap additionally registers /debug/pprof/heap.
 	//
 	// Separate from Enabled because the two differ in kind, not degree. The
@@ -37,6 +52,10 @@ type PprofOptions struct {
 // whatever Heap says — the split would exist in the option and not in the
 // server. There is no index page for the same reason; the URLs are in the docs.
 func registerPprof(mux *http.ServeMux, opts PprofOptions) {
+	// The sampling rates are a runtime setting, not a route, so they are applied
+	// even when nothing is registered: a component can be asked to collect
+	// without also being asked to serve.
+	applyProfileRates(opts)
 	if !opts.Enabled && !opts.Heap {
 		return
 	}
@@ -59,6 +78,23 @@ func registerPprof(mux *http.ServeMux, opts PprofOptions) {
 	slog.Warn("telemetry: pprof endpoints are ENABLED — this is a diagnostic switch, turn it off when the investigation ends",
 		"heap", opts.Heap,
 		"exposure", pprofExposure(opts))
+}
+
+// applyProfileRates turns on the sampling the block and mutex profiles need.
+// Both are process-wide and both cost something on every blocking operation and
+// every contended mutex, so they stay off unless an operator turns them on for
+// a measurement and turns them off after.
+func applyProfileRates(opts PprofOptions) {
+	if opts.BlockRate > 0 {
+		runtime.SetBlockProfileRate(opts.BlockRate)
+		slog.Warn("telemetry: block profiling is ON — every blocking operation is now sampled; turn it off when the measurement ends",
+			"rate_ns", opts.BlockRate)
+	}
+	if opts.MutexFraction > 0 {
+		runtime.SetMutexProfileFraction(opts.MutexFraction)
+		slog.Warn("telemetry: mutex profiling is ON — contention events are now sampled; turn it off when the measurement ends",
+			"fraction", opts.MutexFraction)
+	}
 }
 
 // pprofExposure states in the log what the operator has actually opened.
