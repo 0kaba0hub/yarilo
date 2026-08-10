@@ -49,8 +49,11 @@ type PreambleConn struct {
 	MailPath string
 	// InboxPath overrides INBOX location (empty = use MailPath).
 	InboxPath string
-	realAddr  net.Addr
-	br        *bufio.Reader
+	// MailboxFormat is the per-user storage driver from userdb (mail_driver /
+	// mailbox_format); empty uses the driver from MailLoc, then the global one.
+	MailboxFormat string
+	realAddr      net.Addr
+	br            *bufio.Reader
 }
 
 // UnwrapPreambleConn walks a net.Conn wrapper chain (each wrapper exposing
@@ -247,7 +250,7 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		return nil, fmt.Errorf("token verify: service mismatch: got %q want %q", service, l.ExpectedService)
 	}
 
-	var home, mailLoc, volatileDir, indexDir, controlDir, altDir, mailPath, inboxPath string
+	var home, mailLoc, volatileDir, indexDir, controlDir, altDir, mailPath, inboxPath, mailboxFormat string
 	var quotaOverFlag string
 	var groups, quotaRules []string
 	if l.MasterAddr != "" {
@@ -275,6 +278,7 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		altDir = ui.AltDir
 		mailPath = ui.MailPath
 		inboxPath = ui.InboxPath
+		mailboxFormat = ui.MailboxFormat
 	}
 
 	var realAddr net.Addr = c.RemoteAddr()
@@ -301,6 +305,7 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 		AltDir:        altDir,
 		MailPath:      mailPath,
 		InboxPath:     inboxPath,
+		MailboxFormat: mailboxFormat,
 		realAddr:      realAddr,
 		br:            br,
 	}, nil

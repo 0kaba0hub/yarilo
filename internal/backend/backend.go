@@ -1111,38 +1111,23 @@ func ResolveUserInfo(resolver *mailbox.Resolver, username string, ui *protocol.U
 	mbi.ACLGroups = ui.ACLGroups
 	mbi.QuotaRules = ui.QuotaRules
 	mbi.QuotaOverFlag = ui.QuotaOverFlag
-	if ui.VolatileDir != "" {
-		vd := mailbox.ExpandHome(ui.VolatileDir, mbi.Home)
-		vd = strings.ReplaceAll(vd, "%h", mbi.Home)
-		mbi.VolatileDir = mailbox.ExpandVars(vd, username)
-	}
-	if ui.IndexDir != "" {
-		id := mailbox.ExpandHome(ui.IndexDir, mbi.Home)
-		id = strings.ReplaceAll(id, "%h", mbi.Home)
-		mbi.IndexDir = mailbox.ExpandVars(id, username)
-	}
-	if ui.ControlDir != "" {
-		cd := mailbox.ExpandHome(ui.ControlDir, mbi.Home)
-		cd = strings.ReplaceAll(cd, "%h", mbi.Home)
-		mbi.ControlDir = mailbox.ExpandVars(cd, username)
-	}
-	if ui.AltDir != "" {
-		ad := mailbox.ExpandHome(ui.AltDir, mbi.Home)
-		ad = strings.ReplaceAll(ad, "%h", mbi.Home)
-		mbi.AltDir = mailbox.ExpandVars(ad, username)
-	}
-	if ui.MailPath != "" {
-		mbi.MailPath = mailbox.ExpandHome(ui.MailPath, mbi.Home)
-	}
-	if ui.InboxPath != "" {
-		mbi.InboxPath = mailbox.ExpandHome(ui.InboxPath, mbi.Home)
-	}
-	// Stamp the per-user driver + embedded INDEX=/CONTROL=/ALT=/VOLATILEDIR=
-	// modifiers; the separate userdb dir fields set above win. Same parse as
-	// IMAP/POP3 so all consumers resolve identical paths.
-	if err := mailbox.StampLocation(mbi, ui.MailLocation); err != nil {
+	locErr, drvErr := mailbox.ApplyUserdb(mbi, mailbox.UserdbOverrides{
+		VolatileDir:  ui.VolatileDir,
+		IndexDir:     ui.IndexDir,
+		ControlDir:   ui.ControlDir,
+		AltDir:       ui.AltDir,
+		MailPath:     ui.MailPath,
+		InboxPath:    ui.InboxPath,
+		MailLocation: ui.MailLocation,
+		Driver:       ui.MailboxFormat,
+	})
+	if locErr != nil {
 		slog.Warn("backend: mail_location parse failed; using global mailbox backend",
-			"user", username, "mail_location", ui.MailLocation, "err", err)
+			"user", username, "mail_location", ui.MailLocation, "err", locErr)
+	}
+	if drvErr != nil {
+		slog.Warn("backend: userdb named a storage driver we do not have; using the one from mail_location",
+			"user", username, "mail_driver", ui.MailboxFormat, "err", drvErr)
 	}
 	return mbi
 }

@@ -58,13 +58,21 @@ func AssignField(info *UserInfo, key, value string) error {
 		info.ACLGroups = append(info.ACLGroups, SplitCSV(value)...)
 	case "client_cert_present":
 		info.ClientCertPresent = IsTruthy(value)
-	case "volatile_dir":
+	// The 2.4 names for the same values sit beside ours. Taken from the
+	// reference's own settings table (mail-storage-settings.c), not from the
+	// shape of the other names: mail_index_path, mail_volatile_path,
+	// mail_control_path and mail_alt_path are what it defines. A userdb query
+	// written for 2.4 returns mail_volatile_path / mail_index_path, and the
+	// values it puts there are what VOLATILEDIR= and INDEX= carry in a
+	// mail_location. Accepting only our spelling means such a query looks
+	// answered and silently redirects nothing.
+	case "volatile_dir", "mail_volatile_path":
 		info.VolatileDir = value
-	case "index_dir":
+	case "index_dir", "mail_index_path":
 		info.IndexDir = value
-	case "control_dir":
+	case "control_dir", "mail_control_path":
 		info.ControlDir = value
-	case "alt_dir":
+	case "alt_dir", "mail_alt_path":
 		info.AltDir = value
 	case "mail_path":
 		info.MailPath = value
@@ -114,7 +122,7 @@ func AssignField(info *UserInfo, key, value string) error {
 			return err
 		}
 		info.MailGID = uint32(n)
-	case "mailbox_format":
+	case "mailbox_format", "mail_driver":
 		info.MailboxFormat = value
 	case "mail_attribute_dict":
 		info.MailAttributeDict = value

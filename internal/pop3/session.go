@@ -545,35 +545,23 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	userInfo.Groups = res.Groups
 	userInfo.QuotaRules = res.QuotaRules
 	userInfo.SessionID = s.sid
-	if res.VolatileDir != "" {
-		vd := mailbox.ExpandHome(res.VolatileDir, userInfo.Home)
-		vd = strings.ReplaceAll(vd, "%h", userInfo.Home)
-		userInfo.VolatileDir = mailbox.ExpandVars(vd, res.Username)
+	locErr, drvErr := mailbox.ApplyUserdb(userInfo, mailbox.UserdbOverrides{
+		VolatileDir:  res.VolatileDir,
+		IndexDir:     res.IndexDir,
+		ControlDir:   res.ControlDir,
+		AltDir:       res.AltDir,
+		MailPath:     res.MailPath,
+		InboxPath:    res.InboxPath,
+		MailLocation: res.MailLoc,
+		Driver:       res.MailboxFormat,
+	})
+	if locErr != nil {
+		slog.Warn("pop3: mail_location parse failed; using global mailbox backend",
+			"user", userInfo.Username, "mail_location", res.MailLoc, "err", locErr)
 	}
-	if res.IndexDir != "" {
-		id := mailbox.ExpandHome(res.IndexDir, userInfo.Home)
-		id = strings.ReplaceAll(id, "%h", userInfo.Home)
-		userInfo.IndexDir = mailbox.ExpandVars(id, res.Username)
-	}
-	if res.ControlDir != "" {
-		cd := mailbox.ExpandHome(res.ControlDir, userInfo.Home)
-		cd = strings.ReplaceAll(cd, "%h", userInfo.Home)
-		userInfo.ControlDir = mailbox.ExpandVars(cd, res.Username)
-	}
-	if res.AltDir != "" {
-		ad := mailbox.ExpandHome(res.AltDir, userInfo.Home)
-		ad = strings.ReplaceAll(ad, "%h", userInfo.Home)
-		userInfo.AltDir = mailbox.ExpandVars(ad, res.Username)
-	}
-	if res.MailPath != "" {
-		mp := mailbox.ExpandHome(res.MailPath, userInfo.Home)
-		mp = strings.ReplaceAll(mp, "%h", userInfo.Home)
-		userInfo.MailPath = mailbox.ExpandVars(mp, res.Username)
-	}
-	if res.InboxPath != "" {
-		ip := mailbox.ExpandHome(res.InboxPath, userInfo.Home)
-		ip = strings.ReplaceAll(ip, "%h", userInfo.Home)
-		userInfo.InboxPath = mailbox.ExpandVars(ip, res.Username)
+	if drvErr != nil {
+		slog.Warn("pop3: userdb named a storage driver we do not have; using the one from mail_location",
+			"user", userInfo.Username, "mail_driver", res.MailboxFormat, "err", drvErr)
 	}
 
 	if lim := s.srv.opts.ConnLimit; lim != nil {
@@ -596,12 +584,6 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	}
 	s.lockKey = userInfo.Username
 
-	// honour the per-user mail_location driver; otherwise dbox users are
-	// opened through the global maildir backend and see 0 messages
-	if err := mailbox.StampLocation(userInfo, res.MailLoc); err != nil {
-		slog.Warn("pop3: mail_location parse failed; using global mailbox backend",
-			"user", userInfo.Username, "mail_location", res.MailLoc, "err", err)
-	}
 	personalBox := mailbox.SelectPersonalBackend(s.srv.opts.Mailbox, s.srv.opts.MailboxByDriver, userInfo.Driver)
 	box := personalBox.OpenUser(userInfo)
 	idx := s.srv.opts.Index.OpenUser(userInfo)

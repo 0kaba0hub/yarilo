@@ -138,7 +138,7 @@ func (s *Server) mailboxForDriver(driver string) mailbox.MailboxBackend {
 // bundle-holding handlers do (#1113).
 //
 // The equality is by construction, not coincidence: UserInfo.SkipNFCNormalize is
-// only ever set from Resolver.DefaultSkipNFCNormalize (StampLocation, path.go),
+// only ever set from Resolver.DefaultSkipNFCNormalize (stampLocation, path.go),
 // there being no per-user source today. If a userdb field for it is ever added,
 // this read stays the deployment default while ui.SkipNFCNormalize follows the
 // user -- and the two would diverge here, silently. Route this through the

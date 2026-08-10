@@ -66,6 +66,10 @@ type AuthResponse struct {
 	// the login component's static director_tag applies.
 	DirectorTag string
 
+	// MailboxFormat is the per-user storage driver (mail_driver /
+	// mailbox_format userdb field). Empty falls back to the driver named by
+	// MailLoc, then to the global one.
+	MailboxFormat string
 	// VolatileDir is the VOLATILEDIR mail-location modifier, raw
 	// template (%u/%n/%d/%h unexpanded).
 	VolatileDir string
@@ -293,6 +297,7 @@ func (c *chainAuthenticator) Authenticate(username, password, service, remoteIP 
 	resp.QuotaOverFlag = extractQuotaOverFlag(req.Fields)
 	resp.DirectorTag = extractDirectorTag(req.Fields)
 	resp.VolatileDir = extractVolatileDir(req.Fields)
+	resp.MailboxFormat = extractMailboxFormat(req.Fields)
 	resp.IndexDir = extractIndexDir(req.Fields)
 	resp.ControlDir = extractControlDir(req.Fields)
 	resp.AltDir = extractAltDir(req.Fields)
@@ -327,6 +332,7 @@ func responseFromCache(reqUser string, entry *CacheEntry) *AuthResponse {
 		resp.QuotaOverFlag = extractQuotaOverFlag(entry.Fields)
 		resp.DirectorTag = extractDirectorTag(entry.Fields)
 		resp.VolatileDir = extractVolatileDir(entry.Fields)
+		resp.MailboxFormat = extractMailboxFormat(entry.Fields)
 		resp.IndexDir = extractIndexDir(entry.Fields)
 		resp.ControlDir = extractControlDir(entry.Fields)
 		resp.AltDir = extractAltDir(entry.Fields)
@@ -464,6 +470,7 @@ func (c *chainAuthenticator) AuthenticateMaster(authzid, authid, password, servi
 		resp.MailLoc = v
 	}
 	resp.VolatileDir = extractVolatileDir(req.Fields)
+	resp.MailboxFormat = extractMailboxFormat(req.Fields)
 	resp.IndexDir = extractIndexDir(req.Fields)
 	resp.ControlDir = extractControlDir(req.Fields)
 	resp.AltDir = extractAltDir(req.Fields)
@@ -1408,6 +1415,9 @@ func buildAuthOK(id string, res *AuthResponse) string {
 	if res.MailLoc != "" {
 		reply += "\tmail=" + res.MailLoc
 	}
+	if res.MailboxFormat != "" {
+		reply += "\tmailbox_format=" + res.MailboxFormat
+	}
 	if len(res.Groups) > 0 {
 		reply += "\tgroups=" + strings.Join(res.Groups, ",")
 	}
@@ -1512,6 +1522,19 @@ func extractDirectorTag(f *Fields) string {
 		return v
 	}
 	return ""
+}
+
+// extractMailboxFormat reads the per-user storage driver from the Fields bag,
+// under either spelling: ours and the reference's name the same value.
+func extractMailboxFormat(f *Fields) string {
+	if f == nil {
+		return ""
+	}
+	if v, ok := f.Get("mail_driver"); ok && v != "" {
+		return v
+	}
+	v, _ := f.Get("mailbox_format")
+	return v
 }
 
 // extractVolatileDir reads the VOLATILEDIR value from the Fields bag.
@@ -1709,6 +1732,7 @@ func (s *Server) authenticate(target, master, password, service, remoteIP string
 	}
 	resp.MailPath = extractMailPath(req.Fields)
 	resp.InboxPath = extractInboxPath(req.Fields)
+	resp.MailboxFormat = extractMailboxFormat(req.Fields)
 	s.applyMailPathDefaults(resp)
 	return resp, err
 }
