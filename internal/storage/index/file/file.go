@@ -571,25 +571,46 @@ func (u *userIndex) folderVolatileDir(folder string) string {
 // concurrently and only block against an in-flight exclusive writer; fn then
 // reads under fs.mu.RLock without holding the distributed lock at all.
 func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) error {
+	whole := time.Now()
+	defer func() { metricReadSeconds.Observe(time.Since(whole).Seconds()) }()
+
 	u.mu.Lock()
 	fs, ok := u.open[folderID]
 	u.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
+	// The lock part is the whole locked span minus the work done inside it, so
+	// it covers every trip to the lock service: the acquisition, the
+	// already-ours check, and the release, which runs in a defer as
+	// withDistLock returns. Timing only the acquisition would leave the release
+	// -- about as expensive as the acquisition, measured -- in the remainder,
+	// where a reader would have to remember to subtract a cost that already has
+	// a name. Then the remainder would name nothing, which is the only reason
+	// the split exists.
+	var reloadDur time.Duration
+	lockStart := time.Now()
 	err := u.withDistLock(fs, true, func() error {
+		reloadStart := time.Now()
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
-		return fs.reload()
+		rerr := fs.reload()
+		reloadDur = time.Since(reloadStart)
+		observeReadPart("reload", reloadDur)
+		return rerr
 	})
+	observeReadPart("lock", time.Since(lockStart)-reloadDur)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	// fn only reads the in-memory snapshot; shared lock allows
 	// concurrent readers without blocking writers.
+	buildStart := time.Now()
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	return fn(fs)
+	ferr := fn(fs)
+	observeReadPart("build", time.Since(buildStart))
+	return ferr
 }
 
 // withFolderLock runs fn under the cross-process index lock for
@@ -626,6 +647,7 @@ func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 // exclusive writer.
 func (u *userIndex) withDistLock(fs *folderState, shared bool, fn func() error) error {
 	if u.b.locker != nil {
+		mode := lockMode(shared)
 		key := locks.MailboxKey(u.username, fs.folder)
 		if !u.b.locker.HoldsResource(key) {
 			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
@@ -638,13 +660,24 @@ func (u *userIndex) withDistLock(fs *folderState, shared bool, fn func() error) 
 			} else {
 				lk, err = locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
 			}
+			metricLockWait.WithLabelValues(mode).Observe(time.Since(t0).Seconds())
+			metricLockAcquired.WithLabelValues(mode).Inc()
 			if err != nil {
 				return fmt.Errorf("fileindex/lock %s: %w", fs.folder, err)
 			}
 			slog.Debug("fileindex: lock wait",
 				"user", u.username, "folder", fs.folder, "shared", shared,
 				"lock_wait_ms", time.Since(t0).Milliseconds())
-			defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
+			defer func() {
+				released := time.Now()
+				_ = u.b.locker.Unlock(ctx, lk.ID)
+				metricLockRelease.WithLabelValues(mode).Observe(time.Since(released).Seconds())
+			}()
+		} else {
+			// Already ours: the operation is inside another that took the lock,
+			// so it makes no round trip. Counted apart so "how often does a read
+			// leave the process" has an answer rather than an estimate.
+			metricLockReentrant.WithLabelValues(mode).Inc()
 		}
 	}
 	return fn()
