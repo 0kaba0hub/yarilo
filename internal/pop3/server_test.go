@@ -85,7 +85,7 @@ func (m *mockIndex) UpdateFlags(_ uint64, _ uint32, _, _ []string) error      { 
 func (m *mockIndex) AddFlags(_ uint64, _ uint32, _, _ []string) error         { return nil }
 func (m *mockIndex) RemoveFlags(_ uint64, _ uint32, _, _ []string) error      { return nil }
 func (m *mockIndex) UpdateFilename(_ uint64, _ uint32, _ string) error        { return nil }
-func (m *mockIndex) UpdateFlagsMulti(_ uint64, _ map[uint32]mailbox.FlagsUpdate) (map[uint32]uint64, error) {
+func (m *mockIndex) UpdateFlagsMulti(_ uint64, _ map[uint32]mailbox.FlagsUpdate) (map[uint32]mailbox.FlagsResult, error) {
 	return nil, nil
 }
 func (m *mockIndex) GetMessages(_ uint64, _ mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {

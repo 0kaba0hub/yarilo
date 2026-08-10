@@ -1067,8 +1067,8 @@ func (u *userIndex) ClearFolderCorrupt(folderID uint64) error {
 // lock/reload/flush cycle. Each UID gets an individual modseq bump so clients
 // can use CONDSTORE to pinpoint which messages changed. Returns the new modseq
 // per UID; UIDs not found in the index are silently skipped.
-func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]uint64, error) {
-	result := make(map[uint32]uint64, len(updates))
+func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]mailbox.FlagsResult, error) {
+	result := make(map[uint32]mailbox.FlagsResult, len(updates))
 	err := u.withFolder(folderID, func(fs *folderState) error {
 		// Collect all unique keyword sets across the batch to register them first.
 		allKWs := make([]string, 0)
@@ -1103,13 +1103,32 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 			if err != nil {
 				return err
 			}
-			kwBits, _, err := keywordsBitmaskFor(fs.keywords, upd.Keywords)
+			// Under Add/Remove the caller named only what changes, so the set
+			// is resolved here, against the record the lock is holding. A set
+			// computed by the caller would be as old as its last read.
+			kwWanted := upd.Keywords
+			if upd.Mode != mailbox.FlagsSet {
+				have := keywordsFromBitmask(fs.keywords, decodeKeywordsRec(rec.Ext[extNameKeywords]))
+				if upd.Mode == mailbox.FlagsAdd {
+					kwWanted = unionStrings(have, upd.Keywords)
+				} else {
+					kwWanted = subtractStrings(have, upd.Keywords)
+				}
+			}
+			kwBits, kwReg2, err := keywordsBitmaskFor(fs.keywords, kwWanted)
 			if err != nil {
 				return err
 			}
+			fs.keywords = kwReg2
 			newFlags := mailindex.MailFlag(imapFlagsToIndex(upd.Flags))
 			oldSeen := rec.Flags&mailindex.FlagSeen != 0
 			oldDel := rec.Flags&mailindex.FlagDeleted != 0
+			switch upd.Mode {
+			case mailbox.FlagsAdd:
+				newFlags |= rec.Flags
+			case mailbox.FlagsRemove:
+				newFlags = rec.Flags &^ newFlags
+			}
 			newFlags |= rec.Flags & mailindex.FlagBackend
 			rec.Flags = newFlags
 			rec.Ext[extNameModSeq] = encodeModseqRec(modseq)
@@ -1128,7 +1147,11 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 			case !oldDel && newDel:
 				fs.file.Header.DeletedMessagesCount++
 			}
-			result[rec.UID] = modseq
+			result[rec.UID] = mailbox.FlagsResult{
+				ModSeq:   modseq,
+				Flags:    indexFlagsToIMAP(uint8(newFlags)),
+				Keywords: kwWanted,
+			}
 			modseqUpdates = append(modseqUpdates, mailindex.TxModseqUpdate{
 				UID: rec.UID, ModSeqLow32: uint32(modseq), ModSeqHigh32: uint32(modseq >> 32),
 			})

@@ -110,3 +110,82 @@ func TestRemoveFlagsClearsOnlyWhatItNames(t *testing.T) {
 		t.Errorf("keywords %v lost $Work, which was not named", keywords)
 	}
 }
+
+// The same window, through the batch path STORE uses. +FLAGS and -FLAGS are
+// deltas by definition, so a batch that names them must resolve against the
+// record under the write lock — not against the set the command read before it.
+func TestBatchDeltasKeepAConcurrentChange(t *testing.T) {
+	root := t.TempDir()
+	ui := openIdx(root, "carol@example.com")
+	f, err := ui.OpenFolder("INBOX", 42, "")
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "1", Size: 10}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	// What the STORE command read.
+	staleFlags, staleKeywords := flagsOf(t, ui, f.ID, 1)
+
+	// Another session, in the window.
+	if err := ui.AddFlags(f.ID, 1, []string{`\Flagged`}, []string{"$Important"}); err != nil {
+		t.Fatalf("concurrent AddFlags: %v", err)
+	}
+
+	// STORE +FLAGS (\Seen $Work)
+	res, err := ui.UpdateFlagsMulti(f.ID, map[uint32]mailbox.FlagsUpdate{
+		1: {Flags: []string{`\Seen`}, Keywords: []string{"$Work"}, Mode: mailbox.FlagsAdd},
+	})
+	if err != nil {
+		t.Fatalf("UpdateFlagsMulti: %v", err)
+	}
+
+	flags, keywords := flagsOf(t, ui, f.ID, 1)
+	for _, want := range []string{`\Seen`, `\Flagged`} {
+		if !slices.Contains(flags, want) {
+			t.Errorf("flags %v lost %s", flags, want)
+		}
+	}
+	for _, want := range []string{"$Work", "$Important"} {
+		if !slices.Contains(keywords, want) {
+			t.Errorf("keywords %v lost %s", keywords, want)
+		}
+	}
+
+	// The result the caller is handed must be what the index holds, not what
+	// the command could predict: under a delta it did not know the answer.
+	got := res[1]
+	if !slices.Contains(got.Flags, `\Flagged`) || !slices.Contains(got.Keywords, "$Important") {
+		t.Errorf("the returned set %v/%v does not describe the record %v/%v", got.Flags, got.Keywords, flags, keywords)
+	}
+	if got.ModSeq == 0 {
+		t.Error("no modseq returned")
+	}
+
+	// -FLAGS removes only what it names.
+	if _, err := ui.UpdateFlagsMulti(f.ID, map[uint32]mailbox.FlagsUpdate{
+		1: {Flags: []string{`\Seen`}, Keywords: []string{"$Work"}, Mode: mailbox.FlagsRemove},
+	}); err != nil {
+		t.Fatalf("UpdateFlagsMulti remove: %v", err)
+	}
+	flags, keywords = flagsOf(t, ui, f.ID, 1)
+	if slices.Contains(flags, `\Seen`) || slices.Contains(keywords, "$Work") {
+		t.Errorf("-FLAGS left %v/%v", flags, keywords)
+	}
+	if !slices.Contains(flags, `\Flagged`) || !slices.Contains(keywords, "$Important") {
+		t.Errorf("-FLAGS removed what it did not name: %v/%v", flags, keywords)
+	}
+
+	// And the absolute form still does what it says, so the two modes are
+	// distinguishable in the suite.
+	if _, err := ui.UpdateFlagsMulti(f.ID, map[uint32]mailbox.FlagsUpdate{
+		1: {Flags: staleFlags, Keywords: staleKeywords},
+	}); err != nil {
+		t.Fatalf("UpdateFlagsMulti set: %v", err)
+	}
+	flags, keywords = flagsOf(t, ui, f.ID, 1)
+	if slices.Contains(flags, `\Flagged`) || slices.Contains(keywords, "$Important") {
+		t.Errorf("FlagsSet kept %v/%v — it is documented as replacing the set", flags, keywords)
+	}
+}

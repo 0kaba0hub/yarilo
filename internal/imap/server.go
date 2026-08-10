@@ -3159,17 +3159,37 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 				newKW = append(newKW, f)
 			}
 		}
+		// FLAGS (...) declares the set, so the set is what we send. +FLAGS and
+		// -FLAGS are deltas by definition: send the named flags and let the
+		// index resolve them against the record under its own lock. Sending the
+		// computed set instead would carry this read forward and overwrite
+		// whatever another session changed in between (#1250).
+		upd := mailbox.FlagsUpdate{Flags: newFlags, Keywords: newKW}
+		switch storeFlags.Op {
+		case imaplib.StoreFlagsAdd:
+			upd = storeDelta(storeFlags, mailbox.FlagsAdd)
+		case imaplib.StoreFlagsDel:
+			upd = storeDelta(storeFlags, mailbox.FlagsRemove)
+		}
 		pending = append(pending, pendingStore{seqNum, m.UID, newFlags, newKW, m.Filename, m.AltTier})
-		batchUpdates[m.UID] = mailbox.FlagsUpdate{Flags: newFlags, Keywords: newKW}
+		batchUpdates[m.UID] = upd
 	}
 
 	// Pass 2: single lock/reload/flush for all flag updates.
-	var newModSeqs map[uint32]uint64
+	var results map[uint32]mailbox.FlagsResult
 	if len(batchUpdates) > 0 {
 		var err error
-		newModSeqs, err = idx.UpdateFlagsMulti(s.folder.ID, batchUpdates)
+		results, err = idx.UpdateFlagsMulti(s.folder.ID, batchUpdates)
 		if err != nil {
 			return err
+		}
+		// Under a delta the resulting set is only known after the write, so the
+		// untagged FETCH reports what the index holds rather than what this
+		// command predicted from its own read.
+		for i := range pending {
+			if r, ok := results[pending[i].uid]; ok {
+				pending[i].newFlags, pending[i].newKW = r.Flags, r.Keywords
+			}
 		}
 		s.emitMailboxChange(s.folder, locks.EventChanged, 0)
 	}
@@ -3185,8 +3205,8 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 	// messages — without this Poll would see modseq changed and emit a
 	// second duplicate * FETCH for every STOREd message.
 	for i := range s.knownMsgs {
-		if ms, ok := newModSeqs[s.knownMsgs[i].uid]; ok {
-			s.knownMsgs[i].modseq = ms
+		if r, ok := results[s.knownMsgs[i].uid]; ok {
+			s.knownMsgs[i].modseq = r.ModSeq
 		}
 	}
 	if !storeFlags.Silent {
@@ -3208,8 +3228,8 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 			mw := w.CreateMessage(p.seqNum)
 			mw.WriteFlags(toImapFlags(append(p.newFlags, p.newKW...)))
 			mw.WriteUID(imaplib.UID(p.uid))
-			if ms := newModSeqs[p.uid]; ms > 0 {
-				mw.WriteModSeq(ms)
+			if r := results[p.uid]; r.ModSeq > 0 {
+				mw.WriteModSeq(r.ModSeq)
 			}
 			mw.Close() //nolint:errcheck
 		}
@@ -4040,6 +4060,20 @@ func searchCriteriaHasBody(c *imaplib.SearchCriteria) bool {
 	return len(c.Header) > 0 || len(c.Body) > 0 || len(c.Text) > 0 ||
 		!c.SentSince.IsZero() || !c.SentBefore.IsZero() ||
 		searchNeedsBodyRecurse(c.Not, c.Or)
+}
+
+// storeDelta turns a +FLAGS / -FLAGS command into an index update that names
+// only the flags it changes.
+func storeDelta(store *imaplib.StoreFlags, mode mailbox.FlagsMode) mailbox.FlagsUpdate {
+	upd := mailbox.FlagsUpdate{Mode: mode}
+	for _, f := range store.Flags {
+		if strings.HasPrefix(string(f), `\`) {
+			upd.Flags = append(upd.Flags, string(f))
+		} else {
+			upd.Keywords = append(upd.Keywords, string(f))
+		}
+	}
+	return upd
 }
 
 func applyStoreFlags(current []string, store *imaplib.StoreFlags) []string {

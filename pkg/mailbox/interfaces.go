@@ -166,6 +166,36 @@ type SeqRange struct {
 type FlagsUpdate struct {
 	Flags    []string
 	Keywords []string
+	// Mode says what Flags and Keywords mean. The zero value replaces the whole
+	// set, which is what STORE FLAGS (...) asks for. FlagsAdd and FlagsRemove
+	// name only what changes, and the index resolves them against the record as
+	// its lock finds it — the difference that keeps a concurrent change from
+	// being overwritten by a set the caller read earlier (#1250).
+	Mode FlagsMode
+}
+
+// FlagsMode selects how a FlagsUpdate is applied.
+type FlagsMode int
+
+const (
+	// FlagsSet replaces the flag and keyword set. Correct where the caller
+	// genuinely declares the set: STORE FLAGS (...), a Sieve setflag action, or
+	// a maildir sync where the filename is the truth.
+	FlagsSet FlagsMode = iota
+	// FlagsAdd unions the named flags and keywords into the record's own.
+	FlagsAdd
+	// FlagsRemove subtracts them from the record's own.
+	FlagsRemove
+)
+
+// FlagsResult is what a message ended up with after a batch update: the flags
+// and keywords the index holds, and the modseq of the change. The resulting set
+// is returned rather than assumed because under FlagsAdd or FlagsRemove the
+// caller does not know it — that is the point of naming only the delta.
+type FlagsResult struct {
+	ModSeq   uint64
+	Flags    []string
+	Keywords []string
 }
 
 // SyncStats reports what a proactive index reconcile changed. Imported counts
@@ -313,7 +343,7 @@ type UserIndex interface {
 	UpdateFilename(folderID uint64, uid uint32, filename string) error
 	// UpdateFlagsMulti replaces flags+keywords for a batch of UIDs in a
 	// single lock/reload/flush cycle. Returns the new modseq per UID.
-	UpdateFlagsMulti(folderID uint64, updates map[uint32]FlagsUpdate) (map[uint32]uint64, error)
+	UpdateFlagsMulti(folderID uint64, updates map[uint32]FlagsUpdate) (map[uint32]FlagsResult, error)
 	// SetAltTier sets or clears the AltTier marker (FlagBackend) for every message
 	// in folderID whose Filename matches one of the supplied names, under the
 	// folder's cross-process mailbox lock. Called by the altmove API after

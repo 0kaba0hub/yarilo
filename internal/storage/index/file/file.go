@@ -291,7 +291,7 @@ func (h *userHandle) MarkFolderCorrupt(folderID uint64) error {
 func (h *userHandle) ClearFolderCorrupt(folderID uint64) error {
 	return h.ui.ClearFolderCorrupt(folderID)
 }
-func (h *userHandle) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]uint64, error) {
+func (h *userHandle) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]mailbox.FlagsResult, error) {
 	return h.ui.UpdateFlagsMulti(folderID, updates)
 }
 func (h *userHandle) SetAltTier(folderID uint64, filenames []string, altTier bool) error {
