@@ -2057,12 +2057,9 @@ func (fs *folderState) flushAppend(rec *mailindex.Record) error {
 // truncateLog drops every expunge record. Called by
 // OptimizeIndex after a successful base-file rewrite — the
 // records have been "absorbed" into the snapshot.
-func truncateLog(indexPath string, indexID uint32) error {
-	return truncateLogLineage(indexPath, indexID, 0)
-}
-
 // truncateLogLineage replaces the log with an empty one carrying lineage, so
-// the fresh log announces which base it belongs to.
+// the fresh log announces which base it belongs to. A zero lineage is what a
+// base written before the extension gives, and it reads as "proves nothing".
 func truncateLogLineage(indexPath string, indexID, lineage uint32) error {
 	logPath := indexPath + ".log"
 	tmp := logPath + ".tmp"
