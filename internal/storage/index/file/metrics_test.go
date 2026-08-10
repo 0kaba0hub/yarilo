@@ -1,11 +1,14 @@
 package file
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -113,4 +116,66 @@ func counterVecValue(t *testing.T, v *prometheus.CounterVec, label string) float
 		t.Fatalf("write counter %s: %v", label, err)
 	}
 	return m.GetCounter().GetValue()
+}
+
+// slowUnlockLocker makes the release cost something measurable. It stands in
+// for what the profile of a real deployment showed: releasing the lock is a
+// second round trip to the lock service, about as expensive as taking it.
+type slowUnlockLocker struct {
+	locks.Locker
+	delay time.Duration
+}
+
+func (l slowUnlockLocker) Unlock(ctx context.Context, id string) error {
+	time.Sleep(l.delay)
+	return l.Locker.Unlock(ctx, id)
+}
+
+// Every trip to the lock service belongs to the lock part — the acquisition and
+// the release both. The release happens in a defer as the locked span ends, so
+// timing only the acquisition leaves it in the remainder, where it is a cost
+// with a known name sitting in the bucket reserved for costs without one.
+func TestTheLockPartCoversTheRelease(t *testing.T) {
+	const releaseDelay = 40 * time.Millisecond
+
+	dial := raceTestLockServer(t)
+	locker := slowUnlockLocker{Locker: dial(), delay: releaseDelay}
+	root := t.TempDir()
+	home := testHome(root, "carol@example.com")
+	ui := New(WithLocker(locker)).OpenUser(&mailbox.UserInfo{
+		Username: "carol@example.com", Home: home,
+	}).(*userHandle).ui
+
+	f, err := ui.OpenFolder("INBOX", 42, "")
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+
+	lockBefore, _ := histVecSum(t, metricReadPart, "lock")
+	wholeBefore, _ := histSum(t, metricReadSeconds)
+	releaseBefore, releaseCountBefore := histVecSum(t, metricLockRelease, "shared")
+
+	if _, err := ui.GetMessages(f.ID, mailbox.SeqSet{}); err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+
+	lockAfter, _ := histVecSum(t, metricReadPart, "lock")
+	wholeAfter, _ := histSum(t, metricReadSeconds)
+	releaseAfter, releaseCountAfter := histVecSum(t, metricLockRelease, "shared")
+
+	lockPart := lockAfter - lockBefore
+	whole := wholeAfter - wholeBefore
+	if lockPart < releaseDelay.Seconds() {
+		t.Errorf("the lock part is %.4fs for a read whose release alone took %.4fs: the release is falling into the remainder",
+			lockPart, releaseDelay.Seconds())
+	}
+	if lockPart > whole {
+		t.Errorf("the lock part (%.4fs) exceeds the whole read (%.4fs)", lockPart, whole)
+	}
+	if releaseCountAfter == releaseCountBefore {
+		t.Error("the release was not timed on its own")
+	}
+	if releaseAfter-releaseBefore < releaseDelay.Seconds() {
+		t.Errorf("the release histogram recorded %.4fs for a %.4fs release", releaseAfter-releaseBefore, releaseDelay.Seconds())
+	}
 }

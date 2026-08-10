@@ -20,6 +20,10 @@ import (
 // The parts are observed only inside the whole, and what the whole holds beyond
 // them is the finding. It cannot be negative, and a test asserts it.
 var (
+	// A read that fails before it builds its answer reports the parts it
+	// reached and not the ones it did not, so the counts of the parts are not
+	// equal to each other or to the count of the whole. The sums still
+	// reconcile, which is what the split is for.
 	metricReadSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "fileindex_read_seconds",
 		Help:    "Time one read of a folder's state took, whole: lock, freshness check and building the answer.",
@@ -38,9 +42,14 @@ var (
 		Help:    "Time an index operation waited for the cross-process folder lock, by mode.",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 10), // 100us .. ~26s
 	}, []string{"mode"})
+	metricLockRelease = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "fileindex_lock_release_seconds",
+		Help:    "Time releasing the cross-process folder lock, by mode. The second round trip an operation makes, and about as expensive as the first.",
+		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 10),
+	}, []string{"mode"})
 	metricLockAcquired = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "fileindex_lock_acquired_total",
-		Help: "Cross-process folder locks acquired, by mode. Counts round trips to the lock service.",
+		Help: "Cross-process folder locks acquired, by mode. Each acquisition is followed by a release, so an operation that takes the lock makes two round trips to the lock service.",
 	}, []string{"mode"}) // shared | exclusive
 	metricLockReentrant = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "fileindex_lock_reentrant_total",
