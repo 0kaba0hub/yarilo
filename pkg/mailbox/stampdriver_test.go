@@ -61,12 +61,11 @@ func TestApplyUserdbOrdersLocationThenDriver(t *testing.T) {
 
 // A separate path field beats the modifier embedded in the location, and the
 // templates in both are expanded — the same contract for every protocol,
-// because there is now one place that implements it. (The template here is the
-// short form; the expression form arrives with #1235.)
+// because there is now one place that implements it.
 func TestApplyUserdbExpandsAndPrefersTheSeparateFields(t *testing.T) {
 	ui := UserInfo{Username: "alice@example.org", Home: "/home/alice"}
 	locErr, drvErr := ApplyUserdb(&ui, UserdbOverrides{
-		IndexDir:     "~/index/%d",
+		IndexDir:     "~/index/%{user | domain}",
 		MailLocation: "maildir:~/Maildir:INDEX=/from-location:CONTROL=~/ctrl",
 	})
 	if locErr != nil || drvErr != nil {
