@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -157,7 +158,13 @@ func TestCPUProfileIsActuallyProduced(t *testing.T) {
 	}()
 	defer close(stop)
 
-	resp, err := http.Get(ts.URL + "/debug/pprof/profile?seconds=1")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/debug/pprof/profile?seconds=1", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET profile: %v", err)
 	}
