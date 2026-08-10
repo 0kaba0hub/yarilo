@@ -193,11 +193,22 @@ func TestCPUProfileIsActuallyProduced(t *testing.T) {
 	}
 }
 
+// restoreProfileRates puts both sampling rates back to off when the test ends.
+// Both, not the one the caller happened to set: these are process-wide, so a
+// row that leaves one on changes what the next row measures, and the next row
+// is the one that would look wrong.
+func restoreProfileRates(t *testing.T) {
+	t.Cleanup(func() {
+		runtime.SetBlockProfileRate(0)
+		runtime.SetMutexProfileFraction(0)
+	})
+}
+
 // A block profile route with no sampling rate answers 200 with a profile that
 // has no samples — an answer-shaped silence. The rate is what makes it speak,
 // so the two must be wired together.
 func TestBlockProfileNeedsItsRate(t *testing.T) {
-	defer runtime.SetBlockProfileRate(0)
+	restoreProfileRates(t)
 
 	NewWithOptions(Options{Addr: "127.0.0.1:0", Pprof: PprofOptions{Enabled: true, BlockRate: 1}})
 
