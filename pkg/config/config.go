@@ -2004,6 +2004,20 @@ type TelemetryConfig struct {
 	// objects of a process whose live objects are other people's mail. Finding
 	// where CPU and allocations go never needs this one.
 	PprofHeapEnabled bool `koanf:"telemetry_pprof_heap_enabled"`
+	// PprofBlockProfileRate samples one blocking event per this many
+	// nanoseconds of blocked time (runtime.SetBlockProfileRate). 0 (default)
+	// leaves block profiling off.
+	//
+	// It is its own key rather than part of telemetry_pprof_enabled because the
+	// route and the sampling are different costs. With the route on and no rate,
+	// /debug/pprof/block answers 200 with an empty profile — an answer-shaped
+	// silence. With a rate, every blocking operation in the process pays. Turn
+	// it on for a measurement window and off afterwards.
+	PprofBlockProfileRate int `koanf:"telemetry_block_profile_rate"`
+	// PprofMutexProfileFraction samples one in this many mutex contention
+	// events (runtime.SetMutexProfileFraction). 0 (default) leaves it off. Same
+	// reasoning as telemetry_block_profile_rate.
+	PprofMutexProfileFraction int `koanf:"telemetry_mutex_profile_fraction"`
 }
 
 // LivenessWatchdogConfig tunes the timer-driven liveness self-check (#904). It
@@ -2264,9 +2278,11 @@ func Load(path string) (*Config, error) {
 			HAProxyTimeout: 3,
 		},
 		Telemetry: TelemetryConfig{
-			Listen:           ":8080",
-			PprofEnabled:     false,
-			PprofHeapEnabled: false,
+			Listen:                    ":8080",
+			PprofEnabled:              false,
+			PprofHeapEnabled:          false,
+			PprofBlockProfileRate:     0,
+			PprofMutexProfileFraction: 0,
 			LivenessWatchdog: LivenessWatchdogConfig{
 				Enabled:          false,
 				IntervalSeconds:  10,

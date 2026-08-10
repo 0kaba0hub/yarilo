@@ -293,8 +293,10 @@ func startTelemetry(cfg config.TelemetryConfig, cache *protocol.Cache) *telemetr
 		Addr:      telemetry.Addr(cfg.Listen),
 		Lifecycle: true,
 		Pprof: telemetry.PprofOptions{
-			Enabled: cfg.PprofEnabled,
-			Heap:    cfg.PprofHeapEnabled,
+			Enabled:       cfg.PprofEnabled,
+			Heap:          cfg.PprofHeapEnabled,
+			BlockRate:     cfg.PprofBlockProfileRate,
+			MutexFraction: cfg.PprofMutexProfileFraction,
 		},
 	}
 	if wd := cfg.LivenessWatchdog; wd.Enabled {

@@ -1,9 +1,17 @@
 package telemetry
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"runtime/pprof"
 	"testing"
+	"time"
+
+	"github.com/google/pprof/profile"
 )
 
 // pprofRoutes is every path the profilers can be reached at, split by which
@@ -121,5 +129,106 @@ func TestPprofDoesNotDisturbTheExistingEndpoints(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The routing tests ask the mux, which is how they stay fast — but a handler
+// wired correctly and a handler that produces anything are different claims. A
+// CPU profile that returns an empty body, or a body that is not a profile,
+// answers 200 either way.
+func TestCPUProfileIsActuallyProduced(t *testing.T) {
+	srv := NewWithOptions(Options{Addr: "127.0.0.1:0", Pprof: PprofOptions{Enabled: true}})
+	ts := httptest.NewServer(srv.srv.Handler)
+	defer ts.Close()
+
+	// Burn a little CPU while the profile is being taken, so an empty result
+	// means the profiler is not running rather than that nothing happened.
+	stop := make(chan struct{})
+	go func() {
+		x := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				x++
+				_ = x
+			}
+		}
+	}()
+	defer close(stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/debug/pprof/profile?seconds=1", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET profile: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	if len(body) == 0 {
+		t.Fatal("the CPU profile is empty")
+	}
+	// A pprof profile is gzip-compressed protobuf; the magic is what tells a
+	// real profile from an error page served with status 200.
+	if len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {
+		t.Fatalf("the response is not a pprof profile (first bytes %x)", body[:min(4, len(body))])
+	}
+	prof, err := profile.Parse(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("parse profile: %v", err)
+	}
+	if len(prof.Sample) == 0 {
+		t.Error("the profile parsed but holds no samples: the profiler ran and recorded nothing")
+	}
+}
+
+// restoreProfileRates puts both sampling rates back to off when the test ends.
+// Both, not the one the caller happened to set: these are process-wide, so a
+// row that leaves one on changes what the next row measures, and the next row
+// is the one that would look wrong.
+func restoreProfileRates(t *testing.T) {
+	t.Cleanup(func() {
+		runtime.SetBlockProfileRate(0)
+		runtime.SetMutexProfileFraction(0)
+	})
+}
+
+// A block profile route with no sampling rate answers 200 with a profile that
+// has no samples — an answer-shaped silence. The rate is what makes it speak,
+// so the two must be wired together.
+func TestBlockProfileNeedsItsRate(t *testing.T) {
+	restoreProfileRates(t)
+
+	NewWithOptions(Options{Addr: "127.0.0.1:0", Pprof: PprofOptions{Enabled: true, BlockRate: 1}})
+
+	// Block on a channel so there is something to sample.
+	done := make(chan struct{})
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		close(done)
+	}()
+	<-done
+
+	var buf bytes.Buffer
+	if err := pprof.Lookup("block").WriteTo(&buf, 0); err != nil {
+		t.Fatalf("write block profile: %v", err)
+	}
+	prof, err := profile.Parse(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("parse block profile: %v", err)
+	}
+	if len(prof.Sample) == 0 {
+		t.Error("block profiling was switched on and sampled nothing")
 	}
 }

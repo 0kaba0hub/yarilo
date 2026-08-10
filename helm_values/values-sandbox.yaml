@@ -107,6 +107,22 @@ general:
   limits:
     max_user_ip_connections: 0
 
+## Profiling. The endpoints cost nothing while nobody fetches, and the port is
+## cluster-internal, so they stay reachable here for investigations. The heap
+## dump is a different thing and stays off: it holds live objects, which in a
+## mail process are message bodies.
+##
+## The two sampling rates are what make the block and mutex profiles say
+## anything; at 0 they answer with an empty profile. Set them for a measurement
+## window (blockProfileRate: 10000, mutexProfileFraction: 100), take the
+## capture, put them back to 0 — every blocking operation pays while they are on.
+telemetry:
+  pprof:
+    enabled: true
+    heapEnabled: false
+    blockProfileRate: 0
+    mutexProfileFraction: 0
+
 image:
   repository: ghcr.io/yarilomail/yarilo
   tag: latest

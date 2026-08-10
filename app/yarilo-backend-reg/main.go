@@ -46,8 +46,10 @@ func main() {
 		Addr:      telemetry.Addr(cfg.Telemetry.Listen),
 		Lifecycle: true,
 		Pprof: telemetry.PprofOptions{
-			Enabled: cfg.Telemetry.PprofEnabled,
-			Heap:    cfg.Telemetry.PprofHeapEnabled,
+			Enabled:       cfg.Telemetry.PprofEnabled,
+			Heap:          cfg.Telemetry.PprofHeapEnabled,
+			BlockRate:     cfg.Telemetry.PprofBlockProfileRate,
+			MutexFraction: cfg.Telemetry.PprofMutexProfileFraction,
 		},
 	})
 	go func() {
