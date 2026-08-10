@@ -571,25 +571,36 @@ func (u *userIndex) folderVolatileDir(folder string) string {
 // concurrently and only block against an in-flight exclusive writer; fn then
 // reads under fs.mu.RLock without holding the distributed lock at all.
 func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) error {
+	whole := time.Now()
+	defer func() { metricReadSeconds.Observe(time.Since(whole).Seconds()) }()
+
 	u.mu.Lock()
 	fs, ok := u.open[folderID]
 	u.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
+	lockStart := time.Now()
 	err := u.withDistLock(fs, true, func() error {
+		observeReadPart("lock", time.Since(lockStart))
+		reloadStart := time.Now()
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
-		return fs.reload()
+		rerr := fs.reload()
+		observeReadPart("reload", time.Since(reloadStart))
+		return rerr
 	})
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	// fn only reads the in-memory snapshot; shared lock allows
 	// concurrent readers without blocking writers.
+	buildStart := time.Now()
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	return fn(fs)
+	ferr := fn(fs)
+	observeReadPart("build", time.Since(buildStart))
+	return ferr
 }
 
 // withFolderLock runs fn under the cross-process index lock for
@@ -626,6 +637,7 @@ func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 // exclusive writer.
 func (u *userIndex) withDistLock(fs *folderState, shared bool, fn func() error) error {
 	if u.b.locker != nil {
+		mode := lockMode(shared)
 		key := locks.MailboxKey(u.username, fs.folder)
 		if !u.b.locker.HoldsResource(key) {
 			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
@@ -638,6 +650,8 @@ func (u *userIndex) withDistLock(fs *folderState, shared bool, fn func() error) 
 			} else {
 				lk, err = locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
 			}
+			metricLockWait.WithLabelValues(mode).Observe(time.Since(t0).Seconds())
+			metricLockAcquired.WithLabelValues(mode).Inc()
 			if err != nil {
 				return fmt.Errorf("fileindex/lock %s: %w", fs.folder, err)
 			}
@@ -645,6 +659,11 @@ func (u *userIndex) withDistLock(fs *folderState, shared bool, fn func() error) 
 				"user", u.username, "folder", fs.folder, "shared", shared,
 				"lock_wait_ms", time.Since(t0).Milliseconds())
 			defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
+		} else {
+			// Already ours: the operation is inside another that took the lock,
+			// so it makes no round trip. Counted apart so "how often does a read
+			// leave the process" has an answer rather than an estimate.
+			metricLockReentrant.WithLabelValues(mode).Inc()
 		}
 	}
 	return fn()
