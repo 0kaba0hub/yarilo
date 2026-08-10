@@ -580,16 +580,26 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
+	// The lock part is the whole locked span minus the work done inside it, so
+	// it covers every trip to the lock service: the acquisition, the
+	// already-ours check, and the release, which runs in a defer as
+	// withDistLock returns. Timing only the acquisition would leave the release
+	// -- about as expensive as the acquisition, measured -- in the remainder,
+	// where a reader would have to remember to subtract a cost that already has
+	// a name. Then the remainder would name nothing, which is the only reason
+	// the split exists.
+	var reloadDur time.Duration
 	lockStart := time.Now()
 	err := u.withDistLock(fs, true, func() error {
-		observeReadPart("lock", time.Since(lockStart))
 		reloadStart := time.Now()
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
 		rerr := fs.reload()
-		observeReadPart("reload", time.Since(reloadStart))
+		reloadDur = time.Since(reloadStart)
+		observeReadPart("reload", reloadDur)
 		return rerr
 	})
+	observeReadPart("lock", time.Since(lockStart)-reloadDur)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -658,7 +668,11 @@ func (u *userIndex) withDistLock(fs *folderState, shared bool, fn func() error) 
 			slog.Debug("fileindex: lock wait",
 				"user", u.username, "folder", fs.folder, "shared", shared,
 				"lock_wait_ms", time.Since(t0).Milliseconds())
-			defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
+			defer func() {
+				released := time.Now()
+				_ = u.b.locker.Unlock(ctx, lk.ID)
+				metricLockRelease.WithLabelValues(mode).Observe(time.Since(released).Seconds())
+			}()
 		} else {
 			// Already ours: the operation is inside another that took the lock,
 			// so it makes no round trip. Counted apart so "how often does a read

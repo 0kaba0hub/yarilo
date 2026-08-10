@@ -155,7 +155,16 @@ func TestTheLockPartCoversTheRelease(t *testing.T) {
 	wholeBefore, _ := histSum(t, metricReadSeconds)
 	releaseBefore, releaseCountBefore := histVecSum(t, metricLockRelease, "shared")
 
-	if _, err := ui.GetMessages(f.ID, mailbox.SeqSet{}); err != nil {
+	// On its own goroutine: the lock client tracks holds per goroutine, so a
+	// read issued from the one that just created the folder could take the
+	// re-entrant path and never touch the lock service — measuring nothing and
+	// passing. A session's reads come from their own goroutine anyway.
+	done := make(chan error, 1)
+	go func() {
+		_, gerr := ui.GetMessages(f.ID, mailbox.SeqSet{})
+		done <- gerr
+	}()
+	if err := <-done; err != nil {
 		t.Fatalf("GetMessages: %v", err)
 	}
 
