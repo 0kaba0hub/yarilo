@@ -212,7 +212,7 @@ func (u *userIndex) readBase(fs *folderState) error {
 				slog.Warn("fileindex: discarding log with mismatched IndexID on open",
 					"folder", fs.folder)
 				fs.closeFDs()
-				if truncErr := truncateLog(fs.indexPath, fs.file.Header.IndexID); truncErr != nil {
+				if truncErr := truncateLogLineage(fs.indexPath, fs.file.Header.IndexID, fs.lineage.Lineage); truncErr != nil {
 					return fmt.Errorf("fileindex/openfolder: truncate after indexid mismatch: %w", truncErr)
 				}
 				fs.logSize = 0
@@ -495,9 +495,29 @@ func (fs *folderState) flush(wholeNames bool) error {
 		}
 		ri.TmpDir = fs.volatileDir
 	}
+	// Mint the next lineage and record which log this base absorbed, and how
+	// far into it. Written before the base is, so a crash between the rewrite
+	// and the log truncation leaves a base that knows what it already contains
+	// rather than one that will have the whole log applied to it again.
+	prev := readLineage(fs.file)
+	next := lineageHdr{Lineage: prev.Lineage + 1, FoldedLineage: prev.Lineage, FoldedOffset: uint64(fs.logSize)}
+	if next.Lineage == lineageUnknown {
+		next.Lineage = 1
+	}
+	if err := setLineage(fs.file, next); err != nil {
+		return fmt.Errorf("fileindex/flush: lineage: %w", err)
+	}
+	ri = fs.file.ToRecreateInput(fs.indexPath)
+	ri.Header.MessagesCount = fs.file.Header.MessagesCount
+	ri.Header.SeenMessagesCount = fs.file.Header.SeenMessagesCount
+	ri.Header.DeletedMessagesCount = fs.file.Header.DeletedMessagesCount
+	if fs.volatileDir != "" {
+		ri.TmpDir = fs.volatileDir
+	}
 	if _, err := mailindex.Recreate(ri); err != nil {
 		return fmt.Errorf("fileindex/flush: recreate: %w", err)
 	}
+	fs.lineage = next
 	if wholeNames {
 		if fs.namesFD != nil {
 			_ = fs.namesFD.Close()
@@ -622,7 +642,15 @@ func (fs *folderState) reload() error {
 		fs.filenames, fs.sizes = loadNames(fs.indexDir)
 		fs.baseMod = newBaseMod
 		fs.baseIdent = baseStat
-		fs.logSize = 0 // will be updated by applyLog below
+		fs.lineage = readLineage(mf)
+		// Where to resume in the log the base did not fully absorb. Without the
+		// pairing this restarts from zero and relies on every transaction type
+		// being idempotent -- which they are today, but that is a property
+		// nobody declared and the next transaction type need not have.
+		fs.logSize = 0
+		if off, paired := replayStart(fs.lineage, logLineageOf(fs.indexPath)); paired {
+			fs.logSize = off
+		}
 	}
 
 	// Apply any log entries added since logSize (by another pod or
@@ -639,7 +667,7 @@ func (fs *folderState) reload() error {
 			if flushErr := fs.flush(false); flushErr != nil {
 				return fmt.Errorf("fileindex/reload: flush after indexid mismatch: %w", flushErr)
 			}
-			if truncErr := truncateLog(fs.indexPath, fs.file.Header.IndexID); truncErr != nil {
+			if truncErr := truncateLogLineage(fs.indexPath, fs.file.Header.IndexID, fs.lineage.Lineage); truncErr != nil {
 				return fmt.Errorf("fileindex/reload: truncate after indexid mismatch: %w", truncErr)
 			}
 			fs.logSize = 0
@@ -1419,7 +1447,7 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 		// Truncate the log so stale TxAppend records don't resurface
 		// when another process replays the log after ResetFolder.
 		fs.closeFDs()
-		if err := truncateLog(fs.indexPath, fs.file.Header.IndexID); err != nil {
+		if err := truncateLogLineage(fs.indexPath, fs.file.Header.IndexID, fs.lineage.Lineage); err != nil {
 			return err
 		}
 		fs.logSize = 0
@@ -1484,7 +1512,7 @@ func (u *userIndex) OptimizeIndex(folderID uint64) error {
 			return err
 		}
 		fs.closeFDs()
-		if err := truncateLog(fs.indexPath, fs.file.Header.IndexID); err != nil {
+		if err := truncateLogLineage(fs.indexPath, fs.file.Header.IndexID, fs.lineage.Lineage); err != nil {
 			return err
 		}
 		// Log is now an empty header; next reload fast-paths the base and
@@ -1671,7 +1699,10 @@ func (fs *folderState) appendMutLog(records ...[]byte) error {
 		}
 		st, _ := f.Stat()
 		if st != nil && st.Size() == 0 {
-			hdr := mailindex.NewLogHeader(fs.file.Header.IndexID, 1, uint32(time.Now().Unix()))
+			// FileSeq carries the base's lineage, which is what makes the log
+			// self-describing: a reader can tell whether this log belongs to
+			// the base it is holding.
+			hdr := mailindex.NewLogHeader(fs.file.Header.IndexID, fs.lineage.Lineage, uint32(time.Now().Unix()))
 			if err := hdr.Encode(f); err != nil {
 				_ = f.Close()
 				return fmt.Errorf("fileindex/mutlog: write header: %w", err)
@@ -2027,13 +2058,19 @@ func (fs *folderState) flushAppend(rec *mailindex.Record) error {
 // OptimizeIndex after a successful base-file rewrite — the
 // records have been "absorbed" into the snapshot.
 func truncateLog(indexPath string, indexID uint32) error {
+	return truncateLogLineage(indexPath, indexID, 0)
+}
+
+// truncateLogLineage replaces the log with an empty one carrying lineage, so
+// the fresh log announces which base it belongs to.
+func truncateLogLineage(indexPath string, indexID, lineage uint32) error {
 	logPath := indexPath + ".log"
 	tmp := logPath + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("fileindex/log truncate: open: %w", err)
 	}
-	hdr := mailindex.NewLogHeader(indexID, 1, uint32(time.Now().Unix()))
+	hdr := mailindex.NewLogHeader(indexID, lineage, uint32(time.Now().Unix()))
 	if err := hdr.Encode(f); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
