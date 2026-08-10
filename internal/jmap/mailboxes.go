@@ -53,17 +53,10 @@ func (s *Server) mailboxList(h *userHandle) ([]jmapcore.Mailbox, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jmap: subscriptions: %w", err)
 	}
-	// Snapshot carries only the per-user overrides; the configured defaults are
-	// a second layer, exactly as Store.Get resolves them. Reading one layer
-	// would drop every role an operator set in imap_special_use_defaults.
-	overrides, err := h.specialUse.Snapshot()
-	if err != nil {
-		return nil, fmt.Errorf("jmap: special-use: %w", err)
-	}
-	roles := h.specialUse.Defaults()
-	for folder, attr := range overrides {
-		roles[folder] = attr
-	}
+	// Overrides laid over the configured defaults, in one read. Taking only the
+	// overrides would drop every role an operator set in
+	// imap_special_use_defaults.
+	roles := h.specialUse.Attrs()
 
 	sep := separator(h.info)
 	// A folder's id must be stable across a rename, so it is the folder GUID

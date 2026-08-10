@@ -1590,6 +1590,14 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 		names[i] = e.Name
 	}
 
+	// snapshot special-use once per LIST, alongside subscriptions below. Nil
+	// for a non-personal namespace, where the attributes do not apply; a nil
+	// map reads as empty, so the loop needs no second condition.
+	var specialUse map[string]imaplib.MailboxAttr
+	if h == s.primary && s.specialUse != nil {
+		specialUse = s.specialUse.Attrs()
+	}
+
 	// snapshot subscriptions once per LIST so every folder consults the
 	// same view.
 	// The subscribed set comes from whichever namespace keeps this one's
@@ -1638,11 +1646,12 @@ func (s *session) listNamespace(w *imapserver.ListWriter, h *nsHandle, ref strin
 				attrs = append(attrs, imaplib.MailboxAttrSubscribed)
 			}
 		}
-		// SPECIAL-USE (RFC 6154); personal namespace only.
-		if h == s.primary && s.specialUse != nil {
-			if attr := s.specialUse.Get(name); attr != "" {
-				attrs = append(attrs, attr)
-			}
+		// SPECIAL-USE (RFC 6154); personal namespace only. Read once per LIST,
+		// for the same reason subscriptions are: the document describes the
+		// whole user, so asking per name asked the same question once per
+		// folder — and each ask was two round trips to the lock service.
+		if attr := specialUse[name]; attr != "" {
+			attrs = append(attrs, attr)
 		}
 		data := &imaplib.ListData{Mailbox: full, Delim: h.spec.Separator, Attrs: attrs}
 		// RETURN STATUS (RFC 5819): skip on failure rather than abort the

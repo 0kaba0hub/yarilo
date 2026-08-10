@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -86,17 +87,38 @@ func (s *Store) Delete(folder string) error {
 	})
 }
 
-// Get returns the special-use attr for folder, considering on-disk
-// overrides first and falling back to the configured defaults.
-// Returns empty string when neither layer carries a match.
-func (s *Store) Get(folder string) imaplib.MailboxAttr {
-	overrides, err := s.Snapshot()
-	if err == nil {
-		if attr, ok := overrides[folder]; ok {
-			return attr
-		}
+// Attrs returns the special-use attribute of every folder that has one:
+// on-disk overrides laid over the configured defaults, read in a single pass.
+//
+// This is the only way to ask, and deliberately so. The document describes the
+// whole user, so a per-folder call asks the same question once per name — and
+// each ask is an acquire and a release against the lock service, over the
+// network. LIST did exactly that: a user with 35 folders paid 70 round trips
+// for one command, and 85% of the special-use work was coordination rather than
+// reading the file (#1240). With no per-name accessor, that shape cannot come
+// back by accident.
+//
+// A read that fails falls back to the defaults, which is what the caller would
+// have shown anyway; special-use attributes are a hint about presentation, and
+// losing an override is not worth failing a LIST over. The fall back is not
+// silent, though: the caller is answered and the operator is told, because a
+// degraded answer nobody is told about is indistinguishable from a correct one.
+// Once per LIST rather than once per folder, so it cannot storm.
+func (s *Store) Attrs() map[string]imaplib.MailboxAttr {
+	out := make(map[string]imaplib.MailboxAttr, len(s.defaults))
+	for folder, attr := range s.defaults {
+		out[folder] = attr
 	}
-	return s.defaults[folder]
+	overrides, err := s.Snapshot()
+	if err != nil {
+		slog.Warn("specialuse: overrides unreadable, answering with the configured defaults only",
+			"user", s.username, "path", s.path, "err", err)
+		return out
+	}
+	for folder, attr := range overrides {
+		out[folder] = attr
+	}
+	return out
 }
 
 // Snapshot loads the overrides under the lock. Used by LIST so the
