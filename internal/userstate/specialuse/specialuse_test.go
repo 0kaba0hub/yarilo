@@ -24,7 +24,7 @@ func TestSpecialUseDefaultsAndOverrides(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := store.Get(c.folder); got != c.wantAttr {
+			if got := store.Attrs()[c.folder]; got != c.wantAttr {
 				t.Errorf("got %q want %q", got, c.wantAttr)
 			}
 		})
@@ -33,15 +33,15 @@ func TestSpecialUseDefaultsAndOverrides(t *testing.T) {
 	if err := store.Set("Sent", `\Junk`); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	if got := store.Get("Sent"); got != `\Junk` {
-		t.Errorf("after override Get(Sent)=%q want \\Junk", got)
+	if got := store.Attrs()["Sent"]; got != `\Junk` {
+		t.Errorf("after override Attrs()[Sent]=%q want \\Junk", got)
 	}
 
 	if err := store.Delete("Sent"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if got := store.Get("Sent"); got != `\Sent` {
-		t.Errorf("after delete Get(Sent)=%q want default \\Sent", got)
+	if got := store.Attrs()["Sent"]; got != `\Sent` {
+		t.Errorf("after delete Attrs()[Sent]=%q want default \\Sent", got)
 	}
 }
 
