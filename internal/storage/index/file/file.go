@@ -406,6 +406,12 @@ type folderState struct {
 	filenames map[uint32]string
 	sizes     map[uint32]uint32 // UID → message size in bytes, stored in .names sidecar
 
+	// lineage pairs this base with its log: the log written after it carries
+	// lineage in its FileSeq, and folded* say which log the base absorbed and
+	// how far into it. Zero means the base predates the extension and proves
+	// nothing.
+	lineage lineageHdr
+
 	logSize int64     // byte count of .index.log after last write/reload
 	baseMod time.Time // mtime of base .index at last full reload
 	// baseIdent is the os.FileInfo captured with baseMod, compared via
@@ -491,7 +497,7 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 		return
 	}
 	fs.closeFDs()
-	if err := truncateLog(fs.indexPath, fs.file.Header.IndexID); err != nil {
+	if err := truncateLogLineage(fs.indexPath, fs.file.Header.IndexID, fs.lineage.Lineage); err != nil {
 		slog.Warn("fileindex: log compaction truncate failed", "folder", fs.folder, "err", err)
 		return
 	}
