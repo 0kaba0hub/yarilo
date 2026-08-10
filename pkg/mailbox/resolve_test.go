@@ -28,7 +28,7 @@ func TestStampLocation(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ui := &UserInfo{Username: "u@x.io", Home: "/home/u", IndexDir: c.preIndex}
-			err := StampLocation(ui, c.mailLoc)
+			err := stampLocation(ui, c.mailLoc)
 			if (err != nil) != c.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
 			}
