@@ -2922,10 +2922,12 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		// carries the new flag set (whether or not the client asked for FLAGS).
 		seenJustSet := false
 		if markSeen && !hasFlag(m.Flags, `\Seen`) {
-			newFlags := append([]string(nil), m.Flags...)
-			newFlags = append(newFlags, `\Seen`)
-			if uerr := idx.UpdateFlags(s.folder.ID, m.UID, newFlags, m.Keywords); uerr == nil {
-				m.Flags = newFlags
+			// Add the flag, do not declare the set. The flags in hand came from
+			// the read this response is built on; writing them back as an
+			// absolute list drops anything another session set in between
+			// (#1250).
+			if uerr := idx.AddFlags(s.folder.ID, m.UID, []string{`\Seen`}, nil); uerr == nil {
+				m.Flags = append(append([]string(nil), m.Flags...), `\Seen`)
 				seenJustSet = true
 				s.emitMailboxChange(s.folder, locks.EventChanged, m.UID)
 			}

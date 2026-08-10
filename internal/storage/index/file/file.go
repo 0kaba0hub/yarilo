@@ -272,6 +272,14 @@ func (h *userHandle) UpdateFlags(folderID uint64, uid uint32, flags, keywords []
 	return h.ui.UpdateFlags(folderID, uid, flags, keywords)
 }
 
+func (h *userHandle) AddFlags(folderID uint64, uid uint32, flags, keywords []string) error {
+	return h.ui.AddFlags(folderID, uid, flags, keywords)
+}
+
+func (h *userHandle) RemoveFlags(folderID uint64, uid uint32, flags, keywords []string) error {
+	return h.ui.RemoveFlags(folderID, uid, flags, keywords)
+}
+
 func (h *userHandle) UpdateFilename(folderID uint64, uid uint32, filename string) error {
 	return h.ui.UpdateFilename(folderID, uid, filename)
 }

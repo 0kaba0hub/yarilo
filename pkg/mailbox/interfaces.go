@@ -295,6 +295,18 @@ type UserIndex interface {
 	// other fields (including m.Filename) must be set by the caller beforehand.
 	AllocateAndAppend(folderID uint64, m *MessageMeta) error
 	UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error
+
+	// AddFlags adds flags and keywords, keeping whatever the message already
+	// carries. Use it wherever the caller wants to set one flag rather than to
+	// declare the whole set: UpdateFlags writes an absolute list, so a list
+	// built from an earlier read silently drops every change made since (#1250).
+	AddFlags(folderID uint64, uid uint32, flags, keywords []string) error
+
+	// RemoveFlags clears flags and keywords, leaving the rest untouched. The
+	// counterpart of AddFlags and needed for the same reason: clearing one flag
+	// through UpdateFlags means sending the whole remaining set, which is a set
+	// the caller read earlier.
+	RemoveFlags(folderID uint64, uid uint32, flags, keywords []string) error
 	// UpdateFilename repoints the stored on-disk filename for a UID without
 	// touching flags, UID or modseq. Used by maildir sync-on-open when another MUA
 	// renamed a tracked file out of band. No-op when uid is unknown.
