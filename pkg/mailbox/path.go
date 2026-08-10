@@ -240,8 +240,15 @@ func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 // both stand for the user's home, then %u/%n/%d. Every location value goes
 // through it, from the config or the userdb, so one string means one path.
 func ExpandLocation(tmpl, home, username string) string {
-	v := ExpandHome(tmpl, home)
-	return ExpandVars(strings.ReplaceAll(v, "%h", home), username)
+	out, err := ExpandTemplate(ExpandHome(tmpl, home), TemplateVars{User: username, Home: home})
+	if err != nil {
+		// Startup validation refuses a template that cannot expand, so reaching
+		// here means one arrived from a userdb answer instead of the config.
+		// Returning it unchanged keeps the old behaviour for that path rather
+		// than inventing a directory.
+		return ExpandHome(tmpl, home)
+	}
+	return out
 }
 
 // ParseMailLocationMods parses the modifier section of a
@@ -283,8 +290,14 @@ func ExpandHome(path, home string) string {
 //	  → zero-padded hex string of length <width>.
 //	  Example: %2.256Nu with "u1@d00001.test" → "76"
 //
-// Unknown sequences pass through unchanged. A bare trailing % is preserved.
+// Unknown sequences pass through unchanged: this is the lenient entry point for
+// values that did not come from our own config. Templates that did are checked
+// at startup by ValidateTemplate, which refuses what this one would silently
+// keep.
 func ExpandVars(template, username string) string {
+	if out, err := expandTemplate(template, TemplateVars{User: username}, true); err == nil {
+		return out
+	}
 	if template == "" {
 		return ""
 	}

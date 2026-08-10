@@ -2338,6 +2338,9 @@ func (cfg *Config) validate() error {
 	if err := ValidateFTSIndexRoot(cfg.FTS.IndexRoot); err != nil {
 		return err
 	}
+	if err := ValidatePathTemplates(&cfg.Storage); err != nil {
+		return err
+	}
 	if _, ok := NormalizeFTSStorageType(cfg.FTS.StorageType); !ok {
 		return fmt.Errorf("config: fts_storage_type %q is not a storage type; valid values are local and nfs",
 			cfg.FTS.StorageType)
@@ -2725,6 +2728,37 @@ func NormalizeFTSStorageType(raw string) (string, bool) {
 		return FTSStorageNFS, true
 	}
 	return "", false
+}
+
+// ValidatePathTemplates refuses a path template nothing can expand.
+//
+// The alternative is what we had: an unknown sequence passed through verbatim,
+// so a template copied from a newer reference config produced a directory
+// literally named "%{user | sha1 % 256 | hex(2)}" -- created, written to, and
+// never mentioned. A path we cannot expand is a misconfiguration, and the place
+// to say so is startup, not the first delivery.
+func ValidatePathTemplates(sc *StorageConfig) error {
+	for _, t := range []struct {
+		key   string
+		value string
+	}{
+		{"mail_home_template", sc.MailHomeTemplate},
+		{"mail_path", sc.MailPath},
+		{"mail_inbox_path", sc.MailInboxPath},
+		{"index_dir", sc.IndexDir},
+		{"control_dir", sc.ControlDir},
+		{"volatile_dir", sc.VolatileDir},
+		{"alt_dir", sc.AltDir},
+		{"mdbox_alt_storage_path", sc.MdboxAltStoragePath},
+	} {
+		if t.value == "" {
+			continue
+		}
+		if err := mailbox.ValidateTemplate(t.value); err != nil {
+			return fmt.Errorf("config: storage.%s: %w", t.key, err)
+		}
+	}
+	return nil
 }
 
 // ValidateFTSIndexRoot refuses a storage driver the FTS engine cannot use.
