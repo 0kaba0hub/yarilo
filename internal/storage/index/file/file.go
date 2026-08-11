@@ -297,6 +297,14 @@ func (h *userHandle) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbo
 func (h *userHandle) SetAltTier(folderID uint64, filenames []string, altTier bool) error {
 	return h.ui.SetAltTier(folderID, filenames, altTier)
 }
+func (h *userHandle) VanishedUnlocked(folderID uint64, sinceModSeq uint64) ([]uint32, error) {
+	return h.ui.VanishedUnlocked(folderID, sinceModSeq)
+}
+
+func (h *userHandle) KeywordsUnlocked(folderID uint64) ([]string, error) {
+	return h.ui.KeywordsUnlocked(folderID)
+}
+
 func (h *userHandle) GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
 	h.stampTrace(folderID)
 	return h.ui.GetMessagesUnlocked(folderID, uids)

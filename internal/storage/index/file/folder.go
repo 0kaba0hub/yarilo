@@ -1375,8 +1375,22 @@ func (u *userIndex) NextModSeq(folderID uint64) (uint64, error) {
 // modseq strictly greater than sinceModSeq. Drives the QRESYNC VANISHED
 // response (RFC 7162).
 func (u *userIndex) Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, error) {
+	return u.vanished(folderID, sinceModSeq, false)
+}
+
+// VanishedUnlocked is Vanished for a caller whose answer goes to the client and
+// decides nothing on disk — QRESYNC on SELECT, CHANGEDSINCE on FETCH (#1249).
+func (u *userIndex) VanishedUnlocked(folderID uint64, sinceModSeq uint64) ([]uint32, error) {
+	return u.vanished(folderID, sinceModSeq, true)
+}
+
+func (u *userIndex) vanished(folderID uint64, sinceModSeq uint64, unlocked bool) ([]uint32, error) {
 	var out []uint32
-	err := u.withFolderRO(folderID, func(fs *folderState) error {
+	read := u.withFolderRO
+	if unlocked {
+		read = u.withFolderROUnlocked
+	}
+	err := read(folderID, func(fs *folderState) error {
 		uids, err := scanExpungesSince(fs.indexPath, sinceModSeq)
 		if err != nil {
 			return err
@@ -1389,8 +1403,23 @@ func (u *userIndex) Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, err
 
 // Keywords returns the current keyword registry.
 func (u *userIndex) Keywords(folderID uint64) ([]string, error) {
+	return u.keywords(folderID, false)
+}
+
+// KeywordsUnlocked is Keywords for the SELECT response: a keyword declared a
+// moment later shows up on the next command, which is the staleness the
+// protocol already accepts (#1249).
+func (u *userIndex) KeywordsUnlocked(folderID uint64) ([]string, error) {
+	return u.keywords(folderID, true)
+}
+
+func (u *userIndex) keywords(folderID uint64, unlocked bool) ([]string, error) {
 	var out []string
-	err := u.withFolderRO(folderID, func(fs *folderState) error {
+	read := u.withFolderRO
+	if unlocked {
+		read = u.withFolderROUnlocked
+	}
+	err := read(folderID, func(fs *folderState) error {
 		out = append([]string(nil), fs.keywords.Names...)
 		return nil
 	})
