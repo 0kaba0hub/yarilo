@@ -342,9 +342,15 @@ func (s *Server) optimizeAccount(ctx context.Context, req optimizeRequest) (*opt
 	// indexes so a failure here is visible in the same call rather than
 	// discovered later as "the folders are clean but opening is still slow".
 	var mapFolded *bool
-	if mc, ok := bundle.box.(mapCompactor); ok {
-		ok := mc.CompactMap() == nil
-		mapFolded = &ok
+	// Through mailbox.Driver, not off bundle.box directly: what the server
+	// builds is the validating wrapper, which forwards the interface method by
+	// method and therefore has no CompactMap. Asserting on the wrapper found
+	// nothing, left the map unfolded, and reported success -- the shape that
+	// cannot be seen from the outside, because the output looks complete
+	// (#1267).
+	if mc, ok := mailbox.Driver(bundle.box).(mapCompactor); ok {
+		folded := mc.CompactMap() == nil
+		mapFolded = &folded
 	}
 	uc.Close()
 
