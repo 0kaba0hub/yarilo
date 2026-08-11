@@ -57,7 +57,7 @@ var (
 	}, []string{"result"}) // adopt
 	metricLineageStamped = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "fileindex_lineage_stamped_total",
-		Help: "Folder indexes given a lineage on first open because they were written before the extension. Expected to rise once per folder after an upgrade and stay flat afterwards.",
+		Help: "Folder indexes given a lineage on first open because they were written before the extension. Expected to rise once per folder after an upgrade and stay flat afterwards; two pods racing the same first open can each stamp it, so a folder may count twice.",
 	})
 	metricLockReentrant = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "fileindex_lock_reentrant_total",

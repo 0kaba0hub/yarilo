@@ -207,3 +207,48 @@ func stripLineage(t *testing.T, fs *folderState) {
 		t.Fatalf("strip: recreate: %v", err)
 	}
 }
+
+// A folder whose log is nothing but a header — written before the base was
+// stamped, so announcing a lineage that pairs with nothing — must not be left
+// unprovable. It would otherwise wait for a compaction, and a folder that is
+// only ever read never compacts: the same trap the stamp exists to escape.
+func TestABareLogStubIsReissuedUnderTheNewLineage(t *testing.T) {
+	root := t.TempDir()
+	user := "hana@example.com"
+
+	ui := openIdx(root, user)
+	f, err := ui.OpenFolder("INBOX", 42, "")
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	fs := ui.open[f.ID]
+	indexPath := fs.indexPath
+	stripLineage(t, fs)
+
+	// The log as a stub written while the base had no lineage yet: header only,
+	// announcing nothing. This is the case that pairs with nothing — a stub
+	// carrying the old constant still pairs, through folded.
+	if err := truncateLogLineage(indexPath, fs.file.Header.IndexID, lineageUnknown); err != nil {
+		t.Fatalf("seed stub: %v", err)
+	}
+
+	ui2 := openIdx(root, user)
+	f2, err := ui2.OpenFolder("INBOX", 42, "")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	fs2 := ui2.open[f2.ID]
+
+	lg, err := openLogRead(indexPath)
+	if err != nil {
+		t.Fatalf("openLogRead: %v", err)
+	}
+	defer lg.close()
+	if _, paired := replayStart(fs2.lineage, lg.lineage()); !paired {
+		t.Fatalf("base %d/folded %d and stub log %d are not paired — the folder stays locked forever",
+			fs2.lineage.Lineage, fs2.lineage.FoldedLineage, lg.lineage())
+	}
+	if !fs2.canReadUnlocked() {
+		t.Error("the folder still cannot be read without the lock")
+	}
+}

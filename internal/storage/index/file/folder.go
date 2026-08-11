@@ -134,6 +134,24 @@ func (u *userIndex) stampLineage(fs *folderState) error {
 		if err := fs.flush(true); err != nil {
 			return fmt.Errorf("fileindex/stamp: flush: %w", err)
 		}
+		// A log that holds nothing but its own header can be reissued under the
+		// new lineage: there are no entries to lose, and we hold the exclusive
+		// lock, so nobody is appending. Without this a folder whose log is a
+		// bare stub -- written before the base was stamped, so announcing
+		// nothing -- would stay unprovable until a compaction that a read-only
+		// workload never performs. That is the same trap this whole change
+		// exists to get out of.
+		if lg, lerr := openLogRead(fs.indexPath); lerr == nil {
+			headerOnly := lg.f != nil && lg.size <= int64(mailindex.LogHeaderSize)
+			stale := lg.lineage() != fs.lineage.Lineage
+			lg.close()
+			if headerOnly && stale {
+				if err := truncateLogLineage(fs.indexPath, fs.file.Header.IndexID, fs.lineage.Lineage); err != nil {
+					return fmt.Errorf("fileindex/stamp: reissue empty log: %w", err)
+				}
+				fs.logSize = 0
+			}
+		}
 		metricLineageStamped.Inc()
 		slog.Warn("fileindex: folder index written before the lineage extension, stamping it once",
 			"user", u.username, "folder", fs.folder, "lineage", fs.lineage.Lineage)
