@@ -1,0 +1,95 @@
+name: Rebuild a released tag
+
+# A released image can disappear from the registry — retention, a cleanup, a
+# mistake — and when it does, every A/B against that point becomes impossible.
+# That is the cheapest tool there is for "did this regress, and when", so losing
+# it costs more than the storage it saved (#1258 hit exactly this: the bisect
+# against 2.3.134 could not run because the image no longer pulled).
+#
+# The git tag is the durable artefact; this turns it back into an image on
+# demand. The rebuilt image is pushed as <version>-rebuild rather than over the
+# original tag: a tag that once meant one set of bytes must not silently come to
+# mean another, even if the source is identical.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Released version to rebuild, e.g. 2.3.134 (with or without the leading v)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/yarilo
+  DOCKERHUB_IMAGE: docker.io/0kaba0/yarilo
+
+jobs:
+  rebuild:
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Normalise the tag
+        id: tag
+        run: |
+          raw='${{ inputs.tag }}'
+          version="${raw#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::$raw is not a released version (want X.Y.Z)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "ref=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tag
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Confirm the chart agrees with the tag
+        # A tag whose chart says another version would rebuild something other
+        # than what the operator asked for, and the image would carry a name it
+        # does not match.
+        run: |
+          chart=$(grep '^appVersion:' helm/Chart.yaml | tr -d '"' | awk '{print $2}')
+          if [ "$chart" != "${{ steps.tag.outputs.version }}" ]; then
+            echo "::error::tag ${{ steps.tag.outputs.ref }} carries appVersion $chart"
+            exit 1
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: docker.io
+          username: 0kaba0
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.version }}-rebuild
+            ${{ env.DOCKERHUB_IMAGE }}:${{ steps.tag.outputs.version }}-rebuild
+          build-args: |
+            BUILD_VERSION=${{ steps.tag.outputs.version }}
+
+      - name: Say what to pull
+        run: |
+          echo "### Rebuilt ${{ steps.tag.outputs.ref }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ env.IMAGE }}:${{ steps.tag.outputs.version }}-rebuild" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "Deploy with --set image.tag=${{ steps.tag.outputs.version }}-rebuild" >> "$GITHUB_STEP_SUMMARY"
