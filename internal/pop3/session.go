@@ -672,14 +672,18 @@ func (s *session) loadMailbox() error {
 			}
 		}
 	}
-	msgs, err := s.idx.GetMessages(folder.ID, mailbox.SeqSet{})
+	// The login snapshot answers this session and nothing else: DELE/QUIT
+	// address UIDs taken from it, never positions in a fresh index, so a
+	// snapshot one delivery behind narrows the session's view and cannot
+	// misdirect a deletion (#1249).
+	msgs, err := readMessages(s.idx, folder.ID)
 	if err != nil {
 		slog.Error("pop3: get messages", "user", s.userInfo.Username, "err", err)
 		return err
 	}
 	var savedUIDLs map[uint32]string
 	if s.srv.opts.SaveUIDL {
-		if saved, err := s.idx.GetPOP3UIDLs(folder.ID); err != nil {
+		if saved, err := readPOP3UIDLs(s.idx, folder.ID); err != nil {
 			slog.Warn("pop3: load saved uidls", "user", s.userInfo.Username, "err", err)
 		} else {
 			savedUIDLs = saved
@@ -1334,4 +1338,27 @@ func writeDotLines(w io.Writer, data []byte) {
 		w.Write(line)           //nolint:errcheck
 		w.Write([]byte("\r\n")) //nolint:errcheck
 	}
+}
+
+// unlockedReader is the optional capability an index has when its files can
+// prove their own freshness (see internal/storage/index/file). A read that only
+// answers this session skips the cross-process lock; a read whose answer
+// decides a write does not.
+type unlockedReader interface {
+	GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error)
+	GetPOP3UIDLsUnlocked(folderID uint64) (map[uint32]string, error)
+}
+
+func readMessages(idx mailbox.UserIndex, folderID uint64) ([]*mailbox.MessageMeta, error) {
+	if u, ok := idx.(unlockedReader); ok {
+		return u.GetMessagesUnlocked(folderID, mailbox.SeqSet{})
+	}
+	return idx.GetMessages(folderID, mailbox.SeqSet{})
+}
+
+func readPOP3UIDLs(idx mailbox.UserIndex, folderID uint64) (map[uint32]string, error) {
+	if u, ok := idx.(unlockedReader); ok {
+		return u.GetPOP3UIDLsUnlocked(folderID)
+	}
+	return idx.GetPOP3UIDLs(folderID)
 }

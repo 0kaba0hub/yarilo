@@ -70,6 +70,10 @@ func (m *mockMailbox) Close() error                                { return nil 
 type mockIndex struct {
 	msgs       []*mailbox.MessageMeta
 	savedUIDLs map[uint32]string
+	// expunged records what ExpungeMessage was actually asked to remove, so a
+	// test can assert on the call the code makes rather than on a copy of the
+	// loop that makes it.
+	expunged []uint32
 }
 
 func (m *mockIndex) OpenUser(_ *mailbox.UserInfo) mailbox.UserIndex { return m }
@@ -91,7 +95,10 @@ func (m *mockIndex) UpdateFlagsMulti(_ uint64, _ map[uint32]mailbox.FlagsUpdate)
 func (m *mockIndex) GetMessages(_ uint64, _ mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
 	return m.msgs, nil
 }
-func (m *mockIndex) ExpungeMessage(_ uint64, _ uint32) error        { return nil }
+func (m *mockIndex) ExpungeMessage(_ uint64, uid uint32) error {
+	m.expunged = append(m.expunged, uid)
+	return nil
+}
 func (m *mockIndex) FolderVSize(_ uint64) (uint64, uint32, error)   { return 0, 0, nil }
 func (m *mockIndex) RecomputeVSize(_ uint64) error                  { return nil }
 func (m *mockIndex) GUIDBackfillNeeded(_ uint64) (bool, error)      { return false, nil }

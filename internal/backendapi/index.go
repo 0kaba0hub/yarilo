@@ -75,7 +75,7 @@ func (s *Server) handleIndexDump(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "open folder: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	all, err := bundle.idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	all, err := readMessages(bundle.idx, folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
 	if err != nil {
 		apiError(w, "get messages: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -112,4 +112,20 @@ func (s *Server) handleIndexDump(w http.ResponseWriter, r *http.Request) {
 		"records":        out,
 		"truncated":      truncated,
 	})
+}
+
+// unlockedReader is the optional capability an index has when its files can
+// prove their own freshness (see internal/storage/index/file): a read whose
+// answer only reaches the caller skips the cross-process lock. The write
+// handlers here keep GetMessages -- their answer decides what is removed
+// (#1249).
+type unlockedReader interface {
+	GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error)
+}
+
+func readMessages(idx mailbox.UserIndex, folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
+	if u, ok := idx.(unlockedReader); ok {
+		return u.GetMessagesUnlocked(folderID, uids)
+	}
+	return idx.GetMessages(folderID, uids)
 }
