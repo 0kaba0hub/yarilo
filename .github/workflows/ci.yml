@@ -254,27 +254,11 @@ jobs:
           name: ${{ steps.version.outputs.tag }}
           body_path: RELEASE_NOTES.md
 
-      # One cleanup, digest-aware. The two blind passes this replaces each
-      # destroyed a referenced image: counting digests kept ~3 releases instead
-      # of 10 (ate 2.3.134 mid-benchmark), and purging "untagged" versions
-      # deleted the untagged children a tagged manifest index points at, so the
-      # tag resolved to a manifest the registry no longer held (ate 2.3.144 the
-      # day it was built). This action walks manifest references before it
-      # deletes, which is the property the whole job needs; keep-n-tagged
-      # counts what an operator means by a release. Older images are
-      # rebuildable from the git tag pushed above (rebuild-tag.yml).
       - name: Cleanup old GHCR versions
-        uses: dataaxiom/ghcr-cleanup-action@v1
+        uses: actions/delete-package-versions@v5
         with:
-          package: yarilo
-          keep-n-tagged: 10
-          delete-untagged: true
-          delete-ghost-images: true
-          delete-partial-images: true
-          # Dry run for the first cycle on purpose: this step has destroyed a
-          # referenced image twice under two different implementations. It is
-          # switched off only after a build's log shows the deletion list
-          # contains no children of live tags and no tag younger than ten
-          # releases. Trust comes from that log, not from review.
-          dry-run: true
+          package-name: yarilo
+          package-type: container
+          min-versions-to-keep: 10
+          ignore-versions: '^\d+\.\d+\.\d+$'
           token: ${{ secrets.GITHUB_TOKEN }}
