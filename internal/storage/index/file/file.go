@@ -1137,7 +1137,7 @@ func saveNames(indexDir, volatileDir string, names map[uint32]string, sizes map[
 // Pure-Recreate mode never appends to the log, but the file
 // must exist for compat. volatileDir routes the scratch write to the fast
 // local volume when configured, matching every other sidecar/base rewrite.
-func ensureLogStub(indexPath, volatileDir string, indexID uint32) error {
+func ensureLogStub(indexPath, volatileDir string, indexID, lineage uint32) error {
 	logPath := indexPath + ".log"
 	if _, err := os.Stat(logPath); err == nil {
 		return nil
@@ -1154,7 +1154,10 @@ func ensureLogStub(indexPath, volatileDir string, indexID uint32) error {
 	if err != nil {
 		return fmt.Errorf("fileindex/log stub: create: %w", err)
 	}
-	hdr := mailindex.NewLogHeader(indexID, 1, uint32(time.Now().Unix()))
+	// The stub announces the base it belongs to, like every other log we
+	// create. A stub carrying the old constant would pair with nothing, and the
+	// folder would read as unprovable for as long as nobody appended to it.
+	hdr := mailindex.NewLogHeader(indexID, lineage, uint32(time.Now().Unix()))
 	if err := hdr.Encode(f); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)

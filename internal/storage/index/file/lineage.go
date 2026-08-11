@@ -34,9 +34,13 @@ const extNameLineage = "lineage"
 //	uint64 folded_offset  // how far into that log the base already reaches
 //	uint64 records_digest // over the records the base holds
 const (
-	lineageHdrSize     = 24
-	lineageHdrMinSize  = 16
-	lineageUnknown     = 0 // no extension, or a base written before it existed
+	lineageHdrSize    = 24
+	lineageHdrMinSize = 16
+	lineageUnknown    = 0 // no extension, or a base written before it existed
+	// legacyLogLineage is the FileSeq every log written before this extension
+	// carries: the old code wrote the constant 1. Minted lineages start above
+	// it, so a base can never mistake such a log for one of its own.
+	legacyLogLineage   = 1
 	lineageRecordAlign = 4
 )
 
