@@ -622,7 +622,9 @@ func (u *userIndex) withFolderROUnlocked(folderID uint64, fn func(*folderState) 
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
 	if !fs.canReadUnlocked() {
-		return u.withFolderRO(folderID, fn)
+		// Counted apart: this is the migration not having reached this folder,
+		// not a read that wanted the lock.
+		return u.withFolderROSite(folderID, lockSiteFallback, fn)
 	}
 	reloadStart := time.Now()
 	fs.mu.Lock()
@@ -651,6 +653,13 @@ func (fs *folderState) canReadUnlocked() bool {
 }
 
 func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) error {
+	return u.withFolderROSite(folderID, lockSiteRead, fn)
+}
+
+// withFolderROSite is withFolderRO with the reason recorded. The reason is the
+// point: an acquisition from a folder being opened and one from a read that
+// could not prove freshness cost the same and mean opposite things.
+func (u *userIndex) withFolderROSite(folderID uint64, site string, fn func(*folderState) error) error {
 	whole := time.Now()
 	defer func() { metricReadSeconds.Observe(time.Since(whole).Seconds()) }()
 
@@ -670,7 +679,7 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 	// the split exists.
 	var reloadDur time.Duration
 	lockStart := time.Now()
-	err := u.withDistLock(fs, true, func() error {
+	err := u.withDistLock(fs, true, site, func() error {
 		reloadStart := time.Now()
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
@@ -702,7 +711,7 @@ func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) e
 // storage calls that touch the same key) does not deadlock against
 // itself.
 func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
-	return u.withDistLock(fs, false, func() error {
+	return u.withDistLock(fs, false, lockSiteWrite, func() error {
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
 		t1 := time.Now()
@@ -725,7 +734,7 @@ func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 // shared selects a shared (read) lock instead of the default exclusive one:
 // multiple shared holders run concurrently, blocking only against an in-flight
 // exclusive writer.
-func (u *userIndex) withDistLock(fs *folderState, shared bool, fn func() error) error {
+func (u *userIndex) withDistLock(fs *folderState, shared bool, site string, fn func() error) error {
 	if u.b.locker != nil {
 		mode := lockMode(shared)
 		key := locks.MailboxKey(u.username, fs.folder)
@@ -740,8 +749,8 @@ func (u *userIndex) withDistLock(fs *folderState, shared bool, fn func() error) 
 			} else {
 				lk, err = locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
 			}
-			metricLockWait.WithLabelValues(mode).Observe(time.Since(t0).Seconds())
-			metricLockAcquired.WithLabelValues(mode).Inc()
+			metricLockWait.WithLabelValues(mode, site).Observe(time.Since(t0).Seconds())
+			metricLockAcquired.WithLabelValues(mode, site).Inc()
 			if err != nil {
 				return fmt.Errorf("fileindex/lock %s: %w", fs.folder, err)
 			}
@@ -751,13 +760,13 @@ func (u *userIndex) withDistLock(fs *folderState, shared bool, fn func() error) 
 			defer func() {
 				released := time.Now()
 				_ = u.b.locker.Unlock(ctx, lk.ID)
-				metricLockRelease.WithLabelValues(mode).Observe(time.Since(released).Seconds())
+				metricLockRelease.WithLabelValues(mode, site).Observe(time.Since(released).Seconds())
 			}()
 		} else {
 			// Already ours: the operation is inside another that took the lock,
 			// so it makes no round trip. Counted apart so "how often does a read
 			// leave the process" has an answer rather than an estimate.
-			metricLockReentrant.WithLabelValues(mode).Inc()
+			metricLockReentrant.WithLabelValues(mode, site).Inc()
 		}
 	}
 	return fn()

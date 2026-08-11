@@ -21,6 +21,19 @@ func histSum(t *testing.T, h prometheus.Histogram) (float64, uint64) {
 	return m.GetHistogram().GetSampleSum(), m.GetHistogram().GetSampleCount()
 }
 
+func histVecSum2(t *testing.T, v *prometheus.HistogramVec, labels ...string) (float64, uint64) {
+	t.Helper()
+	h, err := v.GetMetricWithLabelValues(labels...)
+	if err != nil {
+		t.Fatalf("get %v: %v", labels, err)
+	}
+	var m dto.Metric
+	if err := h.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("write %v: %v", labels, err)
+	}
+	return m.GetHistogram().GetSampleSum(), m.GetHistogram().GetSampleCount()
+}
+
 func histVecSum(t *testing.T, v *prometheus.HistogramVec, label string) (float64, uint64) {
 	t.Helper()
 	h, err := v.GetMetricWithLabelValues(label)
@@ -96,24 +109,35 @@ func TestReadsCountTheirLockRoundTrips(t *testing.T) {
 	// No lock service is wired in unit tests, so the counters must stay still:
 	// counting a round trip that did not happen would put an operator's eye on
 	// a cost their deployment does not pay.
-	before := counterVecValue(t, metricLockAcquired, "shared")
+	before := sharedAcquisitions(t)
 	if _, err := ui.GetMessages(f.ID, mailbox.SeqSet{}); err != nil {
 		t.Fatalf("GetMessages: %v", err)
 	}
-	if got := counterVecValue(t, metricLockAcquired, "shared"); got != before {
+	if got := sharedAcquisitions(t); got != before {
 		t.Errorf("a read counted %v lock acquisitions with no lock service wired", got-before)
 	}
 }
 
-func counterVecValue(t *testing.T, v *prometheus.CounterVec, label string) float64 {
+// sharedAcquisitions totals shared-mode acquisitions across every site, which
+// is what a caller cares about when asking "did this read leave the process".
+func sharedAcquisitions(t *testing.T) float64 {
 	t.Helper()
-	c, err := v.GetMetricWithLabelValues(label)
+	var total float64
+	for _, site := range []string{lockSiteOpenProbe, lockSiteFallback, lockSiteRead, lockSiteWrite} {
+		total += counterVecValue(t, metricLockAcquired, "shared", site)
+	}
+	return total
+}
+
+func counterVecValue(t *testing.T, v *prometheus.CounterVec, labels ...string) float64 {
+	t.Helper()
+	c, err := v.GetMetricWithLabelValues(labels...)
 	if err != nil {
-		t.Fatalf("get counter %s: %v", label, err)
+		t.Fatalf("get counter %v: %v", labels, err)
 	}
 	var m dto.Metric
 	if err := c.(prometheus.Metric).Write(&m); err != nil {
-		t.Fatalf("write counter %s: %v", label, err)
+		t.Fatalf("write counter %v: %v", labels, err)
 	}
 	return m.GetCounter().GetValue()
 }
@@ -153,7 +177,7 @@ func TestTheLockPartCoversTheRelease(t *testing.T) {
 
 	lockBefore, _ := histVecSum(t, metricReadPart, "lock")
 	wholeBefore, _ := histSum(t, metricReadSeconds)
-	releaseBefore, releaseCountBefore := histVecSum(t, metricLockRelease, "shared")
+	releaseBefore, releaseCountBefore := histVecSum2(t, metricLockRelease, "shared", lockSiteRead)
 
 	// On its own goroutine: the lock client tracks holds per goroutine, so a
 	// read issued from the one that just created the folder could take the
@@ -170,7 +194,7 @@ func TestTheLockPartCoversTheRelease(t *testing.T) {
 
 	lockAfter, _ := histVecSum(t, metricReadPart, "lock")
 	wholeAfter, _ := histSum(t, metricReadSeconds)
-	releaseAfter, releaseCountAfter := histVecSum(t, metricLockRelease, "shared")
+	releaseAfter, releaseCountAfter := histVecSum2(t, metricLockRelease, "shared", lockSiteRead)
 
 	lockPart := lockAfter - lockBefore
 	whole := wholeAfter - wholeBefore
@@ -210,7 +234,7 @@ func TestUnlockedReadsMakeNoRoundTrip(t *testing.T) {
 	}
 
 	run := func(read func() error) float64 {
-		before := counterVecValue(t, metricLockAcquired, "shared")
+		before := sharedAcquisitions(t)
 		done := make(chan error, 1)
 		// Own goroutine: the lock client tracks holds per goroutine, so a read
 		// from the one that just wrote could take the re-entrant path and
@@ -219,7 +243,7 @@ func TestUnlockedReadsMakeNoRoundTrip(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatalf("read: %v", err)
 		}
-		return counterVecValue(t, metricLockAcquired, "shared") - before
+		return sharedAcquisitions(t) - before
 	}
 
 	if got := run(func() error { _, e := ui.GetMessagesUnlocked(f.ID, mailbox.SeqSet{}); return e }); got != 0 {
@@ -249,13 +273,13 @@ func TestAnIndexWithoutLineageStaysLocked(t *testing.T) {
 	fs.lineage = lineageHdr{} // as an index written before the extension reads
 	fs.mu.Unlock()
 
-	before := counterVecValue(t, metricLockAcquired, "shared")
+	before := sharedAcquisitions(t)
 	done := make(chan error, 1)
 	go func() { _, e := ui.GetMessagesUnlocked(f.ID, mailbox.SeqSet{}); done <- e }()
 	if err := <-done; err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if counterVecValue(t, metricLockAcquired, "shared") == before {
+	if sharedAcquisitions(t) == before {
 		t.Error("a folder with no lineage was read without the lock")
 	}
 }
@@ -294,7 +318,7 @@ func TestReadersTakeTheLockTheirClassificationSays(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			before := counterVecValue(t, metricLockAcquired, "shared")
+			before := sharedAcquisitions(t)
 			done := make(chan error, 1)
 			// Own goroutine: holds are tracked per goroutine, so a read issued
 			// from the writer's would take the re-entrant path and measure
@@ -303,7 +327,7 @@ func TestReadersTakeTheLockTheirClassificationSays(t *testing.T) {
 			if err := <-done; err != nil {
 				t.Fatalf("read: %v", err)
 			}
-			got := counterVecValue(t, metricLockAcquired, "shared") - before
+			got := sharedAcquisitions(t) - before
 			if tc.wantLocks && got == 0 {
 				t.Error("no round trip taken by a read whose answer decides a write")
 			}
@@ -321,4 +345,77 @@ func counterValue(t *testing.T, c prometheus.Counter) float64 {
 		t.Fatalf("write counter: %v", err)
 	}
 	return m.GetCounter().GetValue()
+}
+
+// Each site has to be reachable from its own path, or the label answers a
+// question nobody asked. The one that matters is reload-fallback against
+// open-probe: the first says the migration has not reached this folder, the
+// second says a folder was opened. They cost the same and mean opposite things,
+// which is exactly why counting them together explained nothing.
+func TestEachLockSiteIsReachedFromItsOwnPath(t *testing.T) {
+	dial := raceTestLockServer(t)
+	root := t.TempDir()
+	home := testHome(root, "iris@example.com")
+	ui := New(WithLocker(dial())).OpenUser(&mailbox.UserInfo{
+		Username: "iris@example.com", Home: home,
+	}).(*userHandle).ui
+
+	site := func(mode, s string) float64 { return counterVecValue(t, metricLockAcquired, mode, s) }
+
+	f, err := ui.OpenFolder("INBOX", 42, "")
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	done := make(chan error, 1)
+
+	// A write.
+	writeBefore := site("exclusive", lockSiteWrite)
+	go func() {
+		done <- ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "1", Size: 10})
+	}()
+	if err := <-done; err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	if site("exclusive", lockSiteWrite) == writeBefore {
+		t.Error("a write took no exclusive lock")
+	}
+
+	// Opening a folder this handle already has open: the probe that refreshes
+	// the snapshot before handing it back.
+	probeBefore := site("shared", lockSiteOpenProbe)
+	go func() { _, e := ui.OpenFolder("INBOX", 42, ""); done <- e }()
+	if err := <-done; err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	if site("shared", lockSiteOpenProbe) == probeBefore {
+		t.Error("re-opening a folder took no probe acquisition")
+	}
+
+	// A read that is locked on purpose.
+	readBefore := site("shared", lockSiteRead)
+	go func() { _, e := ui.GetMessages(f.ID, mailbox.SeqSet{}); done <- e }()
+	if err := <-done; err != nil {
+		t.Fatalf("locked read: %v", err)
+	}
+	if site("shared", lockSiteRead) == readBefore {
+		t.Error("a deliberately locked read was not counted as one")
+	}
+
+	// A read that wanted the lock-free path and has nothing to prove freshness
+	// with: the folder as it looks before the migration reaches it.
+	fs := ui.open[f.ID]
+	fs.mu.Lock()
+	fs.lineage = lineageHdr{}
+	fs.mu.Unlock()
+	fallbackBefore := site("shared", lockSiteFallback)
+	go func() { _, e := ui.GetMessagesUnlocked(f.ID, mailbox.SeqSet{}); done <- e }()
+	if err := <-done; err != nil {
+		t.Fatalf("fallback read: %v", err)
+	}
+	if site("shared", lockSiteFallback) == fallbackBefore {
+		t.Error("a fallback read was not counted apart from a deliberate one")
+	}
+	if site("shared", lockSiteRead) != readBefore+1 {
+		t.Error("the fallback was counted as a deliberately locked read")
+	}
 }

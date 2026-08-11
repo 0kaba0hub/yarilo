@@ -40,7 +40,7 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32, traceID string
 				fsDedup.mu.Unlock()
 			}
 			var snap *mailbox.Folder
-			err := u.withFolderRO(id, func(fs *folderState) error {
+			err := u.withFolderROSite(id, lockSiteOpenProbe, func(fs *folderState) error {
 				var sErr error
 				snap, sErr = fs.snapshot(id)
 				return sErr
@@ -191,7 +191,7 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 // loser's createFresh would reset NextUID to 1 and discard the winner's
 // committed UIDs.
 func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error {
-	return u.withDistLock(fs, false, func() error {
+	return u.withDistLock(fs, false, lockSiteOpenProbe, func() error {
 		st, err := os.Stat(fs.indexPath)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
@@ -218,7 +218,7 @@ func (u *userIndex) loadExisting(fs *folderState) error {
 		// re-detect under it: a racer that already migrated wins and we load
 		// the migrated file. Re-entrant via HoldsResource when the missing
 		// branch already holds the lock.
-		return u.withDistLock(fs, false, func() error {
+		return u.withDistLock(fs, false, lockSiteOpenProbe, func() error {
 			legacy, stillLegacy, err := detectAndDecodeLegacy(fs.indexPath)
 			if err != nil {
 				return fmt.Errorf("fileindex/openfolder: legacy probe (locked): %w", err)
@@ -305,7 +305,7 @@ func (u *userIndex) loadModern(fs *folderState) error {
 		// The UIDVALIDITY repair writes the index; serialize against other
 		// openers and re-read under the lock so a racer that already repaired
 		// it wins. Re-entrant via HoldsResource.
-		if err := u.withDistLock(fs, false, func() error {
+		if err := u.withDistLock(fs, false, lockSiteOpenProbe, func() error {
 			if err := u.readBase(fs); err != nil {
 				return err
 			}
