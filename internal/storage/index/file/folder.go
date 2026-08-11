@@ -89,6 +89,9 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32, traceID string
 	if err := u.loadOrInit(fs, uidValidity); err != nil {
 		return nil, err
 	}
+	if err := u.stampLineage(fs); err != nil {
+		return nil, err
+	}
 
 	u.mu.Lock()
 	u.open[id] = fs
@@ -98,6 +101,44 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32, traceID string
 	u.byDir[indexDir] = id
 	u.mu.Unlock()
 	return fs.snapshot(id)
+}
+
+// stampLineage gives a folder written before the lineage extension one, on the
+// first open after the upgrade. Without it the property arrives with the next
+// flush -- which on a read-only workload never happens, so a folder that is
+// only ever read stays unable to prove its freshness forever and every
+// "lock-free" read falls back to the locked path. That is exactly what the
+// first measurement showed: adopt zero, acquisitions unchanged (#1229).
+//
+// One flush per folder, under the exclusive lock, announced once. The flush is
+// the cheap part; being told it happened is what keeps a one-time cost from
+// reading as a mystery in the logs.
+func (u *userIndex) stampLineage(fs *folderState) error {
+	fs.mu.RLock()
+	known := fs.lineage.Lineage != lineageUnknown || fs.file == nil
+	fs.mu.RUnlock()
+	if known {
+		return nil
+	}
+	return u.withFolderLock(fs, func() error {
+		// Re-check under the lock: a racer may have stamped it, and a second
+		// flush would rewrite a base nobody needed rewritten.
+		if fs.lineage.Lineage != lineageUnknown {
+			return nil
+		}
+		// Flush only. Truncating the log here would be a second, unrelated
+		// decision, and a wrong one: a writer appending to it right now would
+		// lose the entries it has already committed. The flush folds the log
+		// into the base and records how far it reached, which is all the
+		// pairing needs.
+		if err := fs.flush(true); err != nil {
+			return fmt.Errorf("fileindex/stamp: flush: %w", err)
+		}
+		metricLineageStamped.Inc()
+		slog.Warn("fileindex: folder index written before the lineage extension, stamping it once",
+			"user", u.username, "folder", fs.folder, "lineage", fs.lineage.Lineage)
+		return nil
+	})
 }
 
 // loadOrInit populates fs.file by reading the existing .index, migrating
@@ -179,7 +220,7 @@ func (u *userIndex) loadExisting(fs *folderState) error {
 			if err := fs.flush(true); err != nil {
 				return fmt.Errorf("fileindex/openfolder: write migrated: %w", err)
 			}
-			return ensureLogStub(fs.indexPath, fs.volatileDir, fs.file.Header.IndexID)
+			return ensureLogStub(fs.indexPath, fs.volatileDir, fs.file.Header.IndexID, fs.lineage.Lineage)
 		})
 	}
 	return u.loadModern(fs)
@@ -194,6 +235,10 @@ func (u *userIndex) readBase(fs *folderState) error {
 		return fmt.Errorf("fileindex/openfolder: open: %w", err)
 	}
 	fs.file = mf
+	// Every path that loads a base learns its pairing here, so "does this
+	// folder have a lineage" is answered by the file rather than by which
+	// function happened to load it.
+	fs.lineage = readLineage(mf)
 	if st, stErr := os.Stat(fs.indexPath); stErr == nil {
 		fs.baseMod = st.ModTime()
 		fs.baseIdent = st
@@ -262,7 +307,7 @@ func (u *userIndex) loadModern(fs *folderState) error {
 		return err
 	}
 	fs.ensureVsizeLocked()
-	return ensureLogStub(fs.indexPath, fs.volatileDir, fs.file.Header.IndexID)
+	return ensureLogStub(fs.indexPath, fs.volatileDir, fs.file.Header.IndexID, fs.lineage.Lineage)
 }
 
 // createFresh initialises a brand-new folder state, used for first-ever
@@ -297,7 +342,7 @@ func (fs *folderState) createFresh(uidValidity uint32) error {
 	if err := fs.flush(true); err != nil {
 		return err
 	}
-	return ensureLogStub(fs.indexPath, fs.volatileDir, indexID)
+	return ensureLogStub(fs.indexPath, fs.volatileDir, indexID, fs.lineage.Lineage)
 }
 
 // refreshExtState re-parses the dbox-hdr and keywords extension headers
@@ -480,14 +525,28 @@ func (fs *folderState) flush(wholeNames bool) error {
 	// rewrite and the log truncation then leaves a base that knows what it
 	// already contains, rather than one the whole log is applied to again.
 	prev := readLineage(fs.file)
+	// Which log is being folded is read from the log, not assumed from our own
+	// previous lineage: a log written before the extension carries the constant
+	// the old code wrote, and assuming it carries ours would pair a base with a
+	// log it never absorbed.
+	folded := prev.Lineage
+	if lg, lerr := openLogRead(fs.indexPath); lerr == nil {
+		if seq := lg.lineage(); seq != lineageUnknown {
+			folded = seq
+		}
+		lg.close()
+	}
 	next := lineageHdr{
 		Lineage:       prev.Lineage + 1,
-		FoldedLineage: prev.Lineage,
+		FoldedLineage: folded,
 		FoldedOffset:  uint64(fs.logSize),
 		RecordsDigest: digestRecords(fs.file),
 	}
-	if next.Lineage == lineageUnknown {
-		next.Lineage = 1
+	// Lineages start above the constant a pre-extension log carries, so a
+	// stamped base can never claim that log as its own and replay what it has
+	// already absorbed.
+	if next.Lineage < legacyLogLineage+1 {
+		next.Lineage = legacyLogLineage + 1
 	}
 	if err := setLineage(fs.file, next); err != nil {
 		return fmt.Errorf("fileindex/flush: lineage: %w", err)

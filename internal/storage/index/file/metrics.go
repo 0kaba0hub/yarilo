@@ -55,6 +55,10 @@ var (
 		Name: "fileindex_reload_total",
 		Help: "Folder freshness checks by outcome: adopt means a rewritten base was proven to hold what memory already held and its records were not read.",
 	}, []string{"result"}) // adopt
+	metricLineageStamped = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fileindex_lineage_stamped_total",
+		Help: "Folder indexes given a lineage on first open because they were written before the extension. Expected to rise once per folder after an upgrade and stay flat afterwards.",
+	})
 	metricLockReentrant = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "fileindex_lock_reentrant_total",
 		Help: "Index operations that already held the folder lock, by mode. No round trip was made.",

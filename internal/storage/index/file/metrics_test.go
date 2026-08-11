@@ -313,3 +313,12 @@ func TestReadersTakeTheLockTheirClassificationSays(t *testing.T) {
 		})
 	}
 }
+
+func counterValue(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := c.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("write counter: %v", err)
+	}
+	return m.GetCounter().GetValue()
+}
