@@ -344,7 +344,7 @@ func TestOptimizeAllFoldsEveryFolder(t *testing.T) {
 		Failed  map[string]string `json:"failed"`
 		TotalMs int64             `json:"total_ms"`
 	}
-	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("decode: %v (%s)", err, body)
 	}
 	seen := map[string]bool{}
