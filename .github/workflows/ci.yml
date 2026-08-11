@@ -254,11 +254,25 @@ jobs:
           name: ${{ steps.version.outputs.tag }}
           body_path: RELEASE_NOTES.md
 
-      - name: Cleanup old GHCR versions
+      # Two passes because GHCR counts every digest as a "version": untagged
+      # per-arch manifests pile up several per release, so a single
+      # min-versions-to-keep of 10 kept ~3 releases, not 10. The old
+      # ignore-versions semver regex protected nothing: container version
+      # names are digests, not tags. Old images are rebuildable from the git
+      # tag pushed above, so 10 releases of registry history is enough.
+      - name: Cleanup untagged GHCR versions
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: yarilo
+          package-type: container
+          delete-only-untagged-versions: 'true'
+          min-versions-to-keep: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup old GHCR releases beyond the last 10
         uses: actions/delete-package-versions@v5
         with:
           package-name: yarilo
           package-type: container
           min-versions-to-keep: 10
-          ignore-versions: '^\d+\.\d+\.\d+$'
           token: ${{ secrets.GITHUB_TOKEN }}
