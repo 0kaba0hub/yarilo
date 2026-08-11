@@ -676,7 +676,7 @@ func (s *session) loadMailbox() error {
 	// address UIDs taken from it, never positions in a fresh index, so a
 	// snapshot one delivery behind narrows the session's view and cannot
 	// misdirect a deletion (#1249).
-	msgs, err := readMessages(s.idx, folder.ID)
+	msgs, err := mailbox.ReadMessages(s.idx, folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		slog.Error("pop3: get messages", "user", s.userInfo.Username, "err", err)
 		return err
@@ -1345,15 +1345,7 @@ func writeDotLines(w io.Writer, data []byte) {
 // answers this session skips the cross-process lock; a read whose answer
 // decides a write does not.
 type unlockedReader interface {
-	GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error)
 	GetPOP3UIDLsUnlocked(folderID uint64) (map[uint32]string, error)
-}
-
-func readMessages(idx mailbox.UserIndex, folderID uint64) ([]*mailbox.MessageMeta, error) {
-	if u, ok := idx.(unlockedReader); ok {
-		return u.GetMessagesUnlocked(folderID, mailbox.SeqSet{})
-	}
-	return idx.GetMessages(folderID, mailbox.SeqSet{})
 }
 
 func readPOP3UIDLs(idx mailbox.UserIndex, folderID uint64) (map[uint32]string, error) {

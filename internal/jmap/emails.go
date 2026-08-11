@@ -57,7 +57,7 @@ func (s *Server) findMessages(h *userHandle, want map[string]bool) (map[string]m
 		if err != nil {
 			return nil, fmt.Errorf("jmap: open folder %q: %w", e.Name, err)
 		}
-		metas, err := readMessages(h.idx, f.ID, mailbox.SeqSet{{From: 1, To: 0}})
+		metas, err := mailbox.ReadMessages(h.idx, f.ID, mailbox.SeqSet{{From: 1, To: 0}})
 		if err != nil {
 			return nil, fmt.Errorf("jmap: read folder %q: %w", e.Name, err)
 		}
@@ -380,19 +380,4 @@ func keywordsOf(m *mailbox.MessageMeta) map[string]bool {
 		out[strings.ToLower(kw)] = true
 	}
 	return out
-}
-
-// unlockedReader is the optional capability an index has when its files can
-// prove their own freshness (see internal/storage/index/file): a read whose
-// answer only reaches a client skips the cross-process lock. An index without
-// the property is simply an index without the method (#1249).
-type unlockedReader interface {
-	GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error)
-}
-
-func readMessages(idx mailbox.UserIndex, folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
-	if u, ok := idx.(unlockedReader); ok {
-		return u.GetMessagesUnlocked(folderID, uids)
-	}
-	return idx.GetMessages(folderID, uids)
 }
