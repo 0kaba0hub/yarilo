@@ -2,6 +2,7 @@ package imap
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -36,12 +37,17 @@ func (s *session) reconcileFolder(h *nsHandle, rel string) bool {
 	if !ok || !ps.ProactiveScan() {
 		return false
 	}
+	start := time.Now()
 	token := ps.SyncToken(rel)
 	if token != "" {
 		if prev, seen := s.maildirSyncTokens[rel]; seen && prev == token {
+			metricMaildirSync.WithLabelValues("skipped").Inc()
+			metricMaildirSyncSeconds.Observe(time.Since(start).Seconds())
 			return false
 		}
 	}
+	metricMaildirSync.WithLabelValues("scanned").Inc()
+	defer func() { metricMaildirSyncSeconds.Observe(time.Since(start).Seconds()) }()
 	f, err := h.idx.OpenFolder(rel, 0)
 	if err != nil {
 		slog.Warn("imap: reconcile open folder failed", "folder", rel, "err", err)
