@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -215,6 +216,11 @@ type optimizeRequest struct {
 	User      string `json:"user"`
 	Folder    string `json:"folder"`
 	Namespace string `json:"namespace"`
+	// All folds every folder of the account. Without it a caller wanting the
+	// whole account writes the loop itself -- which is how a seeding script
+	// ends up doing eleven full rebuild scans to get the effect of eleven
+	// folds.
+	All bool `json:"all"`
 }
 
 type optimizeStats struct {
@@ -222,9 +228,30 @@ type optimizeStats struct {
 	DurationMs int64  `json:"duration_ms"`
 }
 
+// optimizeAccountStats is what folding a whole account reports: one line per
+// folder, plus what failed. A folder that could not be folded does not stop the
+// rest -- the operation is per folder and independent, and a caller who asked
+// for the account wants the ten that worked rather than an error about the one
+// that did not.
+type optimizeAccountStats struct {
+	User    string            `json:"user"`
+	Folders []optimizeStats   `json:"folders"`
+	Failed  map[string]string `json:"failed,omitempty"`
+	TotalMs int64             `json:"total_ms"`
+}
+
 func (s *Server) handleIndexOptimize(w http.ResponseWriter, r *http.Request) {
 	var req optimizeRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.All {
+		stats, status, err := s.optimizeAccount(r.Context(), req)
+		if err != nil {
+			apiError(w, err.Error(), status)
+			return
+		}
+		apiJSON(w, stats)
 		return
 	}
 	if req.Folder == "" {
@@ -280,6 +307,48 @@ func (s *Server) optimizeFolder(ctx context.Context, req optimizeRequest) (*opti
 		Folder:     folder.Name,
 		DurationMs: time.Since(start).Milliseconds(),
 	}, http.StatusOK, nil
+}
+
+// optimizeAccount folds every folder of one account, one at a time. Sequential
+// on purpose: each fold takes that folder's cross-process lock, and running
+// them together would queue a user's own sessions behind their own maintenance.
+func (s *Server) optimizeAccount(ctx context.Context, req optimizeRequest) (*optimizeAccountStats, int, error) {
+	uc, err := s.openUserContext(req.User)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	bundle, err := uc.ns(s, req.Namespace)
+	if err != nil {
+		uc.Close()
+		return nil, http.StatusBadRequest, err
+	}
+	entries, err := bundle.box.ListFolders()
+	uc.Close()
+	if err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("list folders: %w", err)
+	}
+
+	out := &optimizeAccountStats{User: req.User}
+	start := time.Now()
+	for _, e := range entries {
+		if !e.Selectable {
+			continue
+		}
+		one := optimizeRequest{User: req.User, Folder: e.Name, Namespace: req.Namespace}
+		st, _, ferr := s.optimizeFolder(ctx, one)
+		if ferr != nil {
+			if out.Failed == nil {
+				out.Failed = map[string]string{}
+			}
+			out.Failed[e.Name] = ferr.Error()
+			continue
+		}
+		out.Folders = append(out.Folders, *st)
+	}
+	out.TotalMs = time.Since(start).Milliseconds()
+	slog.Info("backendapi: account index fold",
+		"user", req.User, "folded", len(out.Folders), "failed", len(out.Failed), "total_ms", out.TotalMs)
+	return out, http.StatusOK, nil
 }
 
 // ---- folder repair --------------------------------------------------------
