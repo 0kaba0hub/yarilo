@@ -846,6 +846,18 @@ func (u *userMailbox) Scan(_ string) ([]mailbox.ScanRecord, error) {
 // storage-wide rebuild is RebuildStorage.
 func (u *userMailbox) FolderAgnosticScan() bool { return true }
 
+// CompactMap folds the user's map log into its base. Exposed so an operator
+// asking to fold this account's indexes gets the map too: it is the other
+// structure replayed when a session opens, and the folder indexes do not
+// contain it.
+func (u *userMailbox) CompactMap() error {
+	m, err := u.openMap()
+	if err != nil {
+		return err
+	}
+	return m.Compact()
+}
+
 // Close releases the cached map handle.
 func (u *userMailbox) Close() error {
 	u.mu.Lock()

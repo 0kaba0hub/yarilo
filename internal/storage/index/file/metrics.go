@@ -39,18 +39,18 @@ var (
 	// place a read leaves the process. The reference takes a local fcntl here.
 	metricLockWait = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "fileindex_lock_wait_seconds",
-		Help:    "Time an index operation waited for the cross-process folder lock, by mode.",
+		Help:    "Time an index operation waited for the cross-process folder lock, by mode and by which path took it.",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 10), // 100us .. ~26s
-	}, []string{"mode"})
+	}, []string{"mode", "site"})
 	metricLockRelease = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "fileindex_lock_release_seconds",
-		Help:    "Time releasing the cross-process folder lock, by mode. The second round trip an operation makes, and about as expensive as the first.",
+		Help:    "Time releasing the cross-process folder lock, by mode and site. The second round trip an operation makes, and about as expensive as the first.",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 10),
-	}, []string{"mode"})
+	}, []string{"mode", "site"})
 	metricLockAcquired = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "fileindex_lock_acquired_total",
-		Help: "Cross-process folder locks acquired, by mode. Each acquisition is followed by a release, so an operation that takes the lock makes two round trips to the lock service.",
-	}, []string{"mode"}) // shared | exclusive
+		Help: "Cross-process folder locks acquired, by mode and by which path took it. Each acquisition is followed by a release, so an operation that takes the lock makes two round trips to the lock service.",
+	}, []string{"mode", "site"}) // shared | exclusive × open-probe | reload-fallback | read | write
 	metricReload = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "fileindex_reload_total",
 		Help: "Folder freshness checks by outcome: adopt means a rewritten base was proven to hold what memory already held and its records were not read.",
@@ -61,8 +61,24 @@ var (
 	})
 	metricLockReentrant = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "fileindex_lock_reentrant_total",
-		Help: "Index operations that already held the folder lock, by mode. No round trip was made.",
-	}, []string{"mode"})
+		Help: "Index operations that already held the folder lock, by mode and site. No round trip was made.",
+	}, []string{"mode", "site"})
+)
+
+// The sites a folder lock can be taken from. Named rather than free-form so
+// "where do the remaining acquisitions come from" has a finite answer, and so a
+// new call site has to choose one deliberately.
+//
+// The distinction that matters most is open-probe against reload-fallback:
+// the first is a folder being opened, which is legitimate and bounded by
+// sessions; the second is a read that wanted the lock-free path and could not
+// prove freshness, which means the lineage never arrived and the migration did
+// not do its job.
+const (
+	lockSiteOpenProbe = "open-probe"      // opening or repairing a folder
+	lockSiteFallback  = "reload-fallback" // an unlocked read with nothing to prove freshness with
+	lockSiteRead      = "read"            // a read that is locked on purpose: its answer decides a write
+	lockSiteWrite     = "write"           // a mutation
 )
 
 // lockMode names the label so a caller cannot pass "true" and mean shared.

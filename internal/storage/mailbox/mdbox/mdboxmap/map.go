@@ -507,6 +507,24 @@ func (m *Map) flushLocked() error {
 	return nil
 }
 
+// Compact folds the append log into the base and drops it, under the
+// cross-process map lock.
+//
+// It exists because the map is the other structure an mdbox account replays at
+// open time, and folding the folder indexes leaves it untouched: after a seed
+// the map log holds every delivery, and the first open of every session replays
+// all of it. An operator asking for an account's indexes to be folded means
+// everything that gets replayed, not the half that happens to live in the
+// folder index.
+func (m *Map) Compact() error {
+	return m.withMapLock(func() error {
+		if err := m.reloadLocked(); err != nil {
+			return err
+		}
+		return m.flushLocked()
+	})
+}
+
 // RebuildCount returns the persisted storage-wide-rebuild generation counter.
 func (m *Map) RebuildCount() uint32 {
 	m.mu.Lock()

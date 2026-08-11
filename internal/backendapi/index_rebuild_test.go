@@ -2,6 +2,7 @@ package backendapi
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
@@ -308,4 +309,91 @@ func (a *adminUserContext) uidsByFilename(t *testing.T) map[string]uint32 {
 		out[m.Filename] = m.UID
 	}
 	return out
+}
+
+// Folding a whole account is the operation a seeding script needs: one call
+// instead of a loop, and instead of standing in for eleven folds with eleven
+// full rebuild scans because per-folder was the only thing on offer.
+func TestOptimizeAllFoldsEveryFolder(t *testing.T) {
+	ts, root := storageTestServer(t)
+	const user = "alice@example.com"
+	uc, err := newAdminUserContext(t, ts, root, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer uc.cleanup()
+	uc.deliver(t, "msg")
+
+	for _, f := range []string{"Archive", "Work"} {
+		if status, body := doJSON(t, ts, http.MethodPost, "/api/backend/folder/create", "",
+			map[string]any{"user": user, "folder": f}); status != 200 {
+			t.Fatalf("create %s: status=%d body=%s", f, status, body)
+		}
+	}
+
+	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/index/optimize", "",
+		map[string]any{"user": user, "all": true})
+	if status != 200 {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	var resp struct {
+		User    string `json:"user"`
+		Folders []struct {
+			Folder string `json:"folder"`
+		} `json:"folders"`
+		Failed  map[string]string `json:"failed"`
+		TotalMs int64             `json:"total_ms"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, body)
+	}
+	seen := map[string]bool{}
+	for _, f := range resp.Folders {
+		if seen[f.Folder] {
+			t.Errorf("folder %q folded twice", f.Folder)
+		}
+		seen[f.Folder] = true
+	}
+	for _, want := range []string{"INBOX", "Archive", "Work"} {
+		if !seen[want] {
+			t.Errorf("%s was not folded; got %v", want, seen)
+		}
+	}
+	if len(resp.Failed) != 0 {
+		t.Errorf("failures: %v", resp.Failed)
+	}
+}
+
+// The per-user map is the other structure an mdbox account replays when a
+// session opens, and folding the folder indexes leaves it alone. An operator
+// asking to fold this account's indexes means everything that gets replayed —
+// otherwise the folders come back clean and opening is still slow, which is a
+// worse answer than not offering the command.
+func TestOptimizeAllReportsWhetherTheMapWasFolded(t *testing.T) {
+	ts, root := storageTestServer(t)
+	const user = "alice@example.com"
+	uc, err := newAdminUserContext(t, ts, root, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer uc.cleanup()
+	uc.deliver(t, "msg")
+
+	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/index/optimize", "",
+		map[string]any{"user": user, "all": true})
+	if status != 200 {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	var resp struct {
+		MapFolded *bool `json:"map_folded"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, body)
+	}
+	// This harness runs a driver without a per-user map, so the field must be
+	// ABSENT rather than false: "there is nothing to fold" and "folding failed"
+	// are different answers and a bool cannot hold both.
+	if resp.MapFolded != nil {
+		t.Errorf("map_folded = %v on a driver with no map; want the field absent", *resp.MapFolded)
+	}
 }

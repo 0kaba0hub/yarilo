@@ -52,6 +52,8 @@ Commands:
         a tag proves only "was once here", not "is lost").
 
   optimize <user> <folder> [--namespace NS]
+  optimize <user> --all [--namespace NS]      fold every folder of the account,
+                                              and the per-user map where the driver keeps one (mdbox)
   cache-purge <user> <folder> [--namespace NS]
                              — rewrite yarilo.index.cache as a new generation
                                holding only what live messages point at, and
@@ -117,17 +119,21 @@ func indexRebuildStorage(args []string) error {
 func indexOptimize(args []string) error {
 	fs := flag.NewFlagSet("index optimize", flag.ContinueOnError)
 	ns := fs.String("namespace", "personal", "namespace slug")
+	all := fs.Bool("all", false, "fold every folder of the account instead of one")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: yarctl backend index optimize <user> <folder> [--namespace NS]")
+	if fs.NArg() < 1 || (!*all && fs.NArg() < 2) {
+		return fmt.Errorf("usage: yarctl backend index optimize <user> <folder> [--namespace NS]\n" +
+			"       yarctl backend index optimize <user> --all [--namespace NS]")
 	}
-	return printJSON(backendAPIPost("/api/backend/index/optimize", map[string]any{
-		"user":      fs.Arg(0),
-		"folder":    fs.Arg(1),
-		"namespace": *ns,
-	}))
+	req := map[string]any{"user": fs.Arg(0), "namespace": *ns}
+	if *all {
+		req["all"] = true
+	} else {
+		req["folder"] = fs.Arg(1)
+	}
+	return printJSON(backendAPIPost("/api/backend/index/optimize", req))
 }
 
 // indexCachePurge reclaims a folder's index cache (#1030).
