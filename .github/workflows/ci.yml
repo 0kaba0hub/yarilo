@@ -254,25 +254,21 @@ jobs:
           name: ${{ steps.version.outputs.tag }}
           body_path: RELEASE_NOTES.md
 
-      # Two passes because GHCR counts every digest as a "version": untagged
-      # per-arch manifests pile up several per release, so a single
-      # min-versions-to-keep of 10 kept ~3 releases, not 10. The old
-      # ignore-versions semver regex protected nothing: container version
-      # names are digests, not tags. Old images are rebuildable from the git
-      # tag pushed above, so 10 releases of registry history is enough.
-      - name: Cleanup untagged GHCR versions
-        uses: actions/delete-package-versions@v5
+      # One cleanup, digest-aware. The two blind passes this replaces each
+      # destroyed a referenced image: counting digests kept ~3 releases instead
+      # of 10 (ate 2.3.134 mid-benchmark), and purging "untagged" versions
+      # deleted the untagged children a tagged manifest index points at, so the
+      # tag resolved to a manifest the registry no longer held (ate 2.3.144 the
+      # day it was built). This action walks manifest references before it
+      # deletes, which is the property the whole job needs; keep-n-tagged
+      # counts what an operator means by a release. Older images are
+      # rebuildable from the git tag pushed above (rebuild-tag.yml).
+      - name: Cleanup old GHCR versions
+        uses: dataaxiom/ghcr-cleanup-action@v1
         with:
-          package-name: yarilo
-          package-type: container
-          delete-only-untagged-versions: 'true'
-          min-versions-to-keep: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Cleanup old GHCR releases beyond the last 10
-        uses: actions/delete-package-versions@v5
-        with:
-          package-name: yarilo
-          package-type: container
-          min-versions-to-keep: 10
+          package: yarilo
+          keep-n-tagged: 10
+          delete-untagged: true
+          delete-ghost-images: true
+          delete-partial-images: true
           token: ${{ secrets.GITHUB_TOKEN }}
