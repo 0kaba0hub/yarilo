@@ -188,3 +188,74 @@ func TestTheLockPartCoversTheRelease(t *testing.T) {
 		t.Errorf("the release histogram recorded %.4fs for a %.4fs release", releaseAfter-releaseBefore, releaseDelay.Seconds())
 	}
 }
+
+// The point of the whole exercise, as a number: a read that only answers a
+// client must stop going to the lock service, and a read whose answer decides a
+// write must keep going. The counter is the assertion — timing would pass on a
+// fast enough lock service and prove nothing.
+func TestUnlockedReadsMakeNoRoundTrip(t *testing.T) {
+	dial := raceTestLockServer(t)
+	root := t.TempDir()
+	home := testHome(root, "dave@example.com")
+	ui := New(WithLocker(dial())).OpenUser(&mailbox.UserInfo{
+		Username: "dave@example.com", Home: home,
+	}).(*userHandle).ui
+
+	f, err := ui.OpenFolder("INBOX", 42, "")
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "1", Size: 10}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	run := func(read func() error) float64 {
+		before := counterVecValue(t, metricLockAcquired, "shared")
+		done := make(chan error, 1)
+		// Own goroutine: the lock client tracks holds per goroutine, so a read
+		// from the one that just wrote could take the re-entrant path and
+		// measure nothing while passing.
+		go func() { done <- read() }()
+		if err := <-done; err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		return counterVecValue(t, metricLockAcquired, "shared") - before
+	}
+
+	if got := run(func() error { _, e := ui.GetMessagesUnlocked(f.ID, mailbox.SeqSet{}); return e }); got != 0 {
+		t.Errorf("an unlocked read took %v lock acquisitions", got)
+	}
+	if got := run(func() error { _, e := ui.GetMessages(f.ID, mailbox.SeqSet{}); return e }); got == 0 {
+		t.Error("a locked read took none — the two paths are the same path")
+	}
+}
+
+// Without the pairing there is nothing to stand on, so the unlocked entry point
+// must behave as the locked one. The weaker file keeps the stronger guarantee.
+func TestAnIndexWithoutLineageStaysLocked(t *testing.T) {
+	dial := raceTestLockServer(t)
+	root := t.TempDir()
+	home := testHome(root, "erin@example.com")
+	ui := New(WithLocker(dial())).OpenUser(&mailbox.UserInfo{
+		Username: "erin@example.com", Home: home,
+	}).(*userHandle).ui
+
+	f, err := ui.OpenFolder("INBOX", 42, "")
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	fs := ui.open[f.ID]
+	fs.mu.Lock()
+	fs.lineage = lineageHdr{} // as an index written before the extension reads
+	fs.mu.Unlock()
+
+	before := counterVecValue(t, metricLockAcquired, "shared")
+	done := make(chan error, 1)
+	go func() { _, e := ui.GetMessagesUnlocked(f.ID, mailbox.SeqSet{}); done <- e }()
+	if err := <-done; err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if counterVecValue(t, metricLockAcquired, "shared") == before {
+		t.Error("a folder with no lineage was read without the lock")
+	}
+}

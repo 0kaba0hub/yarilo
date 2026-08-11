@@ -2,6 +2,7 @@ package file
 
 import (
 	"encoding/binary"
+	"io"
 	"os"
 
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
@@ -31,8 +32,10 @@ const extNameLineage = "lineage"
 //	uint32 lineage        // the log written after this base carries this in its FileSeq
 //	uint32 folded_lineage // the lineage of the log this base absorbed
 //	uint64 folded_offset  // how far into that log the base already reaches
+//	uint64 records_digest // over the records the base holds
 const (
-	lineageHdrSize     = 16
+	lineageHdrSize     = 24
+	lineageHdrMinSize  = 16
 	lineageUnknown     = 0 // no extension, or a base written before it existed
 	lineageRecordAlign = 4
 )
@@ -41,6 +44,12 @@ type lineageHdr struct {
 	Lineage       uint32
 	FoldedLineage uint32
 	FoldedOffset  uint64
+	// RecordsDigest is over the records the base holds. It is what lets a
+	// reader prove, rather than assume, that a rewritten base holds the records
+	// it already has: several paths rewrite the base while folding the same
+	// log, and offsets alone cannot tell those from a plain compaction. The
+	// same reasoning as the mdbox map (#1228), and the same trap avoided.
+	RecordsDigest uint64
 }
 
 func encodeLineageHdr(h lineageHdr) []byte {
@@ -48,6 +57,7 @@ func encodeLineageHdr(h lineageHdr) []byte {
 	binary.LittleEndian.PutUint32(b[0:4], h.Lineage)
 	binary.LittleEndian.PutUint32(b[4:8], h.FoldedLineage)
 	binary.LittleEndian.PutUint64(b[8:16], h.FoldedOffset)
+	binary.LittleEndian.PutUint64(b[16:24], h.RecordsDigest)
 	return b
 }
 
@@ -60,8 +70,11 @@ func decodeLineageHdr(b []byte) lineageHdr {
 		h.Lineage = binary.LittleEndian.Uint32(b[0:4])
 		h.FoldedLineage = binary.LittleEndian.Uint32(b[4:8])
 	}
-	if len(b) >= lineageHdrSize {
+	if len(b) >= lineageHdrMinSize {
 		h.FoldedOffset = binary.LittleEndian.Uint64(b[8:16])
+	}
+	if len(b) >= lineageHdrSize {
+		h.RecordsDigest = binary.LittleEndian.Uint64(b[16:24])
 	}
 	return h
 }
@@ -93,21 +106,6 @@ func setLineage(f *mailindex.File, h lineageHdr) error {
 	return f.AddHeaderExtension(extNameLineage, data, lineageRecordAlign, 0)
 }
 
-// logLineageOf reads the lineage a log announces in its header. Zero when the
-// log is absent, empty or unreadable — all of which mean "proves nothing".
-func logLineageOf(indexPath string) uint32 {
-	f, err := os.Open(indexPath + ".log")
-	if err != nil {
-		return lineageUnknown
-	}
-	defer f.Close()
-	h, err := mailindex.DecodeLogHeader(f)
-	if err != nil {
-		return lineageUnknown
-	}
-	return h.FileSeq
-}
-
 // replayStart says where a reader should begin applying a log whose header
 // carries logLineage, against a base carrying h.
 //
@@ -134,4 +132,73 @@ func replayStart(h lineageHdr, logLineage uint32) (offset int64, paired bool) {
 	default:
 		return 0, false
 	}
+}
+
+// digestRecords hashes what a reader would serve from the base: every record's
+// uid, flags and extension bytes, in file order. FNV-1a — a change detector for
+// a file we wrote ourselves, not a defence against a forged one.
+//
+// It runs over records already in memory, so proving "this rewritten base holds
+// what I hold" costs no I/O beyond the header peek.
+func digestRecords(f *mailindex.File) uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	h := uint64(offset64)
+	write := func(b []byte) {
+		for _, c := range b {
+			h ^= uint64(c)
+			h *= prime64
+		}
+	}
+	var scratch [8]byte
+	for _, rec := range f.Records {
+		binary.LittleEndian.PutUint32(scratch[0:4], rec.UID)
+		binary.LittleEndian.PutUint32(scratch[4:8], uint32(rec.Flags))
+		write(scratch[:])
+		for _, ext := range f.Extensions {
+			write([]byte(ext.Name))
+			write(rec.Ext[ext.Name])
+		}
+	}
+	return h
+}
+
+// peekLineage reads the pairing out of a base without reading its records: the
+// fixed header says how long the extended-header region is, and the lineage
+// lives there. A few hundred bytes instead of the whole index, which is the
+// point -- deciding whether a rewritten base needs reading at all must not cost
+// reading it.
+func peekLineage(path string) (lineageHdr, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return lineageHdr{}, err
+	}
+	defer f.Close()
+	hdrBuf := make([]byte, mailindex.HeaderMinSize)
+	if _, err := io.ReadFull(f, hdrBuf); err != nil {
+		return lineageHdr{}, err
+	}
+	hdr, err := mailindex.DecodeHeaderBytes(hdrBuf)
+	if err != nil {
+		return lineageHdr{}, err
+	}
+	if hdr.HeaderSize <= uint32(mailindex.HeaderMinSize) {
+		return lineageHdr{}, nil
+	}
+	extBuf := make([]byte, hdr.HeaderSize-uint32(mailindex.HeaderMinSize))
+	if _, err := io.ReadFull(f, extBuf); err != nil {
+		return lineageHdr{}, err
+	}
+	exts, err := mailindex.DecodeExtHeaders(extBuf)
+	if err != nil {
+		return lineageHdr{}, err
+	}
+	for i := range exts {
+		if exts[i].Name == extNameLineage {
+			return decodeLineageHdr(exts[i].HdrData), nil
+		}
+	}
+	return lineageHdr{}, nil
 }
