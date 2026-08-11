@@ -79,7 +79,7 @@ func (s *Server) handleMessageGet(w http.ResponseWriter, r *http.Request) {
 		apiError(w, "open folder: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	metas, err := readMessages(bundle.idx, folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	metas, err := mailbox.ReadMessages(bundle.idx, folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
 	if err != nil {
 		apiError(w, "read folder: "+err.Error(), http.StatusInternalServerError)
 		return

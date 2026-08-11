@@ -637,6 +637,13 @@ func (s *Service) presentUIDs(h *userHandle, mbox fts.MailboxRef) (uids []uint32
 		}
 		return nil, 0, 0, fmt.Errorf("ftsservice: open folder: %w", err)
 	}
+	// Deliberately the locked read. This answer feeds Rescan, which decides
+	// which documents are DROPPED from the search index — and that is not the
+	// monotonic kind of write the indexer does. Indexing a message late fixes
+	// itself on the next pass; dropping the document of a message that exists
+	// does not, and search misses it silently until something rescans. The
+	// classification in #1249 filed both FTS reads under one line; they are two
+	// different answers and only one of them is self-correcting.
 	msgs, err := h.idx.GetMessages(folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("ftsservice: list messages: %w", err)
@@ -674,7 +681,12 @@ func (s *Service) runIndex(j job) error {
 		return fmt.Errorf("ftsservice: open folder: %w", err)
 	}
 	curUIDV := folder.UIDValidity
-	msgs, err := h.idx.GetMessages(folder.ID, mailbox.SeqSet{})
+	// The indexer's answer moves a checkpoint, which is a write — but a
+	// monotonic one: indexing fewer messages than exist means the next pass
+	// catches up, and the checkpoint only ever moves forward. So a snapshot one
+	// delivery behind costs a later index, never a lost document, and the read
+	// can skip the cross-process lock (#1249).
+	msgs, err := mailbox.ReadMessages(h.idx, folder.ID, mailbox.SeqSet{})
 	if err != nil {
 		return fmt.Errorf("ftsservice: list messages: %w", err)
 	}

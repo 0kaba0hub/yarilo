@@ -298,7 +298,7 @@ func (s *Server) handleUserUsage(w http.ResponseWriter, r *http.Request) {
 			if err != nil || f == nil {
 				continue
 			}
-			msgs, err := readMessages(bundle.idx, f.ID, nil)
+			msgs, err := mailbox.ReadMessages(bundle.idx, f.ID, nil)
 			if err != nil {
 				continue
 			}

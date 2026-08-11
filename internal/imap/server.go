@@ -4080,8 +4080,10 @@ func storeDelta(store *imaplib.StoreFlags, mode mailbox.FlagsMode) mailbox.Flags
 // prove their own freshness: a read that only answers a client can skip the
 // cross-process lock. Declared here rather than on mailbox.UserIndex so an
 // index without the property is simply an index without the method.
+// unlockedReader adds the two reads beyond the message list that IMAP serves
+// straight to the client. The message list itself goes through
+// mailbox.ReadMessages, which four packages share.
 type unlockedReader interface {
-	GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error)
 	VanishedUnlocked(folderID uint64, sinceModSeq uint64) ([]uint32, error)
 	KeywordsUnlocked(folderID uint64) ([]string, error)
 }
@@ -4091,10 +4093,7 @@ type unlockedReader interface {
 // STORE, EXPUNGE, COPY, MOVE -- must keep using GetMessages, which is why this
 // is a separate function rather than a swap inside one (#1249).
 func readMessages(idx mailbox.UserIndex, folderID uint64) ([]*mailbox.MessageMeta, error) {
-	if u, ok := idx.(unlockedReader); ok {
-		return u.GetMessagesUnlocked(folderID, mailbox.SeqSet{})
-	}
-	return idx.GetMessages(folderID, mailbox.SeqSet{})
+	return mailbox.ReadMessages(idx, folderID, mailbox.SeqSet{})
 }
 
 // readVanished and readKeywords are the same contract for the other two reads
