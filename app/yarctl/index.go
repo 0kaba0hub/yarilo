@@ -52,7 +52,8 @@ Commands:
         a tag proves only "was once here", not "is lost").
 
   optimize <user> <folder> [--namespace NS]
-  optimize <user> --all [--namespace NS]      fold every folder of the account
+  optimize <user> --all [--namespace NS]      fold every folder of the account,
+                                              and the per-user map where the driver keeps one (mdbox)
   cache-purge <user> <folder> [--namespace NS]
                              — rewrite yarilo.index.cache as a new generation
                                holding only what live messages point at, and

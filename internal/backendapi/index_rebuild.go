@@ -237,7 +237,18 @@ type optimizeAccountStats struct {
 	User    string            `json:"user"`
 	Folders []optimizeStats   `json:"folders"`
 	Failed  map[string]string `json:"failed,omitempty"`
-	TotalMs int64             `json:"total_ms"`
+	// MapFolded reports whether the driver's per-user map was folded too. Only
+	// mdbox has one; for the others the field is absent, which is the honest
+	// answer rather than "false".
+	MapFolded *bool `json:"map_folded,omitempty"`
+	TotalMs   int64 `json:"total_ms"`
+}
+
+// mapCompactor is the optional capability a driver has when it keeps a per-user
+// structure that is replayed at open time beside the folder indexes. mdbox has
+// one; maildir and sdbox do not, so they are simply drivers without the method.
+type mapCompactor interface {
+	CompactMap() error
 }
 
 func (s *Server) handleIndexOptimize(w http.ResponseWriter, r *http.Request) {
@@ -323,12 +334,21 @@ func (s *Server) optimizeAccount(ctx context.Context, req optimizeRequest) (*opt
 		return nil, http.StatusBadRequest, err
 	}
 	entries, err := bundle.box.ListFolders()
-	uc.Close()
 	if err != nil {
+		uc.Close()
 		return nil, http.StatusInternalServerError, fmt.Errorf("list folders: %w", err)
 	}
+	// The per-user map, where the driver keeps one. Folded before the folder
+	// indexes so a failure here is visible in the same call rather than
+	// discovered later as "the folders are clean but opening is still slow".
+	var mapFolded *bool
+	if mc, ok := bundle.box.(mapCompactor); ok {
+		ok := mc.CompactMap() == nil
+		mapFolded = &ok
+	}
+	uc.Close()
 
-	out := &optimizeAccountStats{User: req.User}
+	out := &optimizeAccountStats{User: req.User, MapFolded: mapFolded}
 	start := time.Now()
 	for _, e := range entries {
 		if !e.Selectable {

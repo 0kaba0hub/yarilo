@@ -401,3 +401,42 @@ func TestCreateTimeSurvivesReopen(t *testing.T) {
 		t.Errorf("CreateTime(3) after reopen = (%d,%v), want (%d,true)", got, ok, ts)
 	}
 }
+
+// Folding the map is what an account-wide "fold the indexes" has to include for
+// mdbox: the map log is replayed by every session that opens the account, and
+// folding the folder indexes does not touch it. After a seed it holds every
+// delivery, which is what made a first open cost tens of milliseconds.
+func TestCompactFoldsTheLogIntoTheBase(t *testing.T) {
+	m, dir := openTestMap(t)
+	for i := range 50 {
+		if _, err := m.AppendRecord(1, uint32(i*10), 10, [16]byte{byte(i)}); err != nil {
+			t.Fatalf("AppendRecord %d: %v", i, err)
+		}
+	}
+	if st, err := os.Stat(m.logPath()); err != nil || st.Size() == 0 {
+		t.Fatalf("the seed left no log to fold: %v", err)
+	}
+
+	if err := m.Compact(); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if _, err := os.Stat(m.logPath()); !os.IsNotExist(err) {
+		t.Errorf("the log survived the fold: %v", err)
+	}
+
+	// The records survived it, which is the half that matters: a fold that
+	// dropped the log without writing the base would also pass "no log".
+	again, err := Open(dir, "alice@example.com")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer again.Close() //nolint:errcheck
+	if got := again.MessageCount(); got != 50 {
+		t.Errorf("the folded map holds %d records, want 50", got)
+	}
+	for i := range 50 {
+		if _, ok, err := again.Lookup(uint32(i + 1)); err != nil || !ok {
+			t.Fatalf("map_uid %d lost in the fold: ok=%v err=%v", i+1, ok, err)
+		}
+	}
+}
