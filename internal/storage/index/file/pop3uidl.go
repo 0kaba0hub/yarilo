@@ -18,9 +18,24 @@ import (
 // addition; not in the canonical wire format. Removed when
 // POP3 UIDLs migrate into a proper mail-index extension in a
 // later phase.
+// GetPOP3UIDLsUnlocked is GetPOP3UIDLs for the login snapshot: the answer is
+// the session's own view, and deletions later address UIDs from that view
+// rather than positions in a fresh index (#1249).
+func (u *userIndex) GetPOP3UIDLsUnlocked(folderID uint64) (map[uint32]string, error) {
+	return u.pop3UIDLs(folderID, true)
+}
+
 func (u *userIndex) GetPOP3UIDLs(folderID uint64) (map[uint32]string, error) {
+	return u.pop3UIDLs(folderID, false)
+}
+
+func (u *userIndex) pop3UIDLs(folderID uint64, unlocked bool) (map[uint32]string, error) {
 	var out map[uint32]string
-	err := u.withFolderRO(folderID, func(fs *folderState) error {
+	read := u.withFolderRO
+	if unlocked {
+		read = u.withFolderROUnlocked
+	}
+	err := read(folderID, func(fs *folderState) error {
 		path := filepath.Join(fs.indexDir, "pop3.uidl")
 		f, err := os.Open(path)
 		if errors.Is(err, os.ErrNotExist) {

@@ -68,7 +68,7 @@ func (s *Server) emailQuery(ctx context.Context, h *userHandle, accountID string
 
 	matched := make([]queryHit, 0, 64)
 	for _, f := range scope.folders {
-		metas, err := h.idx.GetMessages(f.id, mailbox.SeqSet{{From: 1, To: 0}})
+		metas, err := readMessages(h.idx, f.id, mailbox.SeqSet{{From: 1, To: 0}})
 		if err != nil {
 			slog.Warn("jmap: Email/query read failed", "folder", f.name, "err", err)
 			return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}

@@ -194,7 +194,7 @@ func (e *ftsEvaluator) prepare(ctx context.Context, h *userHandle, sf scopeFolde
 // only honest ending is "retry" -- a result computed from a half-indexed folder
 // would be missing mail and say nothing about it.
 func (e *ftsEvaluator) catchUp(ctx context.Context, h *userHandle, sf scopeFolder) error {
-	metas, err := h.idx.GetMessages(sf.id, mailbox.SeqSet{{From: 1, To: 0}})
+	metas, err := readMessages(h.idx, sf.id, mailbox.SeqSet{{From: 1, To: 0}})
 	if err != nil || len(metas) == 0 {
 		return nil
 	}

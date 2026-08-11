@@ -297,6 +297,10 @@ func (h *userHandle) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbo
 func (h *userHandle) SetAltTier(folderID uint64, filenames []string, altTier bool) error {
 	return h.ui.SetAltTier(folderID, filenames, altTier)
 }
+func (h *userHandle) GetPOP3UIDLsUnlocked(folderID uint64) (map[uint32]string, error) {
+	return h.ui.GetPOP3UIDLsUnlocked(folderID)
+}
+
 func (h *userHandle) VanishedUnlocked(folderID uint64, sinceModSeq uint64) ([]uint32, error) {
 	return h.ui.VanishedUnlocked(folderID, sinceModSeq)
 }
