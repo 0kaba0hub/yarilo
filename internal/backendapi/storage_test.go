@@ -422,7 +422,10 @@ func maildirHome(root, user string) string {
 func storageTestServerMdbox(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 	root := t.TempDir()
-	mb := mdbox.New()
+	// Wrapped exactly as the server wraps it. An unwrapped driver makes every
+	// optional-capability assertion succeed in tests and fail in production,
+	// which is how the missing map fold in #1267 passed its own test.
+	mb := mailbox.Validating(mdbox.New(), mailbox.DefaultNameRules())
 	idx := file.New()
 	d, err := dict.Open(dict.Config{Driver: "memory"})
 	if err != nil {

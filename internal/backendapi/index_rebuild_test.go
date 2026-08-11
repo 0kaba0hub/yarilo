@@ -3,9 +3,15 @@ package backendapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
 
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -395,5 +401,78 @@ func TestOptimizeAllReportsWhetherTheMapWasFolded(t *testing.T) {
 	// are different answers and a bool cannot hold both.
 	if resp.MapFolded != nil {
 		t.Errorf("map_folded = %v on a driver with no map; want the field absent", *resp.MapFolded)
+	}
+}
+
+// The map is the expensive half of folding an mdbox account, and the call that
+// claims to fold the account has to actually do it. Asserted on the map log's
+// size through the same wrapper the server builds — a test that reached past
+// the wrapper would pass while the deployed path folded nothing, which is
+// exactly what happened (#1267).
+func TestOptimizeAllFoldsTheMdboxMap(t *testing.T) {
+	ts, root := storageTestServerMdbox(t)
+	const user = "alice@example.com"
+
+	// Seed through the mdbox driver: the shared admin context builds maildir,
+	// which has no map at all, and a test that skipped for want of one would
+	// prove exactly nothing about the fold.
+	info := &mailbox.UserInfo{Username: user, Home: maildirHome(root, user)}
+	box := mdbox.New().OpenUser(info)
+	if err := box.Init(); err != nil {
+		t.Fatalf("init mdbox: %v", err)
+	}
+	defer box.Close() //nolint:errcheck
+	idx := file.New().OpenUser(info)
+	defer idx.Close() //nolint:errcheck
+	folder, err := idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("open folder: %v", err)
+	}
+	for i := range 5 {
+		body := fmt.Sprintf("Subject: m%d\r\n\r\nbody\r\n", i)
+		uid, uerr := idx.AllocateUID(folder.ID)
+		if uerr != nil {
+			t.Fatalf("allocate uid: %v", uerr)
+		}
+		filename, _, _, serr := box.Save("INBOX", io.NopCloser(bytes.NewBufferString(body)), uid, int64(len(body)), nil, [16]byte{})
+		if serr != nil {
+			t.Fatalf("save: %v", serr)
+		}
+		if aerr := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{UID: uid, Filename: filename, Size: uint32(len(body))}); aerr != nil {
+			t.Fatalf("append: %v", aerr)
+		}
+	}
+
+	mapLog := filepath.Join(maildirHome(root, user), "mdbox", "storage", "yarilo.map.index.log")
+	before, err := os.Stat(mapLog)
+	if err != nil {
+		t.Fatalf("the seed left no map log at %s: %v", mapLog, err)
+	}
+	if before.Size() == 0 {
+		t.Fatal("the seed left an empty map log; there is nothing for this row to prove")
+	}
+
+	status, body := doJSON(t, ts, http.MethodPost, "/api/backend/index/optimize", "",
+		map[string]any{"user": user, "all": true})
+	if status != 200 {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	var resp struct {
+		MapFolded *bool `json:"map_folded"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, body)
+	}
+	if resp.MapFolded == nil {
+		t.Fatal("map_folded absent on an mdbox account — the driver's capability was not seen")
+	}
+	if !*resp.MapFolded {
+		t.Fatal("map_folded reported false")
+	}
+
+	// The claim has to be true on disk, not only in the response: reporting a
+	// fold is the part that was already working.
+	if after, serr := os.Stat(mapLog); serr == nil && after.Size() >= before.Size() {
+		t.Errorf("map log is %d bytes, was %d — it was not folded", after.Size(), before.Size())
 	}
 }
