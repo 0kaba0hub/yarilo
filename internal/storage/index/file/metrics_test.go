@@ -259,3 +259,57 @@ func TestAnIndexWithoutLineageStaysLocked(t *testing.T) {
 		t.Error("a folder with no lineage was read without the lock")
 	}
 }
+
+// Every reader that only answers a client must take zero round trips, and every
+// reader whose answer decides a write must still take them. Enumerated rather
+// than sampled: the classification in #1249 is the deliverable, and a table is
+// how it stays checkable when someone adds a reader.
+func TestReadersTakeTheLockTheirClassificationSays(t *testing.T) {
+	dial := raceTestLockServer(t)
+	root := t.TempDir()
+	home := testHome(root, "frank@example.com")
+	ui := New(WithLocker(dial())).OpenUser(&mailbox.UserInfo{
+		Username: "frank@example.com", Home: home,
+	}).(*userHandle).ui
+
+	f, err := ui.OpenFolder("INBOX", 42, "")
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "1", Size: 10}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		read      func() error
+		wantLocks bool
+	}{
+		{"messages, answering a client", func() error { _, e := ui.GetMessagesUnlocked(f.ID, mailbox.SeqSet{}); return e }, false},
+		{"vanished, answering a client", func() error { _, e := ui.VanishedUnlocked(f.ID, 0); return e }, false},
+		{"keywords, answering a client", func() error { _, e := ui.KeywordsUnlocked(f.ID); return e }, false},
+		{"messages, deciding a write", func() error { _, e := ui.GetMessages(f.ID, mailbox.SeqSet{}); return e }, true},
+		{"vanished, deciding a write", func() error { _, e := ui.Vanished(f.ID, 0); return e }, true},
+		{"keywords, deciding a write", func() error { _, e := ui.Keywords(f.ID); return e }, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			before := counterVecValue(t, metricLockAcquired, "shared")
+			done := make(chan error, 1)
+			// Own goroutine: holds are tracked per goroutine, so a read issued
+			// from the writer's would take the re-entrant path and measure
+			// nothing while passing.
+			go func() { done <- tc.read() }()
+			if err := <-done; err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			got := counterVecValue(t, metricLockAcquired, "shared") - before
+			if tc.wantLocks && got == 0 {
+				t.Error("no round trip taken by a read whose answer decides a write")
+			}
+			if !tc.wantLocks && got != 0 {
+				t.Errorf("%v round trips taken by a read that only answers a client", got)
+			}
+		})
+	}
+}

@@ -1095,7 +1095,7 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	}
 
 	tGetMsgs := time.Now()
-	msgs, err := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
+	msgs, err := readMessages(h.idx, f.ID)
 	slog.Debug("imap: select timing getmsgs_ms", "folder", rel, "getmsgs_ms", time.Since(tGetMsgs).Milliseconds(), "total_ms", time.Since(tSelect).Milliseconds())
 	if err != nil {
 		return nil, fmt.Errorf("imap: select getmsgs %s: %w", rel, err)
@@ -1112,7 +1112,7 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	}
 	allFlags := sysFlags
 	s.knownKeywords = make(map[string]struct{})
-	if kws, err := h.idx.Keywords(f.ID); err == nil {
+	if kws, err := readKeywords(h.idx, f.ID); err == nil {
 		for _, kw := range kws {
 			allFlags = append(allFlags, imaplib.Flag(kw))
 			s.knownKeywords[kw] = struct{}{}
@@ -1131,7 +1131,7 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	// VANISHED (EARLIER) listing UIDs expunged since the client's modseq.
 	// KnownUIDs narrows the response; empty means "tell me everything".
 	if opts != nil && opts.QResync != nil && opts.QResync.UIDValidity == f.UIDValidity {
-		vanishedUIDs, vErr := h.idx.Vanished(f.ID, opts.QResync.ModSeq)
+		vanishedUIDs, vErr := readVanished(h.idx, f.ID, opts.QResync.ModSeq)
 		if vErr == nil && len(vanishedUIDs) > 0 {
 			var vset imaplib.UIDSet
 			if len(opts.QResync.KnownUIDs) == 0 {
@@ -1935,7 +1935,7 @@ func (s *session) Status(name string, opts *imaplib.StatusOptions) (*imaplib.Sta
 	if refreshed := s.dboxHealIfCorrupt(h, rel, f); refreshed != nil {
 		f = refreshed
 	}
-	msgs, err := h.idx.GetMessages(f.ID, mailbox.SeqSet{})
+	msgs, err := readMessages(h.idx, f.ID)
 	if err != nil {
 		return nil, fmt.Errorf("imap: status getmsgs %s: %w", rel, err)
 	}
@@ -2212,7 +2212,7 @@ func (s *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 		return nil
 	}
 
-	current, err := s.folderIdx().GetMessages(s.folder.ID, mailbox.SeqSet{})
+	current, err := readMessages(s.folderIdx(), s.folder.ID)
 	if err != nil {
 		return nil
 	}
@@ -2580,7 +2580,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	// SAVE so the matcher sees a concrete UID list.
 	criteria = s.substituteSearchRes(criteria)
 
-	msgs, err := s.folderIdx().GetMessages(s.folder.ID, mailbox.SeqSet{})
+	msgs, err := readMessages(s.folderIdx(), s.folder.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -2820,7 +2820,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	// VANISHED on a sequence-number FETCH is invalid; the patched lib
 	// rejects that at parse time so we do not need to re-check here.
 	if opts.Vanished && opts.ChangedSince > 0 {
-		vanishedUIDs, vErr := idx.Vanished(s.folder.ID, opts.ChangedSince)
+		vanishedUIDs, vErr := readVanished(idx, s.folder.ID, opts.ChangedSince)
 		if vErr == nil && len(vanishedUIDs) > 0 {
 			var vset imaplib.UIDSet
 			for _, uid := range vanishedUIDs {
@@ -4082,6 +4082,8 @@ func storeDelta(store *imaplib.StoreFlags, mode mailbox.FlagsMode) mailbox.Flags
 // index without the property is simply an index without the method.
 type unlockedReader interface {
 	GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error)
+	VanishedUnlocked(folderID uint64, sinceModSeq uint64) ([]uint32, error)
+	KeywordsUnlocked(folderID uint64) ([]string, error)
 }
 
 // readMessages is the read for handlers whose answer goes to the client and
@@ -4093,6 +4095,23 @@ func readMessages(idx mailbox.UserIndex, folderID uint64) ([]*mailbox.MessageMet
 		return u.GetMessagesUnlocked(folderID, mailbox.SeqSet{})
 	}
 	return idx.GetMessages(folderID, mailbox.SeqSet{})
+}
+
+// readVanished and readKeywords are the same contract for the other two reads
+// that only answer the client: QRESYNC/CHANGEDSINCE and the SELECT keyword
+// list.
+func readVanished(idx mailbox.UserIndex, folderID uint64, sinceModSeq uint64) ([]uint32, error) {
+	if u, ok := idx.(unlockedReader); ok {
+		return u.VanishedUnlocked(folderID, sinceModSeq)
+	}
+	return idx.Vanished(folderID, sinceModSeq)
+}
+
+func readKeywords(idx mailbox.UserIndex, folderID uint64) ([]string, error) {
+	if u, ok := idx.(unlockedReader); ok {
+		return u.KeywordsUnlocked(folderID)
+	}
+	return idx.Keywords(folderID)
 }
 
 func applyStoreFlags(current []string, store *imaplib.StoreFlags) []string {
