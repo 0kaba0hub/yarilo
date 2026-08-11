@@ -480,7 +480,12 @@ func (fs *folderState) flush(wholeNames bool) error {
 	// rewrite and the log truncation then leaves a base that knows what it
 	// already contains, rather than one the whole log is applied to again.
 	prev := readLineage(fs.file)
-	next := lineageHdr{Lineage: prev.Lineage + 1, FoldedLineage: prev.Lineage, FoldedOffset: uint64(fs.logSize)}
+	next := lineageHdr{
+		Lineage:       prev.Lineage + 1,
+		FoldedLineage: prev.Lineage,
+		FoldedOffset:  uint64(fs.logSize),
+		RecordsDigest: digestRecords(fs.file),
+	}
 	if next.Lineage == lineageUnknown {
 		next.Lineage = 1
 	}
@@ -627,6 +632,23 @@ func (fs *folderState) reload() error {
 		if baseErr != nil {
 			return fmt.Errorf("fileindex/reload: %w", baseErr)
 		}
+		// A rewritten base often holds exactly what this handle already holds:
+		// a compaction folds in the log we already applied. Reading the header
+		// alone answers that, and the digest proves it rather than assuming it
+		// -- several paths rewrite the base while folding the same log, so the
+		// offsets agreeing is not enough (#1228 learned this the hard way).
+		if fs.file != nil && !logReplaced {
+			if h, perr := peekLineage(fs.indexPath); perr == nil && h.Lineage != lineageUnknown &&
+				h.FoldedLineage == fs.lineage.Lineage && uint64(fs.logSize) >= h.FoldedOffset &&
+				h.RecordsDigest == digestRecords(fs.file) {
+				fs.lineage = h
+				fs.baseMod = newBaseMod
+				fs.baseIdent = baseStat
+				fs.logSize = 0
+				metricReload.WithLabelValues("adopt").Inc()
+				return fs.applyLogTail(newLogSize)
+			}
+		}
 		mf, err := mailindex.Open(fs.indexPath)
 		if err != nil {
 			return fmt.Errorf("fileindex/reload: %w", err)
@@ -649,8 +671,28 @@ func (fs *folderState) reload() error {
 		}
 	}
 
-	// Apply any log entries added since logSize (by another pod or
-	// by our own appends that a concurrent reload must see).
+	if err := fs.applyLogTail(newLogSize); err != nil {
+		return err
+	}
+	fs.ensureVsizeLocked()
+	// Report how the record set changed so a "message not visible after
+	// delivery" case shows whether the record was picked up.
+	slog.Debug("fileindex: reload applied",
+		"trace_id", fs.traceID, "folder", fs.folder,
+		"records_before", recordsBefore,
+		"records_after", len(fs.file.Records),
+		"next_uid_before", nextUIDBefore,
+		"next_uid_after", fs.file.Header.NextUID,
+		"log_size", fs.logSize,
+		"dur_ms", time.Since(t0).Milliseconds())
+	return nil
+}
+
+// applyLogTail folds in whatever the log gained past what this handle has
+// applied. Split out because both the full reload and the adopt path end here:
+// taking a new base is never the end of a refresh, since the writer that
+// produced it may already have appended to the log it started.
+func (fs *folderState) applyLogTail(newLogSize int64) error {
 	if newLogSize > fs.logSize {
 		// fs.logSize comes from applyLog's confirmed-applied return value,
 		// not the pre-call stat (see readBase). If an append landed mid-read,
@@ -673,17 +715,6 @@ func (fs *folderState) reload() error {
 			fs.logSize = confirmedEnd
 		}
 	}
-	fs.ensureVsizeLocked()
-	// Report how the record set changed so a "message not visible after
-	// delivery" case shows whether the record was picked up.
-	slog.Debug("fileindex: reload applied",
-		"trace_id", fs.traceID, "folder", fs.folder,
-		"records_before", recordsBefore,
-		"records_after", len(fs.file.Records),
-		"next_uid_before", nextUIDBefore,
-		"next_uid_after", fs.file.Header.NextUID,
-		"log_size", fs.logSize,
-		"dur_ms", time.Since(t0).Milliseconds())
 	return nil
 }
 
@@ -1264,8 +1295,24 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 // GetMessages returns every record whose UID falls in uids; empty uids
 // means all records. Output is sorted by UID ascending.
 func (u *userIndex) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
+	return u.getMessages(folderID, uids, false)
+}
+
+// GetMessagesUnlocked answers without the cross-process lock where the files can
+// prove their own consistency. For readers whose answer goes to a client and
+// decides nothing on disk -- FETCH, SEARCH, SELECT, STATUS, POLL. A caller whose
+// answer drives a write or a delete must use GetMessages (#1249).
+func (u *userIndex) GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
+	return u.getMessages(folderID, uids, true)
+}
+
+func (u *userIndex) getMessages(folderID uint64, uids mailbox.SeqSet, unlocked bool) ([]*mailbox.MessageMeta, error) {
 	var out []*mailbox.MessageMeta
-	err := u.withFolderRO(folderID, func(fs *folderState) error {
+	read := u.withFolderRO
+	if unlocked {
+		read = u.withFolderROUnlocked
+	}
+	err := read(folderID, func(fs *folderState) error {
 		for _, rec := range fs.file.Records {
 			if !seqSetContains(uids, rec.UID) {
 				continue

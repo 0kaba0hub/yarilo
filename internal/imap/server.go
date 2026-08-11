@@ -2811,7 +2811,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		return err
 	}
 	idx := s.folderIdx()
-	backendMsgs, err := idx.GetMessages(s.folder.ID, mailbox.SeqSet{})
+	backendMsgs, err := readMessages(idx, s.folder.ID)
 	if err != nil {
 		return err
 	}
@@ -4074,6 +4074,25 @@ func storeDelta(store *imaplib.StoreFlags, mode mailbox.FlagsMode) mailbox.Flags
 		}
 	}
 	return upd
+}
+
+// unlockedReader is the optional capability an index has when its files can
+// prove their own freshness: a read that only answers a client can skip the
+// cross-process lock. Declared here rather than on mailbox.UserIndex so an
+// index without the property is simply an index without the method.
+type unlockedReader interface {
+	GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error)
+}
+
+// readMessages is the read for handlers whose answer goes to the client and
+// decides nothing on disk. Callers whose answer drives a write or a delete --
+// STORE, EXPUNGE, COPY, MOVE -- must keep using GetMessages, which is why this
+// is a separate function rather than a swap inside one (#1249).
+func readMessages(idx mailbox.UserIndex, folderID uint64) ([]*mailbox.MessageMeta, error) {
+	if u, ok := idx.(unlockedReader); ok {
+		return u.GetMessagesUnlocked(folderID, mailbox.SeqSet{})
+	}
+	return idx.GetMessages(folderID, mailbox.SeqSet{})
 }
 
 func applyStoreFlags(current []string, store *imaplib.StoreFlags) []string {

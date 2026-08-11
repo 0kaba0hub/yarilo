@@ -51,6 +51,10 @@ var (
 		Name: "fileindex_lock_acquired_total",
 		Help: "Cross-process folder locks acquired, by mode. Each acquisition is followed by a release, so an operation that takes the lock makes two round trips to the lock service.",
 	}, []string{"mode"}) // shared | exclusive
+	metricReload = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "fileindex_reload_total",
+		Help: "Folder freshness checks by outcome: adopt means a rewritten base was proven to hold what memory already held and its records were not read.",
+	}, []string{"result"}) // adopt
 	metricLockReentrant = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "fileindex_lock_reentrant_total",
 		Help: "Index operations that already held the folder lock, by mode. No round trip was made.",

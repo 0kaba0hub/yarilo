@@ -297,6 +297,11 @@ func (h *userHandle) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbo
 func (h *userHandle) SetAltTier(folderID uint64, filenames []string, altTier bool) error {
 	return h.ui.SetAltTier(folderID, filenames, altTier)
 }
+func (h *userHandle) GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
+	h.stampTrace(folderID)
+	return h.ui.GetMessagesUnlocked(folderID, uids)
+}
+
 func (h *userHandle) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
 	return h.ui.GetMessages(folderID, uids)
 }
@@ -584,6 +589,55 @@ func (u *userIndex) folderVolatileDir(folder string) string {
 // then trust as a baseline, regressing NextUID. Shared holders run
 // concurrently and only block against an in-flight exclusive writer; fn then
 // reads under fs.mu.RLock without holding the distributed lock at all.
+// withFolderROUnlocked serves a read without the cross-process lock, when the
+// state on disk can prove its own consistency: the base names the log it
+// absorbed and how far, and the log names the base it belongs to (see
+// lineage.go). Where it cannot -- an index written before the extension -- this
+// falls back to the locked path, so the weaker file format keeps the stronger
+// guarantee.
+//
+// Only readers whose answer goes to a client may use it. A read that decides
+// what to rewrite or delete stays locked: a stale answer there does not become
+// visible a moment later, it decides wrongly and the write lands anyway (#1249).
+func (u *userIndex) withFolderROUnlocked(folderID uint64, fn func(*folderState) error) error {
+	whole := time.Now()
+	defer func() { metricReadSeconds.Observe(time.Since(whole).Seconds()) }()
+
+	u.mu.Lock()
+	fs, ok := u.open[folderID]
+	u.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("fileindex: folder %d not open", folderID)
+	}
+	if !fs.canReadUnlocked() {
+		return u.withFolderRO(folderID, fn)
+	}
+	reloadStart := time.Now()
+	fs.mu.Lock()
+	err := fs.reload()
+	fs.mu.Unlock()
+	observeReadPart("reload", time.Since(reloadStart))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	buildStart := time.Now()
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	ferr := fn(fs)
+	observeReadPart("build", time.Since(buildStart))
+	return ferr
+}
+
+// canReadUnlocked reports whether this folder's files carry the pairing a
+// lock-free read stands on. Checked per read rather than once: the extension
+// arrives with the first flush, so a folder can gain the property while a
+// session is open, and lose it to nothing.
+func (fs *folderState) canReadUnlocked() bool {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.lineage.Lineage != lineageUnknown
+}
+
 func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) error {
 	whole := time.Now()
 	defer func() { metricReadSeconds.Observe(time.Since(whole).Seconds()) }()
