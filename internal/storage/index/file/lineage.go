@@ -106,21 +106,6 @@ func setLineage(f *mailindex.File, h lineageHdr) error {
 	return f.AddHeaderExtension(extNameLineage, data, lineageRecordAlign, 0)
 }
 
-// logLineageOf reads the lineage a log announces in its header. Zero when the
-// log is absent, empty or unreadable — all of which mean "proves nothing".
-func logLineageOf(indexPath string) uint32 {
-	f, err := os.Open(indexPath + ".log")
-	if err != nil {
-		return lineageUnknown
-	}
-	defer f.Close()
-	h, err := mailindex.DecodeLogHeader(f)
-	if err != nil {
-		return lineageUnknown
-	}
-	return h.FileSeq
-}
-
 // replayStart says where a reader should begin applying a log whose header
 // carries logLineage, against a base carrying h.
 //

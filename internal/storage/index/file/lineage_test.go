@@ -27,7 +27,12 @@ func TestBaseAndLogAgreeOnLineage(t *testing.T) {
 	if fs.lineage.Lineage == lineageUnknown {
 		t.Fatal("the base carries no lineage after a flush")
 	}
-	if got := logLineageOf(fs.indexPath); got != fs.lineage.Lineage {
+	lg, err := openLogRead(fs.indexPath)
+	if err != nil {
+		t.Fatalf("openLogRead: %v", err)
+	}
+	defer lg.close()
+	if got := lg.lineage(); got != fs.lineage.Lineage {
 		t.Errorf("the log announces lineage %d, the base %d", got, fs.lineage.Lineage)
 	}
 }

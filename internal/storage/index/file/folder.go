@@ -571,16 +571,20 @@ func (fs *folderState) reload() error {
 	}
 	baseStat, baseErr := os.Stat(fs.indexPath)
 
-	// Stat the .log by path so a replacement is detected by inode+device
-	// identity, not just mtime+size. Compaction replaces the log via
-	// .tmp+rename; a cached fs.logFD on the unlinked inode would keep
-	// appending to a file nobody else sees and later flush a stale header,
-	// regressing NextUID.
-	logStat, _ := os.Stat(fs.indexPath + ".log")
-	var newLogSize int64
-	if logStat != nil {
-		newLogSize = logStat.Size()
+	// Open the log ONCE and take its identity, size, header and body from that
+	// one descriptor. Reading the header by path and the body by another open
+	// leaves a window: a sibling's compaction between the two makes the pairing
+	// describe one file while the replay reads another, and the replay then
+	// starts at an offset that means nothing in the file it is reading. The
+	// lock used to exclude that; a lock-free reader has to exclude it by
+	// construction.
+	lg, lgErr := openLogRead(fs.indexPath)
+	if lgErr != nil {
+		return fmt.Errorf("fileindex/reload: log: %w", lgErr)
 	}
+	defer lg.close()
+	logStat := lg.stat
+	newLogSize := lg.size
 	logReplaced := false
 	if fs.logFD != nil && logStat != nil && !fdMatchesFile(fs.logFD, logStat) {
 		logReplaced = true
@@ -646,7 +650,7 @@ func (fs *folderState) reload() error {
 				fs.baseIdent = baseStat
 				fs.logSize = 0
 				metricReload.WithLabelValues("adopt").Inc()
-				return fs.applyLogTail(newLogSize)
+				return fs.applyLogTail(lg)
 			}
 		}
 		mf, err := mailindex.Open(fs.indexPath)
@@ -666,12 +670,12 @@ func (fs *folderState) reload() error {
 		// being idempotent -- which they are today, but that is a property
 		// nobody declared and the next transaction type need not have.
 		fs.logSize = 0
-		if off, paired := replayStart(fs.lineage, logLineageOf(fs.indexPath)); paired {
+		if off, paired := replayStart(fs.lineage, lg.lineage()); paired {
 			fs.logSize = off
 		}
 	}
 
-	if err := fs.applyLogTail(newLogSize); err != nil {
+	if err := fs.applyLogTail(lg); err != nil {
 		return err
 	}
 	fs.ensureVsizeLocked()
@@ -692,12 +696,12 @@ func (fs *folderState) reload() error {
 // applied. Split out because both the full reload and the adopt path end here:
 // taking a new base is never the end of a refresh, since the writer that
 // produced it may already have appended to the log it started.
-func (fs *folderState) applyLogTail(newLogSize int64) error {
-	if newLogSize > fs.logSize {
+func (fs *folderState) applyLogTail(lg *logReader) error {
+	if lg.size > fs.logSize {
 		// fs.logSize comes from applyLog's confirmed-applied return value,
 		// not the pre-call stat (see readBase). If an append landed mid-read,
 		// the next reload re-applies the remainder.
-		if confirmedEnd, err := fs.applyLog(fs.logSize); errors.Is(err, errLogIndexIDMismatch) {
+		if confirmedEnd, err := fs.applyLogFrom(lg, fs.logSize); errors.Is(err, errLogIndexIDMismatch) {
 			// Stale log from a previous mailbox at this path: flush the
 			// current base and reset the log.
 			slog.Warn("fileindex: discarding log with mismatched IndexID, re-flushing base",
@@ -1796,29 +1800,37 @@ func (fs *folderState) appendMutLog(records ...[]byte) error {
 // Keywords extension data is NOT updated from log records; cross-pod
 // keyword visibility requires OptimizeIndex to compact the log.
 func (fs *folderState) applyLog(fromOffset int64) (int64, error) {
-	logPath := fs.indexPath + ".log"
-	f, err := os.Open(logPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return fromOffset, nil
-	}
+	lg, err := openLogRead(fs.indexPath)
 	if err != nil {
 		return fromOffset, fmt.Errorf("fileindex/applylog: open: %w", err)
 	}
-	defer f.Close()
+	defer lg.close()
+	return fs.applyLogFrom(lg, fromOffset)
+}
 
-	lh, hdrErr := mailindex.DecodeLogHeader(f)
-	if hdrErr != nil {
-		return fromOffset, nil // empty or unreadable log
+// applyLogFrom folds in the log lg holds open, starting at fromOffset. Taking
+// the reader rather than a path is the point: the caller decided where to start
+// from THIS descriptor's header, so the body it reads has to be the same one.
+func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, error) {
+	if lg.f == nil || !lg.ok {
+		return fromOffset, nil // absent, empty or unreadable log
 	}
-	if lh.IndexID != fs.file.Header.IndexID {
+	f := lg.f
+	if lh := lg.hdr; lh.IndexID != fs.file.Header.IndexID {
 		// Log belongs to a different (deleted/recreated) mailbox at this
 		// path; caller flushes a fresh base + empty log.
 		return fromOffset, errLogIndexIDMismatch
 	}
-	if fromOffset > 0 {
-		if _, err := f.Seek(fromOffset, io.SeekStart); err != nil {
-			return fromOffset, fmt.Errorf("fileindex/applylog: seek: %w", err)
-		}
+	// The reader consumed the header when it opened, so seek explicitly rather
+	// than inheriting whatever position the last user of this descriptor left.
+	// fromOffset itself is not rewritten: zero means "full replay" further
+	// down, where it gates the torn-tail truncate.
+	start := int64(mailindex.LogHeaderSize)
+	if fromOffset > start {
+		start = fromOffset
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return fromOffset, fmt.Errorf("fileindex/applylog: seek: %w", err)
 	}
 
 	layout, err := mailindex.ComputeRecordLayout(fs.file.Extensions)
