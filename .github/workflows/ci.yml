@@ -271,4 +271,10 @@ jobs:
           delete-untagged: true
           delete-ghost-images: true
           delete-partial-images: true
+          # Dry run for the first cycle on purpose: this step has destroyed a
+          # referenced image twice under two different implementations. It is
+          # switched off only after a build's log shows the deletion list
+          # contains no children of live tags and no tag younger than ten
+          # releases. Trust comes from that log, not from review.
+          dry-run: true
           token: ${{ secrets.GITHUB_TOKEN }}
