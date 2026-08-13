@@ -17,6 +17,7 @@ import (
 
 	"github.com/0kaba0hub/go-xapian"
 
+	"github.com/yarilomail/yarilo/internal/fts/ftsstore"
 	"github.com/yarilomail/yarilo/pkg/fts"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -61,26 +62,11 @@ type Options struct {
 	RotateTime      time.Duration // fts_flatcurve_rotate_time (5000ms; 0 = disabled)
 	SubstringSearch bool          // fts_flatcurve_substring_search (no)
 
-	// MailboxDir resolves a mailbox's fts-flatcurve directory. The service
-	// wires this to the real index-path resolver; nil uses
-	// <IndexRoot>/<folder name>/fts-flatcurve.
-	MailboxDir func(user fts.UserRef, mbox fts.MailboxRef) string
-
-	// StorageType is what the shards sit on: "local" (default) or "nfs",
-	// declared by the operator through fts_storage_type. The engine decides
-	// what it means -- today, whether a directory fsync is worth issuing
-	// (#1176). The TYPE is plumbed rather than a derived boolean, so the next
-	// filesystem-dependent decision reads the same setting instead of adding
-	// a second one.
-	StorageType string
+	// Store is where the indexes live. The service builds it from
+	// fts_index_root; nil means a posix store over this engine's layout, which
+	// is what an engine constructed without one has always used.
+	Store fts.IndexStore
 }
-
-// dirSyncUseful reports whether fsyncing a shard directory buys anything.
-// Local filesystems: yes, it is what makes the rename and the removals
-// survive a crash. NFS: no -- the protocol commits metadata operations
-// before the reply, and there is no commit-a-directory call to make, so the
-// fsync is a no-op the kernel answers 0 to.
-func (o Options) dirSyncUseful() bool { return o.StorageType != "nfs" }
 
 func (o Options) withDefaults() Options {
 	if o.CommitLimit <= 0 {
@@ -97,30 +83,37 @@ func (o Options) withDefaults() Options {
 	}
 	// RotateTime has no default here: 0 means "time-based rotation disabled".
 	// The positive default (5000ms) lives in pkg/config.DefaultConfig() only.
-	if o.MailboxDir == nil {
-		// Keyed by the folder's GUID, which is its identity: a rename keeps
-		// it and a driver migration does not change it, so neither orphans
-		// the index. The mail driver's layout is the mail tree's business and
-		// has none here -- the FTS root is its own tree (#1183).
-		o.MailboxDir = func(user fts.UserRef, mbox fts.MailboxRef) string {
-			return filepath.Join(user.IndexRoot, mbox.GUID, Label)
-		}
+	if o.Store == nil {
+		o.Store = ftsstore.NewPosix(Layout(), "")
 	}
 	return o
 }
 
-// legacyMailboxDirs are the layouts this engine has used before, newest
-// first: the driver-aware one, then the original flat one. Both are keyed by
-// the folder NAME, which is why a rename orphaned them.
+// Layout is this engine's on-disk shape, handed to whichever store keeps the
+// indexes. The current shape is keyed by the folder's GUID, which is its
+// identity: a rename keeps it and a driver migration does not change it, so
+// neither orphans the index. The mail driver's layout is the mail tree's
+// business and has none here -- the FTS root is its own tree (#1183).
+//
+// The legacy shapes are the ones this engine wrote before, newest first: the
+// driver-aware one, then the original flat one. Both are keyed by the folder
+// NAME, which is why a rename orphaned them.
 //
 // UserRef keeps Driver / Separator / EscapeChar for this: the GUID-keyed path
 // needs none of them, but reading where an older index sits does, and will
 // for as long as any deployment can still be carrying one.
-func legacyMailboxDirs(user fts.UserRef, mbox fts.MailboxRef) []string {
-	return []string{
-		filepath.Join(user.IndexRoot, mailbox.FolderSubpathEscaped(user.Driver, mbox.Name, mbox.Name,
-			mailbox.SepOrDefault(user.Separator), user.EscapeChar), Label),
-		filepath.Join(user.IndexRoot, mbox.Name, Label),
+func Layout() fts.Layout {
+	return fts.Layout{
+		Dir: func(root string, _ fts.UserRef, mbox fts.MailboxRef) string {
+			return filepath.Join(root, mbox.GUID, Label)
+		},
+		Legacy: func(root string, user fts.UserRef, mbox fts.MailboxRef) []string {
+			return []string{
+				filepath.Join(root, mailbox.FolderSubpathEscaped(user.Driver, mbox.Name, mbox.Name,
+					mailbox.SepOrDefault(user.Separator), user.EscapeChar), Label),
+				filepath.Join(root, mbox.Name, Label),
+			}
+		},
 	}
 }
 
@@ -229,10 +222,17 @@ type userIndex struct {
 }
 
 func (u *userIndex) state(mbox fts.MailboxRef) *mboxState {
-	dir := u.eng.opts.MailboxDir(u.user, mbox)
+	dir := u.eng.opts.Store.Locate(u.user, mbox)
 	st, ok := u.boxes[dir]
 	if !ok {
-		u.migrateLegacyDir(mbox, dir)
+		// Prepare adopts an index left at an older layout; it answers with the
+		// same location Locate did, so the map key does not move under us.
+		if prepared, err := u.eng.opts.Store.Prepare(u.user, mbox); err == nil {
+			dir = prepared
+		} else {
+			slog.Warn("fts/flatcurve: preparing the index location failed; using it as-is",
+				"dir", dir, "err", err)
+		}
 		cleanStaleOptimizeTmp(dir)
 		st = &mboxState{dir: dir, eng: u.eng, user: u.user, mbox: mbox}
 		u.boxes[dir] = st
@@ -256,62 +256,6 @@ func cleanStaleOptimizeTmp(dir string) {
 		return
 	}
 	slog.Info("fts/flatcurve: cleaned stale optimize tmp dir left over from a prior crash", "dir", tmp)
-}
-
-// pruneEmptyParents removes the directories a moved index leaves behind,
-// climbing from dir while each is empty and strictly below root. os.Remove
-// refuses a non-empty directory, which is the stop: a user whose other
-// mailboxes are not migrated yet keeps the shell until they are.
-//
-// Not for the bytes -- for the answer to "did the migration run". Left in
-// place, <root>/mailboxes/<name> is present for every mailbox whether it
-// moved or not, and the state that tells them apart is one level down
-// (#1195). Best-effort: the data is already where it belongs.
-func pruneEmptyParents(dir, root string) {
-	root = filepath.Clean(root)
-	for d := filepath.Clean(dir); d != root && strings.HasPrefix(d, root+string(filepath.Separator)); d = filepath.Dir(d) {
-		if err := os.Remove(d); err != nil {
-			return
-		}
-	}
-}
-
-// migrateLegacyDir moves an existing FTS index from the old flat path to the
-// driver-aware dir, so switching the resolver relocates the index in place
-// instead of orphaning it and forcing a full reindex. Best-effort: on failure
-// a fresh index is built at newDir (self-heals via autoindex). The yarilo-fts
-// service is the sole writer, so no cross-process race. Caller holds u.mu.
-func (u *userIndex) migrateLegacyDir(mbox fts.MailboxRef, newDir string) {
-	if _, err := os.Stat(newDir); err == nil {
-		return // target already present — nothing to migrate
-	}
-	var legacy string
-	for _, cand := range legacyMailboxDirs(u.user, mbox) {
-		if cand == newDir {
-			continue // a custom resolver already yields this layout
-		}
-		if _, err := os.Stat(cand); err == nil {
-			legacy = cand
-			break
-		}
-	}
-	if legacy == "" {
-		return // no older index — fresh mailbox
-	}
-	slog.Debug("fts/flatcurve: legacy dir migration starting", "from", legacy, "to", newDir)
-	if err := os.MkdirAll(filepath.Dir(newDir), 0o700); err != nil {
-		slog.Warn("fts/flatcurve: legacy dir migration: mkdir parent",
-			"from", legacy, "to", newDir, "err", err)
-		return
-	}
-	if err := os.Rename(legacy, newDir); err != nil {
-		slog.Warn("fts/flatcurve: legacy dir migration failed; will reindex fresh",
-			"from", legacy, "to", newDir, "err", err)
-		return
-	}
-	pruneEmptyParents(filepath.Dir(legacy), u.user.IndexRoot)
-	slog.Info("fts/flatcurve: migrated legacy FTS dir to the GUID-keyed path",
-		"from", legacy, "to", newDir)
 }
 
 func shardPaths(dir string) ([]string, error) {
@@ -340,7 +284,7 @@ func (st *mboxState) ensureCurrent() error {
 	if st.cur != nil {
 		return nil
 	}
-	if err := os.MkdirAll(st.dir, 0o700); err != nil {
+	if err := st.eng.opts.Store.Create(st.dir); err != nil {
 		return fmt.Errorf("fts/flatcurve: mkdir: %w", err)
 	}
 	paths, err := shardPaths(st.dir)
@@ -368,7 +312,7 @@ func (st *mboxState) ensureCurrent() error {
 	if err := os.MkdirAll(curPath, 0o700); err != nil {
 		return fmt.Errorf("fts/flatcurve: mkdir current shard: %w", err)
 	}
-	if err := syncDir(st.dir); err != nil {
+	if err := st.eng.opts.Store.Sync(st.dir); err != nil {
 		return fmt.Errorf("fts/flatcurve: fsync shard parent: %w", err)
 	}
 	slog.Debug("fts/flatcurve: ensureCurrent opening shard", "dir", st.dir, "cur_path", curPath, "fresh", fresh)
@@ -450,22 +394,11 @@ func (st *mboxState) rotate() error {
 	// Make the rename durable before the next ensureCurrent creates a new
 	// current.<ts>: otherwise a restart could leave both the old (unrenamed)
 	// and new shard directory entries unflushed, the state that wedges a shard.
-	if err := syncDir(st.dir); err != nil {
+	if err := st.eng.opts.Store.Sync(st.dir); err != nil {
 		return fmt.Errorf("fts/flatcurve: fsync after rotate: %w", err)
 	}
 	st.curPath = ""
 	return nil
-}
-
-// syncDir fsyncs a directory so its entries (a freshly created or renamed shard)
-// are durable — needed because the glass DB is opened with DB_NO_SYNC.
-func syncDir(dir string) error {
-	f, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return f.Sync()
 }
 
 // discardCurrent force-releases the write shard WITHOUT committing. Called on
@@ -549,7 +482,7 @@ func (u *userIndex) SetCheckpoint(mbox fts.MailboxRef, lastUID, uidValidity, sum
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	st := u.state(mbox)
-	if err := os.MkdirAll(st.dir, 0o700); err != nil {
+	if err := st.eng.opts.Store.Create(st.dir); err != nil {
 		return fmt.Errorf("fts/flatcurve: mkdir: %w", err)
 	}
 	tmp := filepath.Join(st.dir, checkpointFile+".tmp")
@@ -959,13 +892,8 @@ func optimizeDir(st *mboxState) error {
 	//
 	// Best-effort: a failure costs a rebuild through Rescan, never
 	// correctness.
-	if st.eng.opts.dirSyncUseful() {
-		if d, derr := os.Open(st.dir); derr == nil {
-			if serr := d.Sync(); serr != nil {
-				slog.Debug("fts/flatcurve: optimize dir sync failed", "dir", st.dir, "err", serr)
-			}
-			d.Close()
-		}
+	if serr := st.eng.opts.Store.Sync(st.dir); serr != nil {
+		slog.Debug("fts/flatcurve: optimize dir sync failed", "dir", st.dir, "err", serr)
 	}
 	metricOptimizeRuns.Inc()
 	metricOptimizeShardsMerged.Add(float64(len(paths)))
