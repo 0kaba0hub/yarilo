@@ -2,32 +2,17 @@
 
 package flatcurve
 
-import "testing"
+import (
+	"testing"
 
-// The declared storage type is what decides whether the durability call is
-// issued -- not a comment, and not a guess about the mount. Both directions
-// pinned: dropping the gate makes the nfs row fail, hard-coding the skip
-// makes the local rows fail.
-func TestStorageTypeDecidesDirSync(t *testing.T) {
-	cases := []struct {
-		storageType string
-		want        bool
-	}{
-		{"", true},      // unset = local = do the extra work
-		{"local", true}, // fsync is what makes the rename survive a crash
-		{"nfs", false},  // metadata already committed by protocol; no-op
-	}
-	for _, c := range cases {
-		if got := (Options{StorageType: c.storageType}).dirSyncUseful(); got != c.want {
-			t.Errorf("storage type %q: dirSyncUseful() = %v, want %v", c.storageType, got, c.want)
-		}
-	}
-}
+	"github.com/yarilomail/yarilo/internal/fts/ftsstore"
+)
 
 // An engine built with the nfs type still compacts correctly -- skipping the
 // fsync changes durability on crash, never the result.
 func TestOptimizeUnderNFSStorageTypeStillMerges(t *testing.T) {
-	ui, _ := testEngine(t, Options{RotateCount: 1, OptimizeLimit: 0, StorageType: "nfs"})
+	ui, _ := testEngine(t, Options{RotateCount: 1, OptimizeLimit: 0,
+		Store: ftsstore.NewPosix(Layout(), ftsstore.StorageTypeNFS)})
 	for uid := uint32(1); uid <= 6; uid++ {
 		indexDoc(t, ui, uid, nil, []string{"needle"})
 	}
