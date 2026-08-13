@@ -360,6 +360,9 @@ func (h *userHandle) ResetFolder(folderID uint64, records []*mailbox.MessageMeta
 func (h *userHandle) OptimizeIndex(folderID uint64) error {
 	return h.ui.OptimizeIndex(folderID)
 }
+func (h *userHandle) JournalSizes(folderID uint64) (int64, int64, error) {
+	return h.ui.JournalSizes(folderID)
+}
 
 // Close decrements the session's reference to the shared userIndex.
 // When the last session disconnects the underlying state is cleared

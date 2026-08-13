@@ -569,6 +569,21 @@ func (m *Map) Compact() error {
 	})
 }
 
+// JournalSizes reports the on-disk size of the base index and of the append
+// log. A log that has been folded away does not exist and reports -1, which is
+// the state a successful Compact leaves and is not the same as an empty log.
+func (m *Map) JournalSizes() (int64, int64) {
+	return statSize(m.path), statSize(m.logPath())
+}
+
+func statSize(path string) int64 {
+	st, err := os.Stat(path)
+	if err != nil {
+		return -1
+	}
+	return st.Size()
+}
+
 // RebuildCount returns the persisted storage-wide-rebuild generation counter.
 func (m *Map) RebuildCount() uint32 {
 	m.mu.Lock()

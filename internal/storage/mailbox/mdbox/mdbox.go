@@ -884,6 +884,17 @@ func (u *userMailbox) CompactMap() error {
 	return m.Compact()
 }
 
+// MapJournalSizes reports the on-disk size of the map's base index and append
+// log, so a caller that folds the map can show what its call moved.
+func (u *userMailbox) MapJournalSizes() (int64, int64, error) {
+	m, err := u.openMap()
+	if err != nil {
+		return 0, 0, err
+	}
+	base, log := m.JournalSizes()
+	return base, log, nil
+}
+
 // Close releases the cached map handle.
 func (u *userMailbox) Close() error {
 	u.mu.Lock()
