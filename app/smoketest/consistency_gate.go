@@ -49,9 +49,13 @@ const consistencyArea = "consistency"
 // what makes forgetting a protocol impossible: adding one adds a row that is
 // either checked or visibly skipped.
 func registerConsistency(checks *[]check) {
-	imapUser := *flagPasswdFileUser
-	imapPass := *flagPasswdFilePass
-	imap := surfaceState{surface: surfIMAP, present: imapUser != "", needs: "-passwd-file-user"}
+	// One account read through both surfaces. Using the IMAP passdb user on
+	// one side and the JMAP user on the other would compare two mailboxes and
+	// call their difference a disagreement, so the rows log into IMAP as the
+	// JMAP account and -jmap-user is what enables both sides.
+	imapUser, imapPass := consistencyAccount()
+	imap := surfaceState{surface: surfIMAP, present: imapUser != "",
+		needs: "-jmap-user (the rows read one account through both surfaces)"}
 	jmap := surfaceState{surface: surfJMAP, present: *flagJMAP && *flagJMAPUser != "", needs: "-jmap and -jmap-user"}
 	delivery := surfaceState{surface: surfLMTP, present: *flagDeliveryPort != "", needs: "-delivery-port"}
 
@@ -63,6 +67,8 @@ func registerConsistency(checks *[]check) {
 		}
 	}
 
+	fts := surfaceState{surface: "fts", present: *flagFTSUser != "", needs: "-fts-user"}
+
 	row("consistency imap<->jmap identity (id, subject, size, internal date)",
 		func() error { return checkConsistencyIdentity(imapUser, imapPass) },
 		imap, jmap, delivery)
@@ -70,4 +76,13 @@ func registerConsistency(checks *[]check) {
 	row("consistency imap<->jmap flag and keyword visibility (both directions)",
 		func() error { return checkConsistencyFlags(imapUser, imapPass) },
 		imap, jmap, delivery)
+
+	row("consistency imap SEARCH <-> jmap Email/query over one term",
+		func() error { return checkConsistencySearch(imapUser, imapPass) },
+		imap, jmap, delivery, fts)
+}
+
+// consistencyAccount is the account every row reads through both surfaces.
+func consistencyAccount() (user, pass string) {
+	return *flagJMAPUser, *flagJMAPPass
 }
