@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -436,7 +437,6 @@ type folderState struct {
 	// hide a same-tick replace of the base .index by a concurrent flush()/
 	// Recreate(), which would let reload()'s fast path trust a stale snapshot.
 	baseIdent os.FileInfo
-	lastFlush time.Time // wall-clock time of last flush() call (zero = never)
 
 	// logFD and namesFD are kept open across calls so appendMutLog /
 	// appendName each cost one write(2) instead of open+stat+write+close.
@@ -476,11 +476,9 @@ func (fs *folderState) closeFDs() {
 }
 
 // shouldRotate applies the rotation triple shared with the mdbox map log: below
-// minBytes never, between minBytes and maxBytes only once the log is older than
-// minAge, above maxBytes unconditionally. A log that has never been flushed in
-// this process reads as old enough — its age is unknown, and refusing to fold it
-// would leave a log inherited from an earlier process growing to the ceiling.
-func shouldRotate(logSize, minBytes, maxBytes int64, lastFlush time.Time, minAge time.Duration) bool {
+// minBytes never, between minBytes and maxBytes only once the log has been
+// accumulating for longer than minAge, above maxBytes unconditionally.
+func shouldRotate(logSize, minBytes, maxBytes int64, sinceLastFold, minAge time.Duration) bool {
 	if minBytes == 0 {
 		return false // compaction disabled
 	}
@@ -490,7 +488,30 @@ func shouldRotate(logSize, minBytes, maxBytes int64, lastFlush time.Time, minAge
 	if logSize < minBytes {
 		return false
 	}
-	return lastFlush.IsZero() || time.Since(lastFlush) >= minAge
+	return sinceLastFold >= minAge
+}
+
+// sinceLastFold reports how long the log has been accumulating, taken from the
+// base .index mtime: the base is rewritten exactly when the log is folded, so
+// its mtime is the time of the last fold — a fact shared by every process over
+// the folder, and one a freshly opened descriptor reads correctly.
+//
+// A per-descriptor stamp cannot do this job: it is zero on every fresh open, so
+// a workload that reconnects per cycle (imaptest, a phone) would fold on its
+// first write past the floor and lose the hysteresis the age arm exists for.
+//
+// An unstattable base reads as infinitely old, so a folder whose base cannot be
+// examined folds on size alone rather than never.
+func (fs *folderState) sinceLastFold() time.Duration {
+	mod := fs.baseMod
+	if mod.IsZero() {
+		st, err := os.Stat(fs.indexPath)
+		if err != nil {
+			return time.Duration(math.MaxInt64)
+		}
+		mod = st.ModTime()
+	}
+	return time.Since(mod)
 }
 
 // compactLogIfNeeded checks whether fs.logSize has crossed the compaction
@@ -501,7 +522,7 @@ func shouldRotate(logSize, minBytes, maxBytes int64, lastFlush time.Time, minAge
 // Rotation logic:
 //
 //	rotate if logSize > maxBytes
-//	     OR (logSize >= minBytes AND age since lastFlush >= minAge)
+//	     OR (logSize >= minBytes AND age since the last fold >= minAge)
 //
 // Caller must hold fs.mu.
 func (u *userIndex) compactLogIfNeeded(fs *folderState) {
@@ -509,7 +530,7 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 	if min == 0 {
 		return // compaction disabled
 	}
-	if !shouldRotate(fs.logSize, min, u.b.logCompactMaxBytes, fs.lastFlush, u.b.logCompactMinAge) {
+	if !shouldRotate(fs.logSize, min, u.b.logCompactMaxBytes, fs.sinceLastFold(), u.b.logCompactMinAge) {
 		return
 	}
 	// Never flush our in-memory header if the shared log was replaced by another
