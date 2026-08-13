@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -82,7 +83,7 @@ func parseQuotaStorage(lines []string) (used, limit int64, ok bool) {
 
 func adminReadQuota(user string) (*reading, error) {
 	url := strings.TrimRight(*flagBackendAPI, "/") + "/api/backend/quota/show?user=" + user
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
