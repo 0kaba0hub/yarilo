@@ -475,7 +475,7 @@ func TestCleanStaleOptimizeTmpDir(t *testing.T) {
 	}
 	t.Cleanup(func() { ui.Close() }) //nolint:errcheck
 
-	dir := ui.(*userIndex).eng.opts.MailboxDir(user, inbox)
+	dir := ui.(*userIndex).eng.opts.Store.Locate(user, inbox)
 	tmp := filepath.Join(dir, "optimize")
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		t.Fatal(err)
