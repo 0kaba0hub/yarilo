@@ -100,6 +100,8 @@ var (
 
 	flagDirectorAPI      = flag.String("director-api", "", "director admin API base URL, e.g. http://yarilo-director-api:9103 (enables the check, #755)")
 	flagDirectorAPIToken = flag.String("director-api-token", "", "director admin API bearer token (defaults to env DIRECTOR_API_TOKEN / YARILO_ADMIN_TOKEN)")
+	flagBackendAPI       = flag.String("backend-api", "", "backend admin API base URL, e.g. http://yarilo-backend-api:9105 (enables the quota consistency row, #1209)")
+	flagBackendAPIToken  = flag.String("backend-api-token", "", "backend admin API bearer token (defaults to env BACKEND_API_TOKEN / YARILO_ADMIN_TOKEN)")
 )
 
 // check is one gate item. A non-empty skip means the deployment did not
