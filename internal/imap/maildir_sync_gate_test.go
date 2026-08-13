@@ -30,12 +30,20 @@ func gateSetup(t *testing.T) (*session, *nsHandle, string) {
 	if _, err := idx.OpenFolder("INBOX", 1); err != nil {
 		t.Fatalf("open folder: %v", err)
 	}
-	s := &session{
-		srv:               &Server{opts: Options{MaildirSyncOnSelect: true}},
-		maildirSyncTokens: map[string]string{},
-	}
+	s := newGateSession(info, &syncTokenCache{maxEntries: 8})
 	// No MailPath from userdb, so INBOX is the maildir root <home>/Maildir.
-	return s, &nsHandle{box: box, idx: idx}, filepath.Join(info.Home, "Maildir")
+	return s, &nsHandle{box: box, idx: idx, location: info.Home}, filepath.Join(info.Home, "Maildir")
+}
+
+// newGateSession is a logged-in session reconciling against the given cache —
+// the seam the process-wide cache is tested through, since a second session for
+// the same user is exactly the case it exists for.
+func newGateSession(info *mailbox.UserInfo, cache *syncTokenCache) *session {
+	return &session{
+		srv:               &Server{opts: Options{MaildirSyncOnSelect: true}},
+		userInfo:          info,
+		maildirSyncTokens: cache,
+	}
 }
 
 // settle backdates cur/ and new/ to a fixed instant. Without it every token
