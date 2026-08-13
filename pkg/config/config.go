@@ -1891,20 +1891,35 @@ type StorageConfig struct {
 	// Example: /run/yarilo-volatile/%d/%n
 	VolatileDir string `koanf:"volatile_dir"`
 
-	// IndexLogCompactMinBytes is the minimum .index.log size at which
-	// automatic compaction (flush base + truncate log) may occur.
-	// Compaction only fires when the log is also older than
-	// IndexLogCompactMinAgeSecs (age guard prevents burst storms).
-	// 0 disables compaction entirely. Default 32 KiB.
-	IndexLogCompactMinBytes    int64  `koanf:"-"` // resolved from IndexLogCompactMinBytesRaw at load
+	// The log-rotation triple governs BOTH transaction logs that share the
+	// mailindex mechanics — the per-folder file index and the mdbox map — as
+	// one policy, the way the reference covers both from its index layer.
+	//
+	//	below min          never rotate
+	//	between min & max  rotate once the log is older than min age
+	//	above max          rotate unconditionally
+	//
+	// The age arm is what stops a burst of appends from rewriting the base once
+	// per crossing; the max arm bounds what an open has to replay.
+	//
+	// MailIndexLogRotateMinSize is the size below which a log is never folded.
+	// Unset leaves the built-in 32 KiB.
+	MailIndexLogRotateMinSize    int64  `koanf:"-"` // resolved from MailIndexLogRotateMinSizeRaw at load
+	MailIndexLogRotateMinSizeRaw string `koanf:"mail_index_log_rotate_min_size"`
+	// MailIndexLogRotateMaxSize folds the log regardless of its age.
+	// Default 1 MiB.
+	MailIndexLogRotateMaxSize    int64  `koanf:"-"` // resolved from MailIndexLogRotateMaxSizeRaw at load
+	MailIndexLogRotateMaxSizeRaw string `koanf:"mail_index_log_rotate_max_size"`
+	// MailIndexLogRotateMinAge is the minimum log age in seconds before a
+	// min-size fold fires. Default 300 s.
+	MailIndexLogRotateMinAge int `koanf:"mail_index_log_rotate_min_age"`
+
+	// Pre-beta spellings of the triple above, accepted as aliases and removed
+	// after beta. Setting both spellings of one knob to different values is
+	// refused at startup rather than resolved silently.
 	IndexLogCompactMinBytesRaw string `koanf:"index_log_compact_min_bytes"`
-	// IndexLogCompactMaxBytes forces compaction regardless of log age
-	// when the log exceeds this size. Default 1 MiB.
-	IndexLogCompactMaxBytes    int64  `koanf:"-"` // resolved from IndexLogCompactMaxBytesRaw at load
 	IndexLogCompactMaxBytesRaw string `koanf:"index_log_compact_max_bytes"`
-	// IndexLogCompactMinAgeSecs is the minimum log age in seconds
-	// before a min-size compaction fires. Default 300 s.
-	IndexLogCompactMinAgeSecs int `koanf:"index_log_compact_min_age_secs"`
+	IndexLogCompactMinAgeSecs  int    `koanf:"index_log_compact_min_age_secs"`
 
 	// ControlDir is the cluster-wide CONTROL= template. When set,
 	// per-folder control files (yarilo-uidlist, subscriptions) are
@@ -2323,6 +2338,9 @@ func Load(path string) (*Config, error) {
 	if err := k.Unmarshal("", cfg); err != nil {
 		return nil, err
 	}
+	if err := applyAliases(k, storageAliases(cfg)); err != nil {
+		return nil, err
+	}
 	expandEnv(cfg)
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -2400,8 +2418,8 @@ func (cfg *Config) validate() error {
 	resolve("fts.fts_message_max_size", cfg.FTS.MessageMaxSizeRaw, &cfg.FTS.MessageMaxSize)
 	resolve("fts.fts_decoder_max_size", cfg.FTS.DecoderMaxSizeRaw, &cfg.FTS.DecoderMaxSize)
 	resolve("fts.fts_prefetch_max_bytes", cfg.FTS.PrefetchMaxBytesRaw, &cfg.FTS.PrefetchMaxBytes)
-	resolve("storage.index_log_compact_min_bytes", cfg.Storage.IndexLogCompactMinBytesRaw, &cfg.Storage.IndexLogCompactMinBytes)
-	resolve("storage.index_log_compact_max_bytes", cfg.Storage.IndexLogCompactMaxBytesRaw, &cfg.Storage.IndexLogCompactMaxBytes)
+	resolve("storage.mail_index_log_rotate_min_size", cfg.Storage.MailIndexLogRotateMinSizeRaw, &cfg.Storage.MailIndexLogRotateMinSize)
+	resolve("storage.mail_index_log_rotate_max_size", cfg.Storage.MailIndexLogRotateMaxSizeRaw, &cfg.Storage.MailIndexLogRotateMaxSize)
 	resolve("protocol.jmap.jmap_max_size_upload", cfg.Protocol.JMAP.MaxSizeUploadRaw, &cfg.Protocol.JMAP.MaxSizeUpload)
 	resolve("protocol.jmap.jmap_max_size_request", cfg.Protocol.JMAP.MaxSizeRequestRaw, &cfg.Protocol.JMAP.MaxSizeRequest)
 	resolve("protocol.jmap.jmap_max_body_value_bytes", cfg.Protocol.JMAP.MaxBodyValueBytesRaw, &cfg.Protocol.JMAP.MaxBodyValueBytes)

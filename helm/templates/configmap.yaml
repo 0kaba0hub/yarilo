@@ -611,6 +611,16 @@ data:
       {{- if $storage.alt_dir }}
       alt_dir: {{ $storage.alt_dir | quote }}
       {{- end }}
+      {{- if $storage.mail_index_log_rotate_min_size }}
+      mail_index_log_rotate_min_size: {{ $storage.mail_index_log_rotate_min_size | quote }}
+      {{- end }}
+      {{- if $storage.mail_index_log_rotate_max_size }}
+      mail_index_log_rotate_max_size: {{ $storage.mail_index_log_rotate_max_size | quote }}
+      {{- end }}
+      {{- if $storage.mail_index_log_rotate_min_age }}
+      mail_index_log_rotate_min_age: {{ $storage.mail_index_log_rotate_min_age }}
+      {{- end }}
+      {{- /* Pre-beta spellings, still rendered so an existing values.yaml keeps working. */}}
       {{- if $storage.index_log_compact_min_bytes }}
       index_log_compact_min_bytes: {{ $storage.index_log_compact_min_bytes | quote }}
       {{- end }}

@@ -205,14 +205,7 @@ func buildStorage(cfg *config.Config, intTLS *tls.Config) (*jmap.Storage, error)
 	// with no index yet is created, migrated and log-compacted on open, and
 	// file.withDistLock runs those unguarded when no locker is wired. That
 	// would race a live IMAP SELECT on the same shared index.
-	idxOpts := []file.Option{file.WithLocker(locker)}
-	if cfg.Storage.IndexLogCompactMinBytes != 0 {
-		idxOpts = append(idxOpts, file.WithLogCompaction(
-			cfg.Storage.IndexLogCompactMinBytes,
-			cfg.Storage.IndexLogCompactMaxBytes,
-			time.Duration(cfg.Storage.IndexLogCompactMinAgeSecs)*time.Second,
-		))
-	}
+	idxOpts := backend.IndexOptions(cfg.Storage, locker)
 	return &jmap.Storage{
 		Mailbox: backend.BuildMailbox(cfg.Storage, locker),
 		MailboxByDriver: func(driver string) mailbox.MailboxBackend {
