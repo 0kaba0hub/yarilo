@@ -163,15 +163,7 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 	// quota data goes to dicts only via the quota_clone mirror; enforcement
 	// reads the index
-	idxOpts := []file.Option{file.WithLocker(locker)}
-	if cfg.Storage.IndexLogCompactMinBytes != 0 {
-		idxOpts = append(idxOpts, file.WithLogCompaction(
-			cfg.Storage.IndexLogCompactMinBytes,
-			cfg.Storage.IndexLogCompactMaxBytes,
-			time.Duration(cfg.Storage.IndexLogCompactMinAgeSecs)*time.Second,
-		))
-	}
-	idx := file.New(idxOpts...)
+	idx := file.New(IndexOptions(cfg.Storage, locker)...)
 
 	// ---- quota_warning action runner (shared by IMAP + LMTP) ----
 	quotaWarner := quotawarn.New(cfg.Quota.WarningBinDir, cfg.Quota.WarningExecTimeout)
@@ -1139,6 +1131,21 @@ func ResolveUserInfo(resolver *mailbox.Resolver, username string, ui *protocol.U
 // A nil locker is fine for read-only consumers.
 func BuildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
 	return buildMailbox(cfg, locker)
+}
+
+// IndexOptions builds the file-index options from a storage config, so every
+// binary that opens an index rotates its logs by the same triple. Exported for
+// the standalone binaries that construct their own index (yarilo-jmap).
+func IndexOptions(cfg config.StorageConfig, locker locks.Locker) []file.Option {
+	opts := []file.Option{file.WithLocker(locker)}
+	if cfg.MailIndexLogRotateMinSize != 0 {
+		opts = append(opts, file.WithLogCompaction(
+			cfg.MailIndexLogRotateMinSize,
+			cfg.MailIndexLogRotateMaxSize,
+			time.Duration(cfg.MailIndexLogRotateMinAge)*time.Second,
+		))
+	}
+	return opts
 }
 
 // BuildMailboxByDriver constructs the mailbox backend for a named driver

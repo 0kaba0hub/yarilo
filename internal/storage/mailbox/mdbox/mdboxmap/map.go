@@ -78,6 +78,15 @@ type Map struct {
 	// means the package default (defaultRotateSize).
 	rotateSize uint32
 
+	// logRotate* is the append log's rotation triple, shared with the folder
+	// file index. Zero fields select the package defaults.
+	// logRotateSet distinguishes "not configured" from a configured 0, which
+	// disables rotation.
+	logRotateSet     bool
+	logRotateMinSize int64
+	logRotateMaxSize int64
+	logRotateMinAge  time.Duration
+
 	// baseInfo / logSize track what this handle has applied from disk so
 	// reloadLocked can fast-path when nothing changed and replay only the log
 	// tail a sibling process appended since. baseInfo is the stat of the base
@@ -135,6 +144,41 @@ const defaultRotateSize uint32 = 10 * 1024 * 1024
 // 0 selects defaultRotateSize.
 func WithRotateSize(n uint32) Option {
 	return func(m *Map) { m.rotateSize = n }
+}
+
+// WithLogRotation sets the append log's rotation triple (the
+// storage.mail_index_log_rotate_* keys). A zero field selects the package
+// default; a zero minSize passed explicitly through a caller that read a
+// configured 0 disables rotation, which is the same contract the file index
+// gives.
+func WithLogRotation(minSize, maxSize int64, minAge time.Duration) Option {
+	return func(m *Map) {
+		m.logRotateMinSize = minSize
+		m.logRotateMaxSize = maxSize
+		m.logRotateMinAge = minAge
+		m.logRotateSet = true
+	}
+}
+
+func (m *Map) logRotateMinSizeOrDefault() int64 {
+	if !m.logRotateSet {
+		return defaultLogRotateMinSize
+	}
+	return m.logRotateMinSize
+}
+
+func (m *Map) logRotateMaxSizeOrDefault() int64 {
+	if m.logRotateMaxSize == 0 {
+		return defaultLogRotateMaxSize
+	}
+	return m.logRotateMaxSize
+}
+
+func (m *Map) logRotateMinAgeOrDefault() time.Duration {
+	if !m.logRotateSet {
+		return defaultLogRotateMinAge
+	}
+	return m.logRotateMinAge
 }
 
 // rotateSizeOrDefault returns the configured rotate size, or the package default.

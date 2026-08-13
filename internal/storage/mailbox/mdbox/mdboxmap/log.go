@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -22,9 +23,18 @@ import (
 // mailindex records under the layout below, which is fixed in this package and
 // no longer derived from the base file.
 
-// mapLogCompactBytes bounds the append log: once it grows past this, the next
-// append folds it into the base and truncates the log so replay stays cheap.
-const mapLogCompactBytes = 256 << 10
+// Rotation defaults, shared with the folder file index (#1258): a log under
+// minSize is never folded, one between minSize and maxSize is folded once it is
+// older than minAge, and one over maxSize is folded whatever its age.
+//
+// The floor exists because every open replays the tail, at a measured ~0.5 µs
+// per byte: the old flat 256 KiB threshold meant a legal tail could cost ~136 ms
+// on every open of an account that sits between folds.
+const (
+	defaultLogRotateMinSize int64 = 32 << 10
+	defaultLogRotateMaxSize int64 = 1 << 20
+	defaultLogRotateMinAge        = 5 * time.Minute
+)
 
 var errLogIndexMismatch = errors.New("mdboxmap: log IndexID mismatch")
 
@@ -153,11 +163,49 @@ func (m *Map) appendRefcountLogLocked(deltas []mailindex.TxExtAtomicInc) error {
 	if err := m.writeLogTxLocked(mailindex.TxTypeExtAtomicInc, mailindex.EncodeTxExtAtomicIncPayload(deltas)); err != nil {
 		return err
 	}
-	// Same threshold the append path uses: the log is bounded, not unbounded.
-	if m.logSize > mapLogCompactBytes {
+	// Same rotation policy the append path uses: the log is bounded, not
+	// unbounded.
+	if m.shouldRotateLocked() {
 		return m.flushLocked()
 	}
 	return nil
+}
+
+// shouldRotateLocked applies the rotation triple to the append log. Caller
+// holds m.mu + the map lock.
+//
+// The log's age is taken from the base's mtime rather than from a per-handle
+// stamp: the base is rewritten exactly when the log is folded, so its mtime is
+// the time of the last fold — a fact every process sharing the map reads the
+// same way, where a handle-local stamp would be zero on each freshly opened
+// session and fold on the session's first write.
+func (m *Map) shouldRotateLocked() bool {
+	minSize := m.logRotateMinSizeOrDefault()
+	if minSize == 0 {
+		return false // rotation disabled
+	}
+	if m.logSize > m.logRotateMaxSizeOrDefault() {
+		return true
+	}
+	if m.logSize < minSize {
+		return false
+	}
+	return m.sinceLastFoldLocked() >= m.logRotateMinAgeOrDefault()
+}
+
+// sinceLastFoldLocked reports how long ago the base was last written. An
+// unreadable or absent base reads as infinitely old: a map whose base cannot be
+// stat'd should fold on size alone rather than never.
+func (m *Map) sinceLastFoldLocked() time.Duration {
+	fi := m.baseInfo
+	if fi == nil {
+		var err error
+		fi, err = os.Stat(m.path)
+		if err != nil {
+			return time.Duration(math.MaxInt64)
+		}
+	}
+	return time.Since(fi.ModTime())
 }
 
 func (m *Map) writeLogTxLocked(txType mailindex.TxType, payload []byte) error {
@@ -180,8 +228,8 @@ func (m *Map) writeLogTxLocked(txType mailindex.TxType, payload []byte) error {
 }
 
 // commitAppendLocked persists the freshly-appended entries: it writes them to
-// the append log (the incremental hot path) and folds the log into the base once
-// it outgrows mapLogCompactBytes. Caller holds m.mu + the map lock.
+// the append log (the incremental hot path) and folds the log into the base when
+// the rotation triple says so. Caller holds m.mu + the map lock.
 func (m *Map) commitAppendLocked(entries []MapEntry) error {
 	if len(entries) == 0 {
 		return nil
@@ -189,7 +237,7 @@ func (m *Map) commitAppendLocked(entries []MapEntry) error {
 	if err := m.appendLogLocked(entries); err != nil {
 		return err
 	}
-	if m.logSize > mapLogCompactBytes {
+	if m.shouldRotateLocked() {
 		return m.flushLocked()
 	}
 	return nil

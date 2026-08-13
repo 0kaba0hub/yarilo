@@ -610,7 +610,6 @@ func (fs *folderState) flush(wholeNames bool) error {
 		fs.baseMod = st.ModTime()
 		fs.baseIdent = st
 	}
-	fs.lastFlush = time.Now()
 	return nil
 }
 
