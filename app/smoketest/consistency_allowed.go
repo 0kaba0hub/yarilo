@@ -1,6 +1,7 @@
 package main
 
 import (
+	"mime"
 	"sort"
 	"strings"
 	"time"
@@ -42,6 +43,22 @@ func defaultAllowances() []allowance {
 			},
 		},
 		{
+			// IMAP hands the header out as it stands on the wire, RFC 2047
+			// encoded-words and all (RFC 3501 ENVELOPE); JMAP hands out the
+			// decoded text (RFC 8621 Email.subject). Both spell one subject,
+			// so the allowance decodes and compares -- which is also why the
+			// probe subject is an encoded-word carrying non-ASCII: on a plain
+			// ASCII subject this entry would never be exercised and a
+			// pass-through would look like a decoder.
+			name:  "encoded-word against decoded text",
+			field: "subject",
+			equal: func(l, r string) bool {
+				dl, lok := decodeHeaderWords(l)
+				dr, rok := decodeHeaderWords(r)
+				return lok && rok && dl == dr
+			},
+		},
+		{
 			// One header, several addresses: the set is the fact, the order is
 			// not. Applies to address fields only, where a reordering cannot
 			// change meaning.
@@ -50,6 +67,18 @@ func defaultAllowances() []allowance {
 			equal: func(l, r string) bool { return sameAddressSet(l, r) },
 		},
 	}
+}
+
+// decodeHeaderWords decodes RFC 2047 encoded-words. A value that fails to
+// decode is not treated as equal to anything: "could not read it" and "it
+// matches" are different answers.
+func decodeHeaderWords(s string) (string, bool) {
+	dec := &mime.WordDecoder{}
+	out, err := dec.DecodeHeader(strings.TrimSpace(s))
+	if err != nil {
+		return "", false
+	}
+	return out, true
 }
 
 func isAbsent(s string) bool {

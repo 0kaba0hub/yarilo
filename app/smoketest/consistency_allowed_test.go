@@ -22,6 +22,8 @@ func TestAllowedDifferencesAreToleratedAndOtherwiseRefused(t *testing.T) {
 		{"flag case is a spelling", "flag against keyword spelling", "flags", `\Flagged`, "$FLAGGED"},
 		{"internal date rendering", "date normalisation", "internalDate",
 			"14-Aug-2026 09:30:00 +0300", "2026-08-14T06:30:00Z"},
+		{"encoded-word against decoded text", "encoded-word against decoded text", "subject",
+			"=?utf-8?Q?Rechnung_f=C3=BCr_M=C3=A4rz_=E2=82=AC42?=", "Rechnung für März €42"},
 		{"address ordering", "address ordering", "addresses",
 			"a@x.test, b@x.test", "b@x.test, a@x.test"},
 	}
@@ -58,6 +60,12 @@ func TestDifferencesNotOnTheListAreRefused(t *testing.T) {
 		{"two different instants", "internalDate",
 			"14-Aug-2026 09:30:00 +0300", "2026-08-14T09:30:00Z"},
 		{"an unparseable date against a real one", "internalDate", "someday", "2026-08-14T06:30:00Z"},
+		// The distinguishing input: a decoder and a pass-through answer the
+		// same on ASCII, and differently here.
+		{"an encoded-word decoding to a different subject", "subject",
+			"=?utf-8?Q?Rechnung_f=C3=BCr_April?=", "Rechnung für März €42"},
+		{"an undecodable encoded-word against text", "subject",
+			"=?utf-8?X?bogus?=", "Rechnung für März €42"},
 		{"a different address in the same count", "addresses",
 			"a@x.test, b@x.test", "a@x.test, c@x.test"},
 		{"the same address twice against two", "addresses",

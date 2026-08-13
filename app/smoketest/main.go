@@ -234,6 +234,8 @@ func register() []check {
 	})
 	want("director", *flagDirectorAPI != "", "director admin API status (authenticated)", "needs -director-api", checkDirectorAPI)
 
+	registerConsistency(&checks)
+
 	jmap := *flagJMAP
 	want("jmap", jmap, "jmap endpoint refuses anonymous access", "needs -jmap", checkJMAPUnauthenticated)
 	want("jmap", jmap, "jmap session resource (/.well-known/jmap)", "needs -jmap", checkJMAPSession)
