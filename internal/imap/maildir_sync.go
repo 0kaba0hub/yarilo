@@ -21,6 +21,24 @@ type proactiveSyncer interface {
 	ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Folder) (mailbox.SyncStats, error)
 }
 
+// syncTokens returns the token cache this session reconciles against: the
+// process-wide one, unless a test wired its own.
+func (s *session) syncTokens() *syncTokenCache {
+	if s.maildirSyncTokens != nil {
+		return s.maildirSyncTokens
+	}
+	return maildirSyncTokens
+}
+
+// username is the identity the token cache is keyed by; empty before login,
+// which cannot reach a reconcile.
+func (s *session) username() string {
+	if s.userInfo == nil {
+		return ""
+	}
+	return s.userInfo.Username
+}
+
 // reconcileFolder runs the proactive reconcile for a folder when the driver
 // supports it and the on-disk token changed since this session last synced the
 // folder. It returns true when the record set changed, so the caller can
@@ -38,9 +56,10 @@ func (s *session) reconcileFolder(h *nsHandle, rel string) bool {
 		return false
 	}
 	start := time.Now()
+	key := syncTokenKey(s.username(), h.location, rel)
 	token := ps.SyncToken(rel)
 	if token != "" {
-		if prev, seen := s.maildirSyncTokens[rel]; seen && prev == token {
+		if prev, seen := s.syncTokens().get(key); seen && prev == token {
 			metricMaildirSync.WithLabelValues("skipped").Inc()
 			metricMaildirSyncSeconds.Observe(time.Since(start).Seconds())
 			return false
@@ -58,10 +77,9 @@ func (s *session) reconcileFolder(h *nsHandle, rel string) bool {
 		slog.Warn("imap: maildir reconcile failed", "folder", rel, "err", err)
 		return false
 	}
-	if s.maildirSyncTokens == nil {
-		s.maildirSyncTokens = make(map[string]string)
-	}
-	s.maildirSyncTokens[rel] = token
+	// Cached only after a successful pass, so a scan or lock failure does not
+	// wedge the folder into a permanent skip.
+	s.syncTokens().put(key, token)
 	if !st.Changed {
 		return false
 	}

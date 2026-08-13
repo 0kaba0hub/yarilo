@@ -490,10 +490,10 @@ type session struct {
 	limitIP string
 	folder  *mailbox.Folder
 
-	// maildirSyncTokens caches the last SyncToken seen per folder so a SELECT
-	// on an unchanged maildir skips the reconcile scan and its lock. Keyed by
-	// the namespace-relative folder name.
-	maildirSyncTokens map[string]string
+	// maildirSyncTokens overrides the process-wide maildir token cache. Nil in
+	// production — the cache outlives every session by design (#1248) — and set
+	// only by tests that need an isolated one.
+	maildirSyncTokens *syncTokenCache
 
 	// markedCorrupt records folders this session already flagged FSCKD so a
 	// FETCH over many corrupt messages marks once, not per message. Keyed

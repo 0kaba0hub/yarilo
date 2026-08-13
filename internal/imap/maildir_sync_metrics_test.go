@@ -39,7 +39,7 @@ func syncObservations(t *testing.T) uint64 {
 func TestMaildirSyncCountsBothOutcomes(t *testing.T) {
 	s := &session{
 		srv:               &Server{opts: Options{MaildirSyncOnSelect: true}},
-		maildirSyncTokens: map[string]string{},
+		maildirSyncTokens: &syncTokenCache{maxEntries: 8},
 	}
 	h := &nsHandle{box: &fakeSyncBox{token: "t1"}, idx: &fakeSyncIndex{}}
 
