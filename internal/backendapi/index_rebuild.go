@@ -226,6 +226,31 @@ type optimizeRequest struct {
 type optimizeStats struct {
 	Folder     string `json:"folder"`
 	DurationMs int64  `json:"duration_ms"`
+	// Journal sizes on disk around the fold. A caller must be able to see from
+	// the response alone whether the call moved any bytes: a fold that folded
+	// nothing exits successfully and looks identical otherwise (#1272).
+	Before *foldSizes `json:"before,omitempty"`
+	After  *foldSizes `json:"after,omitempty"`
+}
+
+// foldSizes is what the filesystem says about one journal pair. LogBytes is -1
+// when the log file does not exist — the state folding the mdbox map leaves,
+// and a different fact from a log of zero bytes.
+type foldSizes struct {
+	BaseBytes int64 `json:"base_bytes"`
+	LogBytes  int64 `json:"log_bytes"`
+}
+
+// journalSizer is the optional capability of an index that can report what its
+// folder's journals measure on disk. The index owns the paths, so it is the
+// layer that can answer without guessing them.
+type journalSizer interface {
+	JournalSizes(folderID uint64) (int64, int64, error)
+}
+
+// mapJournalSizer is the same capability for the driver's per-user map.
+type mapJournalSizer interface {
+	MapJournalSizes() (int64, int64, error)
 }
 
 // optimizeAccountStats is what folding a whole account reports: one line per
@@ -241,7 +266,16 @@ type optimizeAccountStats struct {
 	// mdbox has one; for the others the field is absent, which is the honest
 	// answer rather than "false".
 	MapFolded *bool `json:"map_folded,omitempty"`
-	TotalMs   int64 `json:"total_ms"`
+	// Map journal sizes around the fold, absent for drivers without a map.
+	MapBefore *foldSizes `json:"map_before,omitempty"`
+	MapAfter  *foldSizes `json:"map_after,omitempty"`
+	// FoldedCount / FailedCount repeat what len(Folders) and len(Failed) say,
+	// so the response answers "did this fold the account" without the reader
+	// counting array elements or joining against the log line that used to be
+	// the only place these numbers existed.
+	FoldedCount int   `json:"folded_count"`
+	FailedCount int   `json:"failed_count"`
+	TotalMs     int64 `json:"total_ms"`
 }
 
 // mapCompactor is the optional capability a driver has when it keeps a per-user
@@ -311,13 +345,44 @@ func (s *Server) optimizeFolder(ctx context.Context, req optimizeRequest) (*opti
 	if err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("open folder: %w", err)
 	}
+	sizer, _ := bundle.idx.(journalSizer)
+	before := readFoldSizes(sizer, folder.ID)
 	if err := bundle.idx.OptimizeIndex(folder.ID); err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("optimize index: %w", err)
 	}
 	return &optimizeStats{
 		Folder:     folder.Name,
 		DurationMs: time.Since(start).Milliseconds(),
+		Before:     before,
+		After:      readFoldSizes(sizer, folder.ID),
 	}, http.StatusOK, nil
+}
+
+// readMapSizes measures the driver's per-user map, or reports nothing when the
+// driver has none (maildir, sdbox) or cannot open it.
+func readMapSizes(sizer mapJournalSizer) *foldSizes {
+	if sizer == nil {
+		return nil
+	}
+	base, log, err := sizer.MapJournalSizes()
+	if err != nil {
+		return nil
+	}
+	return &foldSizes{BaseBytes: base, LogBytes: log}
+}
+
+// readFoldSizes measures one folder's journals, or reports nothing when the
+// index cannot answer. Nothing rather than zeros: a zero-sized base would read
+// as a measurement, and this is the absence of one.
+func readFoldSizes(sizer journalSizer, folderID uint64) *foldSizes {
+	if sizer == nil {
+		return nil
+	}
+	base, log, err := sizer.JournalSizes(folderID)
+	if err != nil {
+		return nil
+	}
+	return &foldSizes{BaseBytes: base, LogBytes: log}
 }
 
 // optimizeAccount folds every folder of one account, one at a time. Sequential
@@ -342,6 +407,9 @@ func (s *Server) optimizeAccount(ctx context.Context, req optimizeRequest) (*opt
 	// indexes so a failure here is visible in the same call rather than
 	// discovered later as "the folders are clean but opening is still slow".
 	var mapFolded *bool
+	var mapBefore, mapAfter *foldSizes
+	mapSizer, _ := mailbox.Driver(bundle.box).(mapJournalSizer)
+	mapBefore = readMapSizes(mapSizer)
 	// Through mailbox.Driver, not off bundle.box directly: what the server
 	// builds is the validating wrapper, which forwards the interface method by
 	// method and therefore has no CompactMap. Asserting on the wrapper found
@@ -351,10 +419,16 @@ func (s *Server) optimizeAccount(ctx context.Context, req optimizeRequest) (*opt
 	if mc, ok := mailbox.Driver(bundle.box).(mapCompactor); ok {
 		folded := mc.CompactMap() == nil
 		mapFolded = &folded
+		mapAfter = readMapSizes(mapSizer)
 	}
 	uc.Close()
 
-	out := &optimizeAccountStats{User: req.User, MapFolded: mapFolded}
+	out := &optimizeAccountStats{
+		User:      req.User,
+		MapFolded: mapFolded,
+		MapBefore: mapBefore,
+		MapAfter:  mapAfter,
+	}
 	start := time.Now()
 	for _, e := range entries {
 		if !e.Selectable {
@@ -371,6 +445,7 @@ func (s *Server) optimizeAccount(ctx context.Context, req optimizeRequest) (*opt
 		}
 		out.Folders = append(out.Folders, *st)
 	}
+	out.FoldedCount, out.FailedCount = len(out.Folders), len(out.Failed)
 	out.TotalMs = time.Since(start).Milliseconds()
 	slog.Info("backendapi: account index fold",
 		"user", req.User, "folded", len(out.Folders), "failed", len(out.Failed), "total_ms", out.TotalMs)

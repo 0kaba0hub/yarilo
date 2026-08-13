@@ -1674,6 +1674,33 @@ func (u *userIndex) OptimizeIndex(folderID uint64) error {
 	})
 }
 
+// JournalSizes reports the on-disk size of the folder's base index and of its
+// transaction log, as the filesystem answers right now. A log that does not
+// exist reports -1, which is a state the drivers reach on purpose (the mdbox map
+// folds by removing its log) and must not be reported as an empty one.
+//
+// Measured here rather than by the caller: the paths are this package's, and a
+// caller reconstructing them would drift the moment index_dir or the layout
+// changes, reporting sizes of files nobody folded.
+func (u *userIndex) JournalSizes(folderID uint64) (int64, int64, error) {
+	u.mu.Lock()
+	fs, ok := u.open[folderID]
+	u.mu.Unlock()
+	if !ok {
+		return 0, 0, fmt.Errorf("fileindex: folder %d not open", folderID)
+	}
+	return fileSize(fs.indexPath), fileSize(fs.indexPath + ".log"), nil
+}
+
+// fileSize is the size of path, or -1 when it cannot be stat'd.
+func fileSize(path string) int64 {
+	st, err := os.Stat(path)
+	if err != nil {
+		return -1
+	}
+	return st.Size()
+}
+
 // persistKeywordRegistry encodes fs.keywords back into the keywords
 // extension's HdrData.
 func (fs *folderState) persistKeywordRegistry() error {
