@@ -1,6 +1,7 @@
 package imap
 
 import (
+	"log/slog"
 	"strings"
 	"sync"
 )
@@ -58,6 +59,11 @@ func (c *syncTokenCache) put(key, token string) {
 		c.tokens = make(map[string]string)
 	}
 	if len(c.tokens) >= c.maxEntries {
+		// Loud: the drop makes every folder rescan on its next SELECT, and a
+		// storm of scans with no logged cause is the kind of behaviour we do
+		// not ship silently.
+		slog.Warn("imap: maildir sync token cache full, dropping it",
+			"entries", len(c.tokens), "max_entries", c.maxEntries)
 		c.tokens = make(map[string]string)
 	}
 	c.tokens[key] = token
