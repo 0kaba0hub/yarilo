@@ -475,6 +475,24 @@ func (fs *folderState) closeFDs() {
 	}
 }
 
+// shouldRotate applies the rotation triple shared with the mdbox map log: below
+// minBytes never, between minBytes and maxBytes only once the log is older than
+// minAge, above maxBytes unconditionally. A log that has never been flushed in
+// this process reads as old enough — its age is unknown, and refusing to fold it
+// would leave a log inherited from an earlier process growing to the ceiling.
+func shouldRotate(logSize, minBytes, maxBytes int64, lastFlush time.Time, minAge time.Duration) bool {
+	if minBytes == 0 {
+		return false // compaction disabled
+	}
+	if logSize > maxBytes {
+		return true
+	}
+	if logSize < minBytes {
+		return false
+	}
+	return lastFlush.IsZero() || time.Since(lastFlush) >= minAge
+}
+
 // compactLogIfNeeded checks whether fs.logSize has crossed the compaction
 // thresholds configured on the Backend and, if so, flushes the base index
 // and resets the log. Errors are non-fatal — the log simply stays larger
@@ -491,12 +509,7 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 	if min == 0 {
 		return // compaction disabled
 	}
-	max := u.b.logCompactMaxBytes
-	age := u.b.logCompactMinAge
-
-	needCompact := fs.logSize > max ||
-		(fs.logSize >= min && (fs.lastFlush.IsZero() || time.Since(fs.lastFlush) >= age))
-	if !needCompact {
+	if !shouldRotate(fs.logSize, min, u.b.logCompactMaxBytes, fs.lastFlush, u.b.logCompactMinAge) {
 		return
 	}
 	// Never flush our in-memory header if the shared log was replaced by another

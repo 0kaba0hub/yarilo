@@ -169,9 +169,11 @@ storage:
   ## control_dir: "/var/yarilo-control/%d/%n" # redirect yarilo-uidlist and subscriptions files
   ## volatile_dir: "/run/yarilo-volatile/%d/%n" # local tmpfs for index tmp files (NFS deployments)
   ## alt_dir: "/mnt/cold/%d/%n"               # cold-tier alt storage root (two-tier maildir)
-  ## index_log_compact_min_bytes: "32k"   # 32 KiB — compact log when >= this size and age >= minAge (human-readable; quote it)
-  ## index_log_compact_max_bytes: "1M"    # 1 MiB  — compact unconditionally above this size (human-readable; quote it)
-  ## index_log_compact_min_age_secs: 300    # 5 min  — minimum log age before min-size compaction fires
+  ## Log rotation, one policy for both transaction logs — the mdbox map and the per-folder file index.
+  ## Every open replays the tail since the last fold, so the floor bounds what an open costs.
+  ## mail_index_log_rotate_min_size: "32k"  # 32 KiB — never fold below this (human-readable; quote it)
+  ## mail_index_log_rotate_min_age: 300     # 5 min  — between min and max, fold only once the log is this old
+  ## mail_index_log_rotate_max_size: "1M"   # 1 MiB  — fold above this whatever the age (human-readable; quote it)
   ## max_concurrent_writes: 0           # 0 = unlimited; tune to storage type: ~32 HDD, ~256 SSD
   ## mailbox_list_utf8: true            # true = UTF-8 on disk (default); false = modified-UTF-7 for legacy migrations
   ##                                    # UPGRADE NOTE: before 2.3.55 this key was documented but never rendered,

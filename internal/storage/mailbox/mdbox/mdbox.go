@@ -87,6 +87,14 @@ type Backend struct {
 	// preallocate fallocate()s a new m.<N> to rotateSize up front (mdbox_preallocate_space).
 	preallocate bool
 
+	// logRotate* is the map log's rotation triple, forwarded to every map this
+	// backend opens. logRotateSet distinguishes "not configured" from a
+	// configured 0, which disables rotation.
+	logRotateSet     bool
+	logRotateMinSize int64
+	logRotateMaxSize int64
+	logRotateMinAge  time.Duration
+
 	// now returns the current time; nil means time.Now. Injected by tests to
 	// exercise age-based rotation deterministically without sleeping.
 	now func() time.Time
@@ -134,6 +142,18 @@ func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
 // WithRotateSize sets the per-m.<N> size cap (mdbox_rotate_size) before Save rolls
 // to a fresh file_id. 0 selects the default (10 MiB).
 func WithRotateSize(n uint32) Option { return func(b *Backend) { b.rotateSize = n } }
+
+// WithLogRotation sets the map log's rotation triple
+// (storage.mail_index_log_rotate_*), the same policy and the same values the
+// folder file index rotates by. Unset leaves the map package's defaults.
+func WithLogRotation(minSize, maxSize int64, minAge time.Duration) Option {
+	return func(b *Backend) {
+		b.logRotateSet = true
+		b.logRotateMinSize = minSize
+		b.logRotateMaxSize = maxSize
+		b.logRotateMinAge = minAge
+	}
+}
 
 // WithMapFormat selects the on-disk map index format (mdbox_map_format). An
 // empty value keeps the default; an unknown one is reported when the map is
@@ -318,9 +338,15 @@ func (u *userMailbox) openMap() (*mdboxmap.Map, error) {
 	if err := os.MkdirAll(u.mapStoragePath(), 0o700); err != nil {
 		return nil, fmt.Errorf("mdbox/openmap: mkdir: %w", err)
 	}
-	m, err := mdboxmap.Open(u.mapStoragePath(), u.username,
+	mapOpts := []mdboxmap.Option{
 		mdboxmap.WithLocker(u.b.locker), mdboxmap.WithOwner(u.owner),
-		mdboxmap.WithRotateSize(u.b.rotateSize), mdboxmap.WithFormat(u.b.mapFormat))
+		mdboxmap.WithRotateSize(u.b.rotateSize), mdboxmap.WithFormat(u.b.mapFormat),
+	}
+	if u.b.logRotateSet {
+		mapOpts = append(mapOpts, mdboxmap.WithLogRotation(
+			u.b.logRotateMinSize, u.b.logRotateMaxSize, u.b.logRotateMinAge))
+	}
+	m, err := mdboxmap.Open(u.mapStoragePath(), u.username, mapOpts...)
 	if err != nil {
 		return nil, err
 	}

@@ -51,11 +51,25 @@ func byDriver(driver string, sc config.StorageConfig, locker locks.Locker) mailb
 			mdbox.WithRotateSize(uint32(quota.ParseSize(sc.MdboxRotateSize))),
 			mdbox.WithRotateInterval(time.Duration(ParseIntervalSeconds(sc.MdboxRotateInterval))*time.Second),
 			mdbox.WithPreallocate(sc.MdboxPreallocateSpace),
-			mdbox.WithMapFormat(sc.MdboxMapFormat))
+			mdbox.WithMapFormat(sc.MdboxMapFormat),
+			mapLogRotation(sc))
 	default:
 		return maildir.New(maildir.WithLocker(locker), maildir.WithMaxConcurrentWrites(sc.MaxConcurrentWrites),
 			maildir.WithListUTF8(sc.MailboxListUTF8))
 	}
+}
+
+// mapLogRotation forwards the rotation triple to the mdbox map. An unset triple
+// (a config that never went through Load, or one that leaves the keys out)
+// leaves the map package's own defaults in place rather than passing zeros,
+// which would read as "rotation disabled" — the same guard the file index puts
+// in front of WithLogCompaction.
+func mapLogRotation(sc config.StorageConfig) mdbox.Option {
+	if sc.MailIndexLogRotateMinSize == 0 {
+		return func(*mdbox.Backend) {}
+	}
+	return mdbox.WithLogRotation(sc.MailIndexLogRotateMinSize, sc.MailIndexLogRotateMaxSize,
+		time.Duration(sc.MailIndexLogRotateMinAge)*time.Second)
 }
 
 // ParseIntervalSeconds converts a duration string ("30s", "5m", "1h") or a bare
