@@ -80,6 +80,13 @@ func registerConsistency(checks *[]check) {
 	row("consistency imap SEARCH <-> jmap Email/query over one term",
 		func() error { return checkConsistencySearch(imapUser, imapPass) },
 		imap, jmap, delivery, fts)
+
+	// The readers row needs the delivery and at least one reader beyond IMAP;
+	// which readers are configured it discovers itself, and a reader that is
+	// not deployed is simply not among them.
+	row("consistency one lmtp delivery seen by every configured reader",
+		func() error { return checkConsistencyReaders(imapUser, imapPass) },
+		imap, delivery)
 }
 
 // consistencyAccount is the account every row reads through both surfaces.
