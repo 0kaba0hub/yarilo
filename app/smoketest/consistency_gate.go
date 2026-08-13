@@ -66,4 +66,8 @@ func registerConsistency(checks *[]check) {
 	row("consistency imap<->jmap identity (id, subject, size, internal date)",
 		func() error { return checkConsistencyIdentity(imapUser, imapPass) },
 		imap, jmap, delivery)
+
+	row("consistency imap<->jmap flag and keyword visibility (both directions)",
+		func() error { return checkConsistencyFlags(imapUser, imapPass) },
+		imap, jmap, delivery)
 }
