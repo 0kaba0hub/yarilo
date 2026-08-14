@@ -1714,8 +1714,9 @@ type AuthTokenConfig struct {
 	// TTLSeconds is how long the token remains valid for the backend to
 	// consume. Default 60 s — enough for the login pod to forward it and
 	// the backend to call VERIFY within the same connection setup.
-	TTLSeconds      int `koanf:"auth_cache_ttl"`
-	TTLSecondsAlias int `koanf:"ttl_seconds"`
+	// auth.token is ours: the reference has no token store, so this key keeps
+	// its own name and is not part of the package-2 renames.
+	TTLSeconds int `koanf:"ttl_seconds"`
 	// Backend selects the token store implementation: "memory" (default,
 	// single-pod only) or "redis" (multi-replica safe).
 	Backend string `koanf:"backend"`
@@ -1995,9 +1996,9 @@ type StorageConfig struct {
 	// Pre-beta spellings of the triple above, accepted as aliases and removed
 	// after beta. Setting both spellings of one knob to different values is
 	// refused at startup rather than resolved silently.
-	IndexLogCompactMinBytesRaw string `koanf:"index_log_compact_min_bytes"`
-	IndexLogCompactMaxBytesRaw string `koanf:"index_log_compact_max_bytes"`
-	IndexLogCompactMinAgeSecs  int    `koanf:"index_log_compact_min_age_secs"`
+	IndexLogCompactMinBytesAlias   string `koanf:"index_log_compact_min_bytes"`
+	IndexLogCompactMaxBytesAlias   string `koanf:"index_log_compact_max_bytes"`
+	IndexLogCompactMinAgeSecsAlias int    `koanf:"index_log_compact_min_age_secs"`
 
 	// ControlDir is the cluster-wide CONTROL= template. When set,
 	// per-folder control files (yarilo-uidlist, subscriptions) are
@@ -2428,6 +2429,7 @@ func Load(path string) (*Config, error) {
 	}
 	for _, set := range [][]aliasedKey{
 		storageAliases(cfg), generalAliases(cfg), aclAliases(cfg), authAliases(cfg),
+		serviceSSLAliases(cfg),
 	} {
 		if err := applyAliases(k, set); err != nil {
 			return nil, err

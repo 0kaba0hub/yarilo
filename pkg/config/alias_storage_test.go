@@ -286,3 +286,48 @@ func TestListValuedAliasComparesAsAValue(t *testing.T) {
 		t.Error("two different lists loaded anyway")
 	}
 }
+
+// A per-service ssl override is the same block type as general.ssl, so it
+// carries the same pre-beta spellings — and the fixed general.ssl paths do not
+// reach it. An override written the old way used to fill a field nobody
+// adopted, and the service lost its certificate: set, and doing nothing.
+func TestPerServiceSSLOverrideAcceptsBothSpellings(t *testing.T) {
+	const svc = "services:\n  imaps:\n    listen: \":993\"\n    ssl:\n"
+
+	cfg, err := loadYAML(t, svc+"      tls_cert: /svc.pem\n      tls_key: /svc.key\n")
+	if err != nil {
+		t.Fatalf("old spelling: %v", err)
+	}
+	if got := cfg.Services.IMAPS.SSL.SSLServerCert; got != "/svc.pem" {
+		t.Errorf("certificate from the pre-beta spelling = %q, want /svc.pem", got)
+	}
+	if got := cfg.Services.IMAPS.SSL.SSLServerKey; got != "/svc.key" {
+		t.Errorf("key from the pre-beta spelling = %q, want /svc.key", got)
+	}
+
+	cfg, err = loadYAML(t, svc+"      ssl_server_cert_file: /svc.pem\n")
+	if err != nil {
+		t.Fatalf("canonical spelling: %v", err)
+	}
+	if got := cfg.Services.IMAPS.SSL.SSLServerCert; got != "/svc.pem" {
+		t.Errorf("certificate from the canonical spelling = %q", got)
+	}
+
+	if _, err := loadYAML(t, svc+"      ssl_server_cert_file: /a.pem\n      tls_cert: /b.pem\n"); err == nil {
+		t.Error("a service override with two spellings at different values loaded anyway")
+	}
+}
+
+// auth.token is ours — the reference has no token store — so package 2 must not
+// have touched it. The row reads the value back rather than the tag, because
+// the defect was a key that parsed into a field nobody adopted and silently
+// fell back to the default.
+func TestOursOnlyKeysAreUntouched(t *testing.T) {
+	cfg, err := loadYAML(t, "auth:\n  token:\n    ttl_seconds: 120\n    backend: memory\n")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Auth.Token.TTLSeconds != 120 {
+		t.Errorf("auth.token.ttl_seconds read as %d, want 120", cfg.Auth.Token.TTLSeconds)
+	}
+}

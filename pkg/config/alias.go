@@ -75,14 +75,14 @@ func storageAliases(cfg *Config) []aliasedKey {
 		{
 			canonical: "storage.mail_index_log_rotate_min_size",
 			alias:     "storage.index_log_compact_min_bytes",
-			adopt:     func() { s.MailIndexLogRotateMinSizeRaw = s.IndexLogCompactMinBytesRaw },
-			equal:     func() bool { return s.MailIndexLogRotateMinSizeRaw == s.IndexLogCompactMinBytesRaw },
+			adopt:     func() { s.MailIndexLogRotateMinSizeRaw = s.IndexLogCompactMinBytesAlias },
+			equal:     func() bool { return s.MailIndexLogRotateMinSizeRaw == s.IndexLogCompactMinBytesAlias },
 		},
 		{
 			canonical: "storage.mail_index_log_rotate_max_size",
 			alias:     "storage.index_log_compact_max_bytes",
-			adopt:     func() { s.MailIndexLogRotateMaxSizeRaw = s.IndexLogCompactMaxBytesRaw },
-			equal:     func() bool { return s.MailIndexLogRotateMaxSizeRaw == s.IndexLogCompactMaxBytesRaw },
+			adopt:     func() { s.MailIndexLogRotateMaxSizeRaw = s.IndexLogCompactMaxBytesAlias },
+			equal:     func() bool { return s.MailIndexLogRotateMaxSizeRaw == s.IndexLogCompactMaxBytesAlias },
 		},
 		{
 			canonical: "storage.mail_driver",
@@ -142,39 +142,22 @@ func storageAliases(cfg *Config) []aliasedKey {
 		{
 			canonical: "storage.mail_index_log_rotate_min_age",
 			alias:     "storage.index_log_compact_min_age_secs",
-			adopt:     func() { s.MailIndexLogRotateMinAge = s.IndexLogCompactMinAgeSecs },
-			equal:     func() bool { return s.MailIndexLogRotateMinAge == s.IndexLogCompactMinAgeSecs },
+			adopt:     func() { s.MailIndexLogRotateMinAge = s.IndexLogCompactMinAgeSecsAlias },
+			equal:     func() bool { return s.MailIndexLogRotateMinAge == s.IndexLogCompactMinAgeSecsAlias },
 		},
 	}
 }
 
 // generalAliases lists the general-section renames of package 2 (#1286).
 func generalAliases(cfg *Config) []aliasedKey {
-	ssl := &cfg.General.SSL
 	hap := &cfg.General.HAProxy
-	str := func(canonical, alias string, c, a *string) aliasedKey {
-		return aliasedKey{canonical: canonical, alias: alias,
-			adopt: func() { *c = *a }, equal: func() bool { return *c == *a }}
-	}
-	return []aliasedKey{
-		str("general.ssl.ssl_server_cert_file", "general.ssl.tls_cert", &ssl.SSLServerCert, &ssl.TLSCertAlias),
-		str("general.ssl.ssl_server_key_file", "general.ssl.tls_key", &ssl.SSLServerKey, &ssl.TLSKeyAlias),
-		str("general.ssl.ssl_server_alt_cert_file", "general.ssl.tls_alt_cert", &ssl.SSLServerAltCert, &ssl.TLSAltCertAlias),
-		str("general.ssl.ssl_server_alt_key_file", "general.ssl.tls_alt_key", &ssl.SSLServerAltKey, &ssl.TLSAltKeyAlias),
-		str("general.ssl.ssl_min_protocol", "general.ssl.tls_min_version", &ssl.SSLMinProtocol, &ssl.TLSMinVersionAlias),
-		{
-			canonical: "general.ssl.ssl_prefer_server_ciphers",
-			alias:     "general.ssl.prefer_server_ciphers",
-			adopt:     func() { ssl.SSLPreferCiphers = ssl.PreferServerAlias },
-			equal:     func() bool { return ssl.SSLPreferCiphers == ssl.PreferServerAlias },
-		},
-		{
-			canonical: "general.haproxy.haproxy_trusted_networks",
-			alias:     "general.haproxy.trusted_nets",
-			adopt:     func() { hap.HAProxyTrustedNetworks = hap.TrustedNetsAlias },
-			equal:     func() bool { return equalStrings(hap.HAProxyTrustedNetworks, hap.TrustedNetsAlias) },
-		},
-	}
+	out := sslAliasesFor("general.ssl", &cfg.General.SSL)
+	return append(out, aliasedKey{
+		canonical: "general.haproxy.haproxy_trusted_networks",
+		alias:     "general.haproxy.trusted_nets",
+		adopt:     func() { hap.HAProxyTrustedNetworks = hap.TrustedNetsAlias },
+		equal:     func() bool { return equalStrings(hap.HAProxyTrustedNetworks, hap.TrustedNetsAlias) },
+	})
 }
 
 // aclAliases lists the acl-section renames of package 2.
@@ -250,4 +233,55 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// serviceSSLAliases lists the per-service ssl override blocks. A service block
+// is the same SSLConfig type, so it carries the same pre-beta spellings -- and
+// the fixed general.ssl paths do not reach it. Without this, an override
+// written the old way filled an alias field nobody adopted and the service lost
+// its certificate: a value that looks set and does nothing.
+func serviceSSLAliases(cfg *Config) []aliasedKey {
+	var out []aliasedKey
+	for name, svc := range servicesByName(cfg) {
+		if svc == nil || svc.SSL == nil {
+			continue
+		}
+		out = append(out, sslAliasesFor("services."+name+".ssl", svc.SSL)...)
+	}
+	return out
+}
+
+// sslAliasesFor builds the ssl pairs for one block, wherever that block lives.
+func sslAliasesFor(path string, ssl *SSLConfig) []aliasedKey {
+	str := func(canonical, alias string, c, a *string) aliasedKey {
+		return aliasedKey{canonical: path + "." + canonical, alias: path + "." + alias,
+			adopt: func() { *c = *a }, equal: func() bool { return *c == *a }}
+	}
+	return []aliasedKey{
+		str("ssl_server_cert_file", "tls_cert", &ssl.SSLServerCert, &ssl.TLSCertAlias),
+		str("ssl_server_key_file", "tls_key", &ssl.SSLServerKey, &ssl.TLSKeyAlias),
+		str("ssl_server_alt_cert_file", "tls_alt_cert", &ssl.SSLServerAltCert, &ssl.TLSAltCertAlias),
+		str("ssl_server_alt_key_file", "tls_alt_key", &ssl.SSLServerAltKey, &ssl.TLSAltKeyAlias),
+		str("ssl_min_protocol", "tls_min_version", &ssl.SSLMinProtocol, &ssl.TLSMinVersionAlias),
+		{
+			canonical: path + ".ssl_prefer_server_ciphers",
+			alias:     path + ".prefer_server_ciphers",
+			adopt:     func() { ssl.SSLPreferCiphers = ssl.PreferServerAlias },
+			equal:     func() bool { return ssl.SSLPreferCiphers == ssl.PreferServerAlias },
+		},
+	}
+}
+
+// servicesByName maps the service blocks to the koanf names they live under, so
+// an alias path can be built for a block that is one of many rather than at a
+// fixed location.
+func servicesByName(cfg *Config) map[string]*ServiceConfig {
+	s := &cfg.Services
+	return map[string]*ServiceConfig{
+		"imap": s.IMAP, "imaps": s.IMAPS,
+		"submission": s.Submission, "submissions": s.Submissions,
+		"pop3": s.POP3, "pop3s": s.POP3S,
+		"lmtp": s.LMTP, "managesieve": s.ManageSieve, "managesieve_be": s.ManageSieveBE,
+		"jmap": s.JMAP, "jmap_be": s.JMAPBE,
+	}
 }
