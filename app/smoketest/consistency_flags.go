@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 )
@@ -19,15 +18,12 @@ import (
 // would call healthy.
 const consistencyCustomFlag = "$smokelabel"
 
-func checkConsistencyFlags(user, pass string) error {
+func checkConsistencyFlagsIMAPToJMAP(user, pass string) error {
 	marker := consistencyMarker("flags")
 	if err := deliverConsistencyProbe(user, marker); err != nil {
 		return err
 	}
-
-	// IMAP writes, JMAP reads.
-	uid, err := imapStoreFlags(user, pass, marker, `\Seen `+consistencyCustomFlag)
-	if err != nil {
+	if _, err := imapStoreFlags(user, pass, marker, `\Seen `+consistencyCustomFlag); err != nil {
 		return fmt.Errorf("set flags over imap: %w", err)
 	}
 	id, err := jmapProbeID(marker)
@@ -39,38 +35,41 @@ func checkConsistencyFlags(user, pass string) error {
 	if err != nil {
 		return fmt.Errorf("read keywords over jmap: %w", err)
 	}
-	if err := judgeRow("imap->jmap flag visibility", left, right, defaultAllowances()); err != nil {
+	return judgeRow("imap->jmap flag visibility", left, right, defaultAllowances())
+}
+
+// The other direction, as its own row. It cannot run until Email/set exists
+// (#712), and a row that always passes because its write silently did nothing
+// reads in the report as a direction that was checked -- the softer form of the
+// pair nobody remembers is missing. Registered as a named skip instead, so the
+// day #712 lands the report itself asks for it.
+func checkConsistencyFlagsJMAPToIMAP(user, pass string) error {
+	marker := consistencyMarker("flags-back")
+	if err := deliverConsistencyProbe(user, marker); err != nil {
 		return err
 	}
-
-	// JMAP writes, IMAP reads. \Flagged is added rather than replacing what is
-	// there: the row is about one surface seeing the other's write, not about
-	// either surface's ability to clear state.
-	//
-	// Email/set does not exist yet (the JMAP write path is #712), so this half
-	// reports itself as not-yet-checkable instead of failing: a row that can
-	// never pass is a red gate that says nothing, and the direction that CAN be
-	// checked has already been checked above.
+	uid, err := imapStoreFlags(user, pass, marker, `\Seen`)
+	if err != nil {
+		return fmt.Errorf("prepare over imap: %w", err)
+	}
+	id, err := jmapProbeID(marker)
+	if err != nil {
+		return err
+	}
 	if err := jmapSetKeyword(id, "$flagged"); err != nil {
-		if isJMAPUnknownMethod(err) {
-			slog.Info("smoke: jmap->imap keyword direction not checkable yet",
-				"reason", "Email/set is not implemented (#712)")
-			return nil
-		}
 		return fmt.Errorf("set keyword over jmap: %w", err)
 	}
 	back, err := imapReadFlags(user, pass, uid)
 	if err != nil {
 		return fmt.Errorf("read flags over imap: %w", err)
 	}
-	want := newReading(surfJMAP).set("flags", []string{"$seen", "$flagged", consistencyCustomFlag})
+	// Narrowed to system flags on purpose while the row cannot run: IMAP sets
+	// only \Seen here, and Email/set writes $flagged. When #712 lands, put a
+	// custom keyword back into this direction too (keywords/$smokelabel over
+	// Email/set) -- non-system keywords are the vulnerable class, and losing
+	// one is what #1278 was.
+	want := newReading(surfJMAP).set("flags", []string{"$seen", "$flagged"})
 	return judgeRow("jmap->imap flag visibility", want, back, defaultAllowances())
-}
-
-// isJMAPUnknownMethod reports the server saying it does not implement the
-// method at all, as opposed to refusing this particular call.
-func isJMAPUnknownMethod(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "unknownMethod")
 }
 
 func imapStoreFlags(user, pass, marker, flags string) (string, error) {

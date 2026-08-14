@@ -73,9 +73,18 @@ func registerConsistency(checks *[]check) {
 		func() error { return checkConsistencyIdentity(imapUser, imapPass) },
 		imap, jmap, delivery)
 
-	row("consistency imap<->jmap flag and keyword visibility (both directions)",
-		func() error { return checkConsistencyFlags(imapUser, imapPass) },
+	row("consistency imap->jmap flag becomes the keyword",
+		func() error { return checkConsistencyFlagsIMAPToJMAP(imapUser, imapPass) },
 		imap, jmap, delivery)
+
+	// The write half of JMAP does not exist yet (#712). The row is registered
+	// so the report keeps asking for it: a direction that quietly stops being
+	// checked is the same hole this area was built to close.
+	jmapWrite := surfaceState{surface: "jmap Email/set", present: false,
+		needs: "Email/set, the JMAP write path — not implemented yet (#712)"}
+	row("consistency jmap->imap keyword becomes the flag",
+		func() error { return checkConsistencyFlagsJMAPToIMAP(imapUser, imapPass) },
+		imap, jmapWrite, delivery)
 
 	row("consistency imap SEARCH <-> jmap Email/query over one term",
 		func() error { return checkConsistencySearch(imapUser, imapPass) },

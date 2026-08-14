@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
@@ -74,27 +73,32 @@ func TestFlagRowJudgement(t *testing.T) {
 	}
 }
 
-// The JMAP write path does not exist yet (#712), so the row's second direction
-// answers "not checkable" rather than failing: a row that can never pass is a
-// red gate that says nothing, and the direction that can be checked is checked
-// above it. Any other JMAP error still fails the row — "not implemented" is a
-// specific answer, not a category for everything that went wrong.
-func TestUnknownMethodIsDistinguishedFromAnyOtherFailure(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"the method does not exist", errors.New(`Email/set: {"type":"unknownMethod"}`), true},
-		{"the call was refused", errors.New(`Email/set: {"type":"invalidArguments"}`), false},
-		{"the transport failed", errors.New("post https://host: connection refused"), false},
-		{"no error at all", nil, false},
+// The two directions are two rows, and the one that cannot run yet has to be
+// visible as a skip naming why. A single row covering both would pass on the
+// half that works and say nothing about the half that does not exist — the
+// softer form of the missing pair this area exists to prevent.
+func TestFlagDirectionsAreSeparateRows(t *testing.T) {
+	var checks []check
+	registerConsistency(&checks)
+
+	var forward, back *check
+	for i := range checks {
+		switch {
+		case strings.Contains(checks[i].name, "imap->jmap flag"):
+			forward = &checks[i]
+		case strings.Contains(checks[i].name, "jmap->imap keyword"):
+			back = &checks[i]
+		}
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isJMAPUnknownMethod(tc.err); got != tc.want {
-				t.Errorf("isJMAPUnknownMethod(%v) = %v, want %v", tc.err, got, tc.want)
-			}
-		})
+	if forward == nil || back == nil {
+		t.Fatalf("both directions must be registered; forward=%v back=%v", forward != nil, back != nil)
+	}
+	if back.skip == "" {
+		t.Error("the direction that needs Email/set is not reported as a skip")
+	}
+	for _, want := range []string{"Email/set", "#712"} {
+		if !strings.Contains(back.skip, want) {
+			t.Errorf("skip %q does not name %q", back.skip, want)
+		}
 	}
 }
