@@ -547,7 +547,14 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 		return
 	}
 	if err := fs.flush(false); err != nil {
-		slog.Warn("fileindex: log compaction flush failed", "folder", fs.folder, "err", err)
+		// Non-fatal on purpose -- a folder that cannot fold its log still
+		// serves mail -- but not silent: rotation being off is invisible from
+		// the outside, and the log then grows until every open replays it
+		// (#1258/#1270 measured what that costs). The counter is what an
+		// operator can alert on without reading logs (#1285).
+		metricCompactionRefused.Inc()
+		slog.Warn("fileindex: log compaction flush failed; rotation is not happening for this folder",
+			"folder", fs.folder, "log_size", fs.logSize, "err", err)
 		return
 	}
 	fs.closeFDs()
