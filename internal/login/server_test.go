@@ -594,7 +594,7 @@ func TestDecodePlainCreds(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			u, p, err := decodePlainCreds(tc.b64)
+			_, u, p, err := decodePlainCreds(tc.b64)
 			if tc.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")

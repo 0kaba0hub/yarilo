@@ -180,6 +180,19 @@ func (c *Client) Close() error {
 // Authenticate sends an AUTH command for the given credentials and returns the
 // result. remoteIP and sessionID may be empty strings (omitted from request).
 func (c *Client) Authenticate(username, password, service, remoteIP, sessionID string) (*AuthResult, error) {
+	return c.AuthenticateAs("", username, password, service, remoteIP, sessionID)
+}
+
+// AuthenticateAs is Authenticate with an impersonation target: authzid is the
+// user the caller asks to act AS, authcid the identity it proves. Empty authzid
+// is an ordinary login, which is what Authenticate passes.
+//
+// The target travels in the SASL PLAIN response, where the auth service already
+// reads it. Rebuilding the response with an empty authzid -- as this client did
+// -- discarded every master login before it left the pod, so the service saw a
+// plain login of the master and refused it (#1305). Whether impersonation is
+// granted stays the service's decision; the client only carries the request.
+func (c *Client) AuthenticateAs(authzid, authcid, password, service, remoteIP, sessionID string) (*AuthResult, error) {
 	id := c.nextID()
 
 	var sb strings.Builder
@@ -187,11 +200,12 @@ func (c *Client) Authenticate(username, password, service, remoteIP, sessionID s
 	sb.WriteString(id)
 	sb.WriteString("\tPLAIN")
 	sb.WriteString("\tuser=")
-	sb.WriteString(username)
+	sb.WriteString(authcid)
 	sb.WriteString("\tresp=")
-	// SASL PLAIN: NUL + authid + NUL + password
+	// SASL PLAIN: [authzid] NUL authcid NUL password
+	sb.WriteString(authzid)
 	sb.WriteString("\x00")
-	sb.WriteString(username)
+	sb.WriteString(authcid)
 	sb.WriteString("\x00")
 	sb.WriteString(password)
 	if service != "" {

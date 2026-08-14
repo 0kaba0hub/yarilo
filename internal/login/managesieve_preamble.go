@@ -181,12 +181,12 @@ func msHandlePlain(conn net.Conn, rd *bufio.Reader, initResp []byte) (*preamble,
 		b64 = string(resp)
 	}
 
-	username, password, err := decodePlainCreds(b64)
+	authzid, username, password, err := decodePlainCreds(b64)
 	if err != nil {
 		fmt.Fprintf(conn, "NO (AUTHENTICATIONFAILED) \"Invalid credentials.\"\r\n") //nolint:errcheck
 		return nil, nil
 	}
-	return &preamble{username: username, password: password}, nil
+	return &preamble{username: username, password: password, authzid: authzid}, nil
 }
 
 func msHandleLogin(conn net.Conn, rd *bufio.Reader) (*preamble, error) {

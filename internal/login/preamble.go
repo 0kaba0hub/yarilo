@@ -36,6 +36,11 @@ func imapPreAuthCaps(extTLS *tls.Config, opts Options) string {
 type preamble struct {
 	username string // for director LOOKUP and yarilo-auth AUTH
 	password string // credential to pass to yarilo-auth AUTH
+	// authzid is the SASL PLAIN impersonation target: non-empty only when a
+	// master user asked to act as somebody else. It travels to yarilo-auth,
+	// which decides whether the request is granted -- the login pod never
+	// judges it (#1305).
+	authzid  string
 	ehloLine string // SMTP EHLO line replayed after XCLIENT reset (submission only)
 	cmdTag   string // IMAP command tag; empty for POP3/Submission
 	// forwardIP/forwardPort carry the original client address a trusted
@@ -240,7 +245,7 @@ func imapCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 					}
 					b64 = strings.TrimRight(resp, "\r\n")
 				}
-				username, password, err := decodePlainCreds(b64)
+				authzid, username, password, err := decodePlainCreds(b64)
 				if err != nil {
 					fmt.Fprintf(conn, "%s BAD Invalid SASL encoding\r\n", tag) //nolint:errcheck
 					continue
@@ -248,6 +253,7 @@ func imapCommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 				return &preamble{
 					username:      username,
 					password:      password,
+					authzid:       authzid,
 					cmdTag:        tag,
 					forwardIP:     fwdIP,
 					forwardPort:   fwdPort,
@@ -383,12 +389,12 @@ func pop3CommandLoop(conn net.Conn, rd *bufio.Reader, extTLS *tls.Config, opts O
 					}
 					b64 = strings.TrimRight(resp, "\r\n")
 				}
-				user, pass, decErr := decodePlainCreds(b64)
+				authzid, user, pass, decErr := decodePlainCreds(b64)
 				if decErr != nil {
 					fmt.Fprintf(conn, "-ERR Invalid authentication\r\n") //nolint:errcheck
 					continue
 				}
-				return &preamble{username: user, password: pass, forwardIP: fwdIP, forwardPort: fwdPort, forwardSource: "xclient"}, conn, rd, nil
+				return &preamble{username: user, password: pass, authzid: authzid, forwardIP: fwdIP, forwardPort: fwdPort, forwardSource: "xclient"}, conn, rd, nil
 			case "LOGIN":
 				if _, err := fmt.Fprintf(conn, "+ VXNlcm5hbWU6\r\n"); err != nil {
 					return nil, conn, rd, fmt.Errorf("pop3: auth login username prompt: %w", err)
@@ -579,7 +585,7 @@ func handleSMTPAuth(conn net.Conn, rd *bufio.Reader, line, ehloLine string) (*pr
 			}
 			b64 = strings.TrimRight(resp, "\r\n")
 		}
-		username, password, err := decodePlainCreds(b64)
+		authzid, username, password, err := decodePlainCreds(b64)
 		if err != nil {
 			fmt.Fprintf(conn, "535 5.7.8 Authentication failed\r\n") //nolint:errcheck
 			return nil, fmt.Errorf("smtp: plain decode: %w", err)
@@ -587,6 +593,7 @@ func handleSMTPAuth(conn net.Conn, rd *bufio.Reader, line, ehloLine string) (*pr
 		return &preamble{
 			username: username,
 			password: password,
+			authzid:  authzid,
 			ehloLine: ehloLine,
 		}, nil
 
@@ -632,27 +639,32 @@ func handleSMTPAuth(conn net.Conn, rd *bufio.Reader, line, ehloLine string) (*pr
 	}
 }
 
-// decodePlainCreds extracts authcid and passwd from a SASL PLAIN base64 payload.
-// Wire format: [authzid] NUL authcid NUL passwd
-func decodePlainCreds(b64str string) (username, password string, err error) {
+// decodePlainCreds extracts authzid, authcid and passwd from a SASL PLAIN
+// base64 payload. Wire format: [authzid] NUL authcid NUL passwd.
+//
+// The authzid is the impersonation target (RFC 4616 §2): a master user
+// authenticates as itself and asks to act as somebody else. Dropping it here
+// turned every master login into an ordinary login of the master, which failed
+// with the target never reaching the auth service (#1305).
+func decodePlainCreds(b64str string) (authzid, username, password string, err error) {
 	data, decErr := base64.StdEncoding.DecodeString(b64str)
 	if decErr != nil {
-		return "", "", fmt.Errorf("base64: %w", decErr)
+		return "", "", "", fmt.Errorf("base64: %w", decErr)
 	}
 	parts := bytes.SplitN(data, []byte{0}, 3)
 	if len(parts) != 3 {
-		return "", "", fmt.Errorf("PLAIN: expected 3 NUL-separated parts")
+		return "", "", "", fmt.Errorf("PLAIN: expected 3 NUL-separated parts")
 	}
 	authcid := string(parts[1])
 	if authcid == "" {
-		return "", "", fmt.Errorf("PLAIN: empty authcid")
+		return "", "", "", fmt.Errorf("PLAIN: empty authcid")
 	}
-	return authcid, string(parts[2]), nil
+	return string(parts[0]), authcid, string(parts[2]), nil
 }
 
 // decodePlainUsername extracts only the authcid from a SASL PLAIN base64 payload.
 func decodePlainUsername(b64str string) (string, error) {
-	u, _, err := decodePlainCreds(b64str)
+	_, u, _, err := decodePlainCreds(b64str)
 	return u, err
 }
 
