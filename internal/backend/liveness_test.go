@@ -18,7 +18,7 @@ func TestStoreHealthPath(t *testing.T) {
 	}{
 		{"mail_path templated", config.StorageConfig{MailPath: "/mnt/mail/%d/%n"}, "/mnt/mail"},
 		{"maildir_root fixed", config.StorageConfig{MaildirRoot: "/var/mail/"}, "/var/mail"},
-		{"falls through to home template", config.StorageConfig{MailHomeTemplate: "/home/%u"}, "/home"},
+		{"falls through to home template", config.StorageConfig{MailHome: "/home/%u"}, "/home"},
 		{"mail_path wins over root", config.StorageConfig{MailPath: "/a/%n", MaildirRoot: "/b"}, "/a"},
 		{"template at root yields slash", config.StorageConfig{MailPath: "/%d"}, "/"},
 		{"nothing configured", config.StorageConfig{}, ""},

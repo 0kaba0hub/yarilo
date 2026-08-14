@@ -33,7 +33,7 @@ func TestByDriverThreadsMdboxAltStorage(t *testing.T) {
 		// optional capabilities are asserted underneath it (#1069).
 		return mailbox.Driver(u).(interface{ AltEnabled() bool }).AltEnabled()
 	}
-	if !altEnabled(config.StorageConfig{MdboxAltStoragePath: "/mnt/cold/%d/%n"}) {
+	if !altEnabled(config.StorageConfig{MailAltPath: "/mnt/cold/%d/%n"}) {
 		t.Error("mdbox_alt_storage_path set but AltEnabled() is false — alt storage not threaded (#639)")
 	}
 	if altEnabled(config.StorageConfig{}) {

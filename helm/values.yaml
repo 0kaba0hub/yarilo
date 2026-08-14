@@ -97,7 +97,7 @@ gracefulShutdown:
 ## -------------------------------------------------------------------
 ## These settings apply to every yarilo session component (imap, pop3,
 ## lmtp). When a userdb lookup returns explicit per-user values
-## (volatile_dir=, index_dir=, control_dir= or modifiers in the mail=
+## (mail_volatile_path=, mail_index_path=, mail_control_path= or modifiers in the mail=
 ## location string), those take priority over these cluster-wide defaults.
 ## Backend self-registration + heartbeat to the director (#776). The backend
 ## session pods (imap/pop3/lmtp/submission) register their own POD_IP + session
@@ -148,9 +148,9 @@ backend_register:
     - managesieve
 
 storage:
-  mailbox: maildir
+  mail_driver: maildir
   maildir_root: /var/mail/vhosts
-  mail_home_template: "%d/%u"
+  mail_home: "%d/%u"
   index: fileindex
   ## On-disk format of the per-user mdbox map index. v2 is fixed-width and
   ## sorted by map_uid, so an open parses nothing; v1 is the older format, kept
@@ -161,14 +161,14 @@ storage:
   ## dbox_reactive_rebuild: true           # sdbox: on a missing/corrupt message read, flag the folder and heal its index (expunge vanished records) on the next open
   ## mail_path: ""                            # mail storage root (empty = same as home); supports ~/ and %u/%d/%n/%h
   ## mail_inbox_path: ""                      # INBOX override path (empty = mail_path); supports ~/ and %u/%d/%n/%h
-  ## mdbox_alt_storage_path: "/mnt/cold/%d/%n"  # cold-tier base for mdbox alt-move
+  ## (the cold tier is mail_alt_path below — one key for maildir and mdbox alike)
   ## mdbox_rotate_size: 10M               # max size per m.<N> before rolling (e.g. 10M, 1G, or a raw byte count; 0 = default 10 MiB)
   ## mdbox_rotate_interval: 0             # roll the append file once older than this (e.g. 30s, 5m, 1h, or raw seconds; 0 = disabled)
   ## mdbox_preallocate_space: false       # fallocate() new m.<N> files up front (Linux only)
-  ## index_dir: "/var/yarilo-index/%d/%n"     # redirect per-folder index files to a faster disk
-  ## control_dir: "/var/yarilo-control/%d/%n" # redirect yarilo-uidlist and subscriptions files
-  ## volatile_dir: "/run/yarilo-volatile/%d/%n" # local tmpfs for index tmp files (NFS deployments)
-  ## alt_dir: "/mnt/cold/%d/%n"               # cold-tier alt storage root (two-tier maildir)
+  ## mail_index_path: "/var/yarilo-index/%d/%n"     # redirect per-folder index files to a faster disk
+  ## mail_control_path: "/var/yarilo-control/%d/%n" # redirect yarilo-uidlist and subscriptions files
+  ## mail_volatile_path: "/run/yarilo-volatile/%d/%n" # local tmpfs for index tmp files (NFS deployments)
+  ## mail_alt_path: "/mnt/cold/%d/%n"              # cold-tier storage root, maildir and mdbox alike
   ## Log rotation, one policy for both transaction logs — the mdbox map and the per-folder file index.
   ## Every open replays the tail since the last fold, so the floor bounds what an open costs.
   ## mail_index_log_rotate_min_size: "32k"  # 32 KiB — never fold below this (human-readable; quote it)
@@ -187,7 +187,7 @@ storage:
   ##                                    # modified-UTF-7. That is not new — it is what those releases already do —
   ##                                    # but it means a later move to UTF-8 renames only the mail directories;
   ##                                    # the index side is already there.
-  ## mailbox_list_normalize_to_nfc: true # true = NFC-normalise folder names (default)
+  ## mailbox_list_normalize_names_to_nfc: true # true = NFC-normalise folder names (default)
   ##                                    # Same upgrade note: unrendered and undefaulted before 2.3.55.
   ##                                    # UPGRADE NOTE (2.3.72): normalisation now happens where a folder
   ##                                    # name becomes a storage name, so the index, volatile, ACL and FTS

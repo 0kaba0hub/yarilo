@@ -592,21 +592,44 @@ data:
     {{- end }}
     {{- if $storage }}
     storage:
+      {{- if $storage.mail_driver }}
+      mail_driver: {{ $storage.mail_driver | quote }}
+      {{- end }}
+      {{- if $storage.mailbox }}
       mailbox: {{ $storage.mailbox | quote }}
+      {{- end }}
       maildir_root: {{ $storage.maildir_root | quote }}
+      {{- if $storage.mail_home }}
+      mail_home: {{ $storage.mail_home | quote }}
+      {{- end }}
+      {{- if $storage.mail_home_template }}
       mail_home_template: {{ $storage.mail_home_template | quote }}
+      {{- end }}
       index: {{ $storage.index | quote }}
+      {{- /* Pre-beta spelling of mail_alt_path; both are accepted, a conflict between them is refused at startup. */}}
       {{- if $storage.mdbox_alt_storage_path }}
       mdbox_alt_storage_path: {{ $storage.mdbox_alt_storage_path | quote }}
+      {{- end }}
+      {{- if $storage.mail_index_path }}
+      mail_index_path: {{ $storage.mail_index_path | quote }}
       {{- end }}
       {{- if $storage.index_dir }}
       index_dir: {{ $storage.index_dir | quote }}
       {{- end }}
+      {{- if $storage.mail_control_path }}
+      mail_control_path: {{ $storage.mail_control_path | quote }}
+      {{- end }}
       {{- if $storage.control_dir }}
       control_dir: {{ $storage.control_dir | quote }}
       {{- end }}
+      {{- if $storage.mail_volatile_path }}
+      mail_volatile_path: {{ $storage.mail_volatile_path | quote }}
+      {{- end }}
       {{- if $storage.volatile_dir }}
       volatile_dir: {{ $storage.volatile_dir | quote }}
+      {{- end }}
+      {{- if $storage.mail_alt_path }}
+      mail_alt_path: {{ $storage.mail_alt_path | quote }}
       {{- end }}
       {{- if $storage.alt_dir }}
       alt_dir: {{ $storage.alt_dir | quote }}
@@ -647,6 +670,9 @@ data:
       {{- end }}
       {{- if hasKey $storage "mailbox_list_utf8" }}
       mailbox_list_utf8: {{ $storage.mailbox_list_utf8 }}
+      {{- end }}
+      {{- if hasKey $storage "mailbox_list_normalize_names_to_nfc" }}
+      mailbox_list_normalize_names_to_nfc: {{ $storage.mailbox_list_normalize_names_to_nfc }}
       {{- end }}
       {{- if hasKey $storage "mailbox_list_normalize_to_nfc" }}
       mailbox_list_normalize_to_nfc: {{ $storage.mailbox_list_normalize_to_nfc }}

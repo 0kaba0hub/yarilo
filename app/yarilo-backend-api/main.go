@@ -102,11 +102,11 @@ func main() {
 
 	resolver := &mailbox.Resolver{
 		Root:         cfg.Storage.MaildirRoot,
-		HomeTemplate: cfg.Storage.MailHomeTemplate,
+		HomeTemplate: cfg.Storage.MailHome,
 		// The admin API resolves the same folders the session servers do, so
 		// it has to escape the same way or it addresses different paths.
 		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,
-		DefaultSkipNFCNormalize:  !cfg.Storage.MailboxListNormalizeToNFC,
+		DefaultSkipNFCNormalize:  !cfg.Storage.MailboxListNormalizeNamesToNFC,
 	}
 	if resolver.Root == "" {
 		resolver.Root = "/var/mail/vhosts"
@@ -115,9 +115,9 @@ func main() {
 		resolver.HomeTemplate = "%d/%n"
 	}
 
-	mb := mailboxbuild.ByDriver(cfg.Storage.Mailbox, cfg.Storage, locker)
+	mb := mailboxbuild.ByDriver(cfg.Storage.MailDriver, cfg.Storage, locker)
 	idx := file.New(file.WithLocker(locker))
-	nsOverrides, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.Mailbox, cfg.Storage, locker)
+	nsOverrides, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.MailDriver, cfg.Storage, locker)
 	if err != nil {
 		slog.Error("backend-api: namespace mailbox wiring", "err", err)
 		os.Exit(1)
