@@ -100,8 +100,14 @@ var (
 
 	flagDirectorAPI      = flag.String("director-api", "", "director admin API base URL, e.g. http://yarilo-director-api:9103 (enables the check, #755)")
 	flagDirectorAPIToken = flag.String("director-api-token", "", "director admin API bearer token (defaults to env DIRECTOR_API_TOKEN / YARILO_ADMIN_TOKEN)")
-	flagBackendAPI       = flag.String("backend-api", "", "backend admin API base URL, e.g. http://yarilo-backend-api:9105 (enables the quota consistency row, #1209)")
-	flagBackendAPIToken  = flag.String("backend-api-token", "", "backend admin API bearer token (defaults to env BACKEND_API_TOKEN / YARILO_ADMIN_TOKEN)")
+	// The in-cluster address is the backend service itself -- yarilo-backend,
+	// not yarilo-backend-api -- and 9105 speaks HTTPS with mutual TLS, so a
+	// bearer token alone cannot reach it (#1280).
+	flagBackendAPI      = flag.String("backend-api", "", "backend admin API base URL, e.g. https://yarilo-backend:9105 (enables the quota consistency row, #1209)")
+	flagBackendAPIToken = flag.String("backend-api-token", "", "backend admin API bearer token (defaults to env BACKEND_API_TOKEN / YARILO_ADMIN_TOKEN)")
+	flagBackendAPICert  = flag.String("backend-api-cert", "", "client certificate for an mTLS backend admin API (PEM); needs -backend-api-key")
+	flagBackendAPIKey   = flag.String("backend-api-key", "", "private key for -backend-api-cert (PEM)")
+	flagBackendAPICA    = flag.String("backend-api-ca", "", "CA bundle that signs the backend admin API certificate (PEM); unset trusts the system roots, or none with -insecure")
 )
 
 // check is one gate item. A non-empty skip means the deployment did not

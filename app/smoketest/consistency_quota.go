@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -90,7 +93,11 @@ func adminReadQuota(user string) (*reading, error) {
 	if tok := backendAPIToken(); tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
-	resp, err := jmapClient().Do(req)
+	client, err := backendAPIClient()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +123,51 @@ func adminReadQuota(user string) (*reading, error) {
 	return newReading(surfAdminAPI).
 		field("storageUsedKiB", strconv.FormatInt(out.StorageValue, 10)).
 		field("storageLimitKiB", strconv.FormatInt(limit, 10)), nil
+}
+
+// backendAPIClient dials the admin API. The reference deployment serves it
+// with mutual TLS, so a bearer token alone is refused at the handshake
+// ("remote error: tls: certificate required") and the row cannot run at all
+// (#1280). The certificate is optional: an endpoint that asks for none works
+// exactly as before.
+func backendAPIClient() (*http.Client, error) {
+	cfg := &tls.Config{
+		ServerName:         hostOf(*flagBackendAPI),
+		InsecureSkipVerify: *flagInsecure, //nolint:gosec // opt-in via -insecure
+	}
+	if (*flagBackendAPICert == "") != (*flagBackendAPIKey == "") {
+		return nil, fmt.Errorf("-backend-api-cert and -backend-api-key go together; one without the other cannot authenticate")
+	}
+	if *flagBackendAPICert != "" {
+		cert, err := tls.LoadX509KeyPair(*flagBackendAPICert, *flagBackendAPIKey)
+		if err != nil {
+			return nil, fmt.Errorf("client certificate: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	}
+	if *flagBackendAPICA != "" {
+		pem, err := os.ReadFile(*flagBackendAPICA)
+		if err != nil {
+			return nil, fmt.Errorf("ca bundle: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("ca bundle %s holds no certificate", *flagBackendAPICA)
+		}
+		cfg.RootCAs = pool
+	}
+	return &http.Client{Timeout: *flagTimeout, Transport: &http.Transport{TLSClientConfig: cfg}}, nil
+}
+
+// hostOf is the host part of a base URL, for the TLS server name. An
+// unparseable value leaves it empty, which verifies against the certificate's
+// own name rather than a guess.
+func hostOf(base string) string {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // backendAPIToken reads the bearer token the same way the director check reads

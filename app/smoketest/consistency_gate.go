@@ -88,7 +88,12 @@ func registerConsistency(checks *[]check) {
 		func() error { return checkConsistencyReaders(imapUser, imapPass) },
 		imap, delivery)
 
-	admin := surfaceState{surface: surfAdminAPI, present: *flagBackendAPI != "", needs: "-backend-api"}
+	// The reference deployment serves the admin API with mutual TLS, so the
+	// skip names the certificate flags too: an operator who passes only
+	// -backend-api against such an endpoint gets a handshake failure, and the
+	// skip is the place that could have said so first (#1280).
+	admin := surfaceState{surface: surfAdminAPI, present: *flagBackendAPI != "",
+		needs: "-backend-api (plus -backend-api-cert/-backend-api-key when it is served over mTLS, as the reference deployment serves it)"}
 	row("consistency imap<->admin API quota numbers",
 		func() error { return checkConsistencyQuota(imapUser) },
 		imap, admin)
