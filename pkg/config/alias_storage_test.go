@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -199,5 +200,134 @@ func TestTemplateRefusalNamesTheCanonicalKey(t *testing.T) {
 				t.Errorf("refusal %q does not name %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// Package 2a of the key review (#1286): the infrastructure sections take the
+// flat prefixed spellings the reference uses. Same four states per pair as
+// package 1 — the alias must carry the value, and a disagreement must refuse.
+func TestInfraRenamesPackageTwoA(t *testing.T) {
+	tests := []struct {
+		name    string
+		section string // YAML path, one line per level
+		indent  string
+		canon   string // leaf line, canonical
+		alias   string // leaf line, pre-beta
+		read    func(*Config) string
+		want    string
+	}{
+		{"ssl_server_cert_file", "general:\n  ssl:", "    ",
+			"ssl_server_cert_file: /c.pem", "tls_cert: /c.pem",
+			func(c *Config) string { return c.General.SSL.SSLServerCert }, "/c.pem"},
+		{"ssl_min_protocol", "general:\n  ssl:", "    ",
+			"ssl_min_protocol: TLS1.3", "tls_min_version: TLS1.3",
+			func(c *Config) string { return c.General.SSL.SSLMinProtocol }, "TLS1.3"},
+		{"acl_globals_only", "acl:", "  ",
+			"acl_globals_only: true", "globals_only: true",
+			func(c *Config) string { return fmt.Sprint(c.ACL.GlobalsOnly) }, "true"},
+		{"auth_cache_size", "auth:\n  cache:", "    ",
+			"auth_cache_size: 64M", "cache_size: 64M",
+			func(c *Config) string { return c.Auth.Cache.CacheSize }, "64M"},
+		{"auth_policy_server_url", "auth:\n  policy:", "    ",
+			"auth_policy_server_url: https://p/x", "url: https://p/x",
+			func(c *Config) string { return c.Auth.Policy.URL }, "https://p/x"},
+		{"auth_master_user_separator", "auth:\n  master_users:", "    ",
+			"auth_master_user_separator: \"*\"", "separator: \"*\"",
+			func(c *Config) string { return c.Auth.MasterUsers.Separator }, "*"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := func(leaves ...string) string {
+				out := tc.section
+				for _, l := range leaves {
+					out += "\n" + tc.indent + l
+				}
+				return out + "\n"
+			}
+			for _, form := range []struct {
+				label  string
+				leaves []string
+			}{
+				{"canonical alone", []string{tc.canon}},
+				{"alias alone", []string{tc.alias}},
+				{"both agreeing", []string{tc.canon, tc.alias}},
+			} {
+				cfg, err := loadYAML(t, body(form.leaves...))
+				if err != nil {
+					t.Fatalf("%s: load: %v", form.label, err)
+				}
+				if got := tc.read(cfg); got != tc.want {
+					t.Errorf("%s: read %q, want %q", form.label, got, tc.want)
+				}
+			}
+			other := strings.Replace(tc.alias, tc.want, "other", 1)
+			if _, err := loadYAML(t, body(tc.canon, other)); err == nil {
+				t.Error("the two spellings disagreeing loaded anyway")
+			}
+		})
+	}
+}
+
+// A list-valued knob compares as a value, not by identity: haproxy's trusted
+// networks are the one alias in this package whose type is a slice, and a
+// pointer comparison would call two equal lists a conflict.
+func TestListValuedAliasComparesAsAValue(t *testing.T) {
+	both := "general:\n  haproxy:\n    haproxy_trusted_networks: [\"10.0.0.0/8\"]\n    trusted_nets: [\"10.0.0.0/8\"]\n"
+	cfg, err := loadYAML(t, both)
+	if err != nil {
+		t.Fatalf("two equal lists were refused: %v", err)
+	}
+	if len(cfg.General.HAProxy.HAProxyTrustedNetworks) != 1 {
+		t.Errorf("networks = %v", cfg.General.HAProxy.HAProxyTrustedNetworks)
+	}
+	differing := "general:\n  haproxy:\n    haproxy_trusted_networks: [\"10.0.0.0/8\"]\n    trusted_nets: [\"192.168.0.0/16\"]\n"
+	if _, err := loadYAML(t, differing); err == nil {
+		t.Error("two different lists loaded anyway")
+	}
+}
+
+// A per-service ssl override is the same block type as general.ssl, so it
+// carries the same pre-beta spellings — and the fixed general.ssl paths do not
+// reach it. An override written the old way used to fill a field nobody
+// adopted, and the service lost its certificate: set, and doing nothing.
+func TestPerServiceSSLOverrideAcceptsBothSpellings(t *testing.T) {
+	const svc = "services:\n  imaps:\n    listen: \":993\"\n    ssl:\n"
+
+	cfg, err := loadYAML(t, svc+"      tls_cert: /svc.pem\n      tls_key: /svc.key\n")
+	if err != nil {
+		t.Fatalf("old spelling: %v", err)
+	}
+	if got := cfg.Services.IMAPS.SSL.SSLServerCert; got != "/svc.pem" {
+		t.Errorf("certificate from the pre-beta spelling = %q, want /svc.pem", got)
+	}
+	if got := cfg.Services.IMAPS.SSL.SSLServerKey; got != "/svc.key" {
+		t.Errorf("key from the pre-beta spelling = %q, want /svc.key", got)
+	}
+
+	cfg, err = loadYAML(t, svc+"      ssl_server_cert_file: /svc.pem\n")
+	if err != nil {
+		t.Fatalf("canonical spelling: %v", err)
+	}
+	if got := cfg.Services.IMAPS.SSL.SSLServerCert; got != "/svc.pem" {
+		t.Errorf("certificate from the canonical spelling = %q", got)
+	}
+
+	if _, err := loadYAML(t, svc+"      ssl_server_cert_file: /a.pem\n      tls_cert: /b.pem\n"); err == nil {
+		t.Error("a service override with two spellings at different values loaded anyway")
+	}
+}
+
+// auth.token is ours — the reference has no token store — so package 2 must not
+// have touched it. The row reads the value back rather than the tag, because
+// the defect was a key that parsed into a field nobody adopted and silently
+// fell back to the default.
+func TestOursOnlyKeysAreUntouched(t *testing.T) {
+	cfg, err := loadYAML(t, "auth:\n  token:\n    ttl_seconds: 120\n    backend: memory\n")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Auth.Token.TTLSeconds != 120 {
+		t.Errorf("auth.token.ttl_seconds read as %d, want 120", cfg.Auth.Token.TTLSeconds)
 	}
 }

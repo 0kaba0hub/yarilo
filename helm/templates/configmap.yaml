@@ -13,16 +13,16 @@ data:
       ssl:
         {{- $extTLSSecret := coalesce .Values.components.imapLogin.tls.secretName .Values.components.pop3Login.tls.secretName .Values.components.submissionLogin.tls.secretName }}
         {{- if $extTLSSecret }}
-        tls_cert: /etc/yarilo/tls/tls.crt
-        tls_key: /etc/yarilo/tls/tls.key
+        ssl_server_cert_file: /etc/yarilo/tls/tls.crt
+        ssl_server_key_file: /etc/yarilo/tls/tls.key
         {{- else }}
-        tls_cert: ""
-        tls_key: ""
+        ssl_server_cert_file: ""
+        ssl_server_key_file: ""
         {{- end }}
-        tls_min_version: TLS1.2
+        ssl_min_protocol: TLS1.2
       haproxy:
         timeout: {{ .Values.general.haproxy.timeout }}
-        trusted_nets:
+        haproxy_trusted_networks:
           {{- range .Values.general.haproxy.trusted_nets }}
           - {{ . | quote }}
           {{- end }}
@@ -253,7 +253,7 @@ data:
       sieve_filter_input_eol: {{ index $sieve "sieve_filter_input_eol" | default "crlf" | quote }}
 
     auth:
-      failure_delay: {{ .Values.components.auth.failure_delay | default 2 }}
+      auth_failure_delay: {{ .Values.components.auth.failure_delay | default 2 }}
       internal_failure_delay_ms: {{ .Values.components.auth.internal_failure_delay_ms | default 2000 }}
       cache:
         # dig, not `| default`: `default` swallows an explicit 0, so caching/TTLs
@@ -261,23 +261,23 @@ data:
         # so an explicit 0 (disable) is finally settable. cache_size is a quoted
         # string (human-readable units, e.g. "100M"); the TTLs are int64 so a
         # large value never renders in scientific notation.
-        cache_size: {{ dig "cache_size" "100M" .Values.components.auth.cache | quote }}
-        ttl_seconds: {{ dig "ttl_seconds" 1800 .Values.components.auth.cache | int64 }}
-        negative_ttl_seconds: {{ dig "negative_ttl_seconds" 1800 .Values.components.auth.cache | int64 }}
+        auth_cache_size: {{ dig "cache_size" "100M" .Values.components.auth.cache | quote }}
+        auth_cache_ttl: {{ dig "ttl_seconds" 1800 .Values.components.auth.cache | int64 }}
+        auth_cache_negative_ttl: {{ dig "negative_ttl_seconds" 1800 .Values.components.auth.cache | int64 }}
       penalty:
         enabled: {{ .Values.components.auth.penalty.enabled | default false }}
       policy:
-        url: {{ .Values.components.auth.policy.url | default "" | quote }}
-        api_header: {{ .Values.components.auth.policy.api_header | default "" | quote }}
-        hash_mech: {{ .Values.components.auth.policy.hash_mech | default "sha256" | quote }}
-        hash_nonce: {{ .Values.components.auth.policy.hash_nonce | default "" | quote }}
-        hash_truncate_bits: {{ .Values.components.auth.policy.hash_truncate_bits | default 12 }}
+        auth_policy_server_url: {{ .Values.components.auth.policy.url | default "" | quote }}
+        auth_policy_server_api_header: {{ .Values.components.auth.policy.api_header | default "" | quote }}
+        auth_policy_hash_mech: {{ .Values.components.auth.policy.hash_mech | default "sha256" | quote }}
+        auth_policy_hash_nonce: {{ .Values.components.auth.policy.hash_nonce | default "" | quote }}
+        auth_policy_hash_truncate: {{ .Values.components.auth.policy.hash_truncate_bits | default 12 }}
         timeout_ms: {{ .Values.components.auth.policy.timeout_ms | default 5000 }}
-        reject_on_fail: {{ .Values.components.auth.policy.reject_on_fail | default false }}
-        log_only: {{ .Values.components.auth.policy.log_only | default false }}
-        check_before: {{ .Values.components.auth.policy.check_before | default true }}
-        check_after: {{ .Values.components.auth.policy.check_after | default true }}
-        report_after: {{ .Values.components.auth.policy.report_after | default true }}
+        auth_policy_reject_on_fail: {{ .Values.components.auth.policy.reject_on_fail | default false }}
+        auth_policy_log_only: {{ .Values.components.auth.policy.log_only | default false }}
+        auth_policy_check_before_auth: {{ .Values.components.auth.policy.check_before | default true }}
+        auth_policy_check_after_auth: {{ .Values.components.auth.policy.check_after | default true }}
+        auth_policy_report_after_auth: {{ .Values.components.auth.policy.report_after | default true }}
       oauth2:
         {{- range (.Values.components.auth.oauth2 | default list) }}
         - mode: {{ .mode | quote }}
@@ -420,9 +420,9 @@ data:
       enabled: {{ .enabled | default false }}
       acl_cache_ttl: {{ .acl_cache_ttl | default 30 | int64 }}
       defaults_from_inbox: {{ .defaults_from_inbox | default false }}
-      globals_only: {{ .globals_only | default false }}
+      acl_globals_only: {{ .globals_only | default false }}
       {{- if hasKey . "acl_shared_dict" }}
-      acl_shared_dict: {{ .acl_shared_dict | quote }}
+      acl_sharing_map: {{ .acl_shared_dict | quote }}
       {{- end }}
       {{- with .global }}
       global:

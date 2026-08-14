@@ -196,7 +196,7 @@ func New(cfg *config.Config) (*Server, error) {
 	connLimiter := connlimit.New(cfg.General.Limits.MaxUserIPConnections)
 
 	// ---- HAProxy shared nets ----
-	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
+	haproxyNets := parseCIDRs(cfg.General.HAProxy.HAProxyTrustedNetworks)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
 	authAddr := cfg.AuthService.ClientAddr()
 	masterAddr := cfg.AuthService.MasterAddr
@@ -948,7 +948,7 @@ func listenAddr(svc *config.ServiceConfig) string {
 // ALPN are accepted.
 func buildTLS(cfg *config.Config, svc *config.ServiceConfig, alpn ...string) (*tls.Config, error) {
 	ssl := cfg.ResolveSSL(svc)
-	if ssl.TLSCert == "" {
+	if ssl.SSLServerCert == "" {
 		return nil, nil
 	}
 	tlsCfg, err := config.BuildTLSConfig(ssl)

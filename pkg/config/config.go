@@ -293,17 +293,28 @@ type GeneralConfig struct {
 }
 
 type SSLConfig struct {
-	TLSCert       string `koanf:"tls_cert"`
-	TLSKey        string `koanf:"tls_key"`
-	TLSAltCert    string `koanf:"tls_alt_cert"`
-	TLSAltKey     string `koanf:"tls_alt_key"`
-	TLSMinVersion string `koanf:"tls_min_version"`
-	PreferServer  bool   `koanf:"prefer_server_ciphers"`
+	// Canonical spellings (2.4). The pre-beta names below are aliases.
+	SSLServerCert    string `koanf:"ssl_server_cert_file"`
+	SSLServerKey     string `koanf:"ssl_server_key_file"`
+	SSLServerAltCert string `koanf:"ssl_server_alt_cert_file"`
+	SSLServerAltKey  string `koanf:"ssl_server_alt_key_file"`
+	SSLMinProtocol   string `koanf:"ssl_min_protocol"`
+	SSLPreferCiphers bool   `koanf:"ssl_prefer_server_ciphers"`
+
+	TLSCertAlias       string `koanf:"tls_cert"`
+	TLSKeyAlias        string `koanf:"tls_key"`
+	TLSAltCertAlias    string `koanf:"tls_alt_cert"`
+	TLSAltKeyAlias     string `koanf:"tls_alt_key"`
+	TLSMinVersionAlias string `koanf:"tls_min_version"`
+	PreferServerAlias  bool   `koanf:"prefer_server_ciphers"`
 }
 
 type HAProxyConfig struct {
-	Timeout     int      `koanf:"timeout"`      // seconds to wait for PROXY header
-	TrustedNets []string `koanf:"trusted_nets"` // CIDRs allowed to send PROXY header
+	Timeout int `koanf:"timeout"` // seconds to wait for PROXY header
+	// HAProxyTrustedNetworks lists the CIDRs allowed to send a PROXY header.
+	// Canonical spelling; "trusted_nets" is the pre-beta alias.
+	HAProxyTrustedNetworks []string `koanf:"haproxy_trusted_networks"`
+	TrustedNetsAlias       []string `koanf:"trusted_nets"`
 }
 
 // XClientConfig is the global trust list for native inbound client-IP
@@ -497,7 +508,8 @@ type ACLConfig struct {
 	DefaultsFromInbox bool `koanf:"defaults_from_inbox"`
 	// GlobalsOnly ignores per-mailbox yarilo-acl files and evaluates only the
 	// global rules below.
-	GlobalsOnly bool `koanf:"globals_only"`
+	GlobalsOnly      bool `koanf:"acl_globals_only"`
+	GlobalsOnlyAlias bool `koanf:"globals_only"`
 	// Global holds operator ACL rules applied across all users, merged with
 	// the per-mailbox ACL (global takes precedence).
 	Global []GlobalACLRule `koanf:"global"`
@@ -509,7 +521,8 @@ type ACLConfig struct {
 	// namespaces, which is what lets LIST user/* enumerate the owners the
 	// caller may see. Empty disables the registry -- user/* then lists
 	// nobody, and grants are discoverable only by naming the owner.
-	SharedDict string `koanf:"acl_shared_dict"`
+	SharedDict      string `koanf:"acl_sharing_map"`
+	SharedDictAlias string `koanf:"acl_shared_dict"`
 }
 
 // GlobalACLRule is one global ACL entry-set scoped to a mailbox name (or the
@@ -1558,7 +1571,8 @@ type AuthConfig struct {
 	//
 	// Default 2 (seconds). Set to 0 to disable (mainly for test
 	// speed — production should always have it >0).
-	FailureDelaySeconds int `koanf:"failure_delay"`
+	FailureDelaySeconds      int `koanf:"auth_failure_delay"`
+	FailureDelaySecondsAlias int `koanf:"failure_delay"`
 
 	// InternalFailureDelayMs is the matching delay for INTERNAL
 	// failures — passdb backend down, SQL connection refused, etc.
@@ -1700,6 +1714,8 @@ type AuthTokenConfig struct {
 	// TTLSeconds is how long the token remains valid for the backend to
 	// consume. Default 60 s — enough for the login pod to forward it and
 	// the backend to call VERIFY within the same connection setup.
+	// auth.token is ours: the reference has no token store, so this key keeps
+	// its own name and is not part of the package-2 renames.
 	TTLSeconds int `koanf:"ttl_seconds"`
 	// Backend selects the token store implementation: "memory" (default,
 	// single-pod only) or "redis" (multi-replica safe).
@@ -1717,27 +1733,27 @@ type AuthTokenConfig struct {
 // hook. URL="" disables the feature.
 type AuthPolicyConfig struct {
 	// URL is the policy endpoint. Empty disables the hook.
-	URL string `koanf:"url"`
+	URL string `koanf:"auth_policy_server_url"`
 
 	// APIHeader is added to every request. Two formats:
 	//   "Key: value"  → custom header
 	//   "value"       → X-API-Key: value
-	APIHeader string `koanf:"api_header"`
+	APIHeader string `koanf:"auth_policy_server_api_header"`
 
 	// HashMech is the digest for the pwhash field. "sha256"
 	// (default) or "sha512". Must match the policy server's
 	// configured hash.
-	HashMech string `koanf:"hash_mech"`
+	HashMech string `koanf:"auth_policy_hash_mech"`
 
 	// HashNonce is the per-deployment salt. REQUIRED when URL is
 	// set; empty nonce is rejected at startup so two deployments
 	// don't share pwhash space.
-	HashNonce string `koanf:"hash_nonce"`
+	HashNonce string `koanf:"auth_policy_hash_nonce"`
 
 	// HashTruncateBits caps the MSB bits of the digest. Default
 	// 12 (4096 buckets — useful for rate-limit patterns, useless
 	// for password recovery). 0 means no truncation.
-	HashTruncateBits uint `koanf:"hash_truncate_bits"`
+	HashTruncateBits uint `koanf:"auth_policy_hash_truncate"`
 
 	// TimeoutMs is the HTTP round-trip cap. Default 5000ms.
 	TimeoutMs int `koanf:"timeout_ms"`
@@ -1745,24 +1761,35 @@ type AuthPolicyConfig struct {
 	// RejectOnFail flips fail-open to fail-closed: when true and
 	// the policy server is unreachable / returns malformed JSON,
 	// the auth attempt is rejected. Default false (fail-open).
-	RejectOnFail bool `koanf:"reject_on_fail"`
+	RejectOnFail bool `koanf:"auth_policy_reject_on_fail"`
 
 	// LogOnly: when true, the client still calls the server and
 	// logs decisions, but the decision is NOT enforced — used
 	// for shadow-mode rollout before flipping the switch.
-	LogOnly bool `koanf:"log_only"`
+	LogOnly bool `koanf:"auth_policy_log_only"`
 
 	// CheckBefore: POST ?command=allow BEFORE the chain runs.
 	// Default true.
-	CheckBefore bool `koanf:"check_before"`
+	CheckBefore bool `koanf:"auth_policy_check_before_auth"`
 
 	// CheckAfter: POST ?command=allow AFTER the chain result is
 	// known. Default true.
-	CheckAfter bool `koanf:"check_after"`
+	CheckAfter bool `koanf:"auth_policy_check_after_auth"`
 
 	// ReportAfter: POST ?command=report fire-and-forget after
 	// every decision. Default true.
-	ReportAfter bool `koanf:"report_after"`
+	ReportAfter bool `koanf:"auth_policy_report_after_auth"`
+	// Pre-beta spellings, accepted as aliases and removed after beta.
+	URLAlias              string `koanf:"url"`
+	APIHeaderAlias        string `koanf:"api_header"`
+	HashMechAlias         string `koanf:"hash_mech"`
+	HashNonceAlias        string `koanf:"hash_nonce"`
+	HashTruncateBitsAlias uint   `koanf:"hash_truncate_bits"`
+	RejectOnFailAlias     bool   `koanf:"reject_on_fail"`
+	LogOnlyAlias          bool   `koanf:"log_only"`
+	CheckBeforeAlias      bool   `koanf:"check_before"`
+	CheckAfterAlias       bool   `koanf:"check_after"`
+	ReportAfterAlias      bool   `koanf:"report_after"`
 }
 
 // AuthCacheConfig configures the in-process auth cache (LRU
@@ -1776,7 +1803,8 @@ type AuthCacheConfig struct {
 	// K/M/G/T suffix (e.g. "100M", "512k") via quota.ParseSize. Empty/0 disables
 	// caching. Resolved to bytes at load into cacheSizeBytes; read via
 	// CacheSizeBytes.
-	CacheSize      string `koanf:"cache_size"`
+	CacheSize      string `koanf:"auth_cache_size"`
+	CacheSizeAlias string `koanf:"cache_size"`
 	cacheSizeBytes int64
 
 	// TTLSeconds is the lifetime of a positive (successful) entry.
@@ -1784,14 +1812,16 @@ type AuthCacheConfig struct {
 	// automatic flush hooks from user-management tooling yet
 	// (see AUTH-7 backlog), so a shorter window limits staleness
 	// exposure for password rotation / user deletion.
-	TTLSeconds int `koanf:"ttl_seconds"`
+	TTLSeconds      int `koanf:"auth_cache_ttl"`
+	TTLSecondsAlias int `koanf:"ttl_seconds"`
 
 	// NegativeTTLSeconds is the lifetime of a negative (failed)
 	// entry. Default 1800 (30m). Cache poisoning by wrong-password
 	// retries is already prevented at the cache layer (see
 	// Cache.Insert anti-poisoning guard); this TTL governs only
 	// genuinely-unknown-user entries.
-	NegativeTTLSeconds int `koanf:"negative_ttl_seconds"`
+	NegativeTTLSeconds      int `koanf:"auth_cache_negative_ttl"`
+	NegativeTTLSecondsAlias int `koanf:"negative_ttl_seconds"`
 }
 
 // CacheSizeBytes returns the cache size resolved to bytes at load. Zero means
@@ -1830,7 +1860,8 @@ type MasterUsersConfig struct {
 	// `alice` and authid had been `admin`. Empty disables the
 	// workaround entirely — only RFC 4616 authzid is honoured.
 	// Default `*` — only takes effect when Enabled is true.
-	Separator string `koanf:"separator"`
+	Separator      string `koanf:"auth_master_user_separator"`
+	SeparatorAlias string `koanf:"separator"`
 }
 
 type PassdbEntry struct {
@@ -1965,9 +1996,9 @@ type StorageConfig struct {
 	// Pre-beta spellings of the triple above, accepted as aliases and removed
 	// after beta. Setting both spellings of one knob to different values is
 	// refused at startup rather than resolved silently.
-	IndexLogCompactMinBytesRaw string `koanf:"index_log_compact_min_bytes"`
-	IndexLogCompactMaxBytesRaw string `koanf:"index_log_compact_max_bytes"`
-	IndexLogCompactMinAgeSecs  int    `koanf:"index_log_compact_min_age_secs"`
+	IndexLogCompactMinBytesAlias   string `koanf:"index_log_compact_min_bytes"`
+	IndexLogCompactMaxBytesAlias   string `koanf:"index_log_compact_max_bytes"`
+	IndexLogCompactMinAgeSecsAlias int    `koanf:"index_log_compact_min_age_secs"`
 
 	// ControlDir is the cluster-wide CONTROL= template. When set,
 	// per-folder control files (yarilo-uidlist, subscriptions) are
@@ -2129,10 +2160,10 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Mode: "single",
 		General: GeneralConfig{
-			SSL: SSLConfig{TLSMinVersion: "TLS1.2"},
+			SSL: SSLConfig{SSLMinProtocol: "TLS1.2"},
 			HAProxy: HAProxyConfig{
-				Timeout:     3,
-				TrustedNets: defaultTrustedNets,
+				Timeout:                3,
+				HAProxyTrustedNetworks: defaultTrustedNets,
 			},
 			XClient:            XClientConfig{TrustedNets: defaultTrustedNets},
 			Limits:             LimitsConfig{MaxUserIPConnections: 10},
@@ -2396,8 +2427,13 @@ func Load(path string) (*Config, error) {
 	if err := k.Unmarshal("", cfg); err != nil {
 		return nil, err
 	}
-	if err := applyAliases(k, storageAliases(cfg)); err != nil {
-		return nil, err
+	for _, set := range [][]aliasedKey{
+		storageAliases(cfg), generalAliases(cfg), aclAliases(cfg), authAliases(cfg),
+		serviceSSLAliases(cfg),
+	} {
+		if err := applyAliases(k, set); err != nil {
+			return nil, err
+		}
 	}
 	expandEnv(cfg)
 	if err := cfg.validate(); err != nil {
@@ -2442,7 +2478,7 @@ func (cfg *Config) validate() error {
 	}
 	if name := cfg.ACL.SharedDict; name != "" {
 		if _, ok := cfg.Dicts[name]; !ok {
-			return fmt.Errorf("config: acl_shared_dict names dict %q, which is not in the dicts section; "+
+			return fmt.Errorf("config: acl_sharing_map names dict %q, which is not in the dicts section; "+
 				"a misspelt name would silently disable owner discovery", name)
 		}
 	}
@@ -2502,54 +2538,54 @@ func (cfg *Config) ResolveSSL(svc *ServiceConfig) SSLConfig {
 	if svc.SSL == nil {
 		return merged
 	}
-	if svc.SSL.TLSCert != "" {
-		merged.TLSCert = svc.SSL.TLSCert
+	if svc.SSL.SSLServerCert != "" {
+		merged.SSLServerCert = svc.SSL.SSLServerCert
 	}
-	if svc.SSL.TLSKey != "" {
-		merged.TLSKey = svc.SSL.TLSKey
+	if svc.SSL.SSLServerKey != "" {
+		merged.SSLServerKey = svc.SSL.SSLServerKey
 	}
-	if svc.SSL.TLSAltCert != "" {
-		merged.TLSAltCert = svc.SSL.TLSAltCert
+	if svc.SSL.SSLServerAltCert != "" {
+		merged.SSLServerAltCert = svc.SSL.SSLServerAltCert
 	}
-	if svc.SSL.TLSAltKey != "" {
-		merged.TLSAltKey = svc.SSL.TLSAltKey
+	if svc.SSL.SSLServerAltKey != "" {
+		merged.SSLServerAltKey = svc.SSL.SSLServerAltKey
 	}
-	if svc.SSL.TLSMinVersion != "" {
-		merged.TLSMinVersion = svc.SSL.TLSMinVersion
+	if svc.SSL.SSLMinProtocol != "" {
+		merged.SSLMinProtocol = svc.SSL.SSLMinProtocol
 	}
 	return merged
 }
 
 // BuildTLSConfig constructs a *tls.Config from an SSLConfig.
 func BuildTLSConfig(ssl SSLConfig) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(ssl.TLSCert, ssl.TLSKey)
+	cert, err := tls.LoadX509KeyPair(ssl.SSLServerCert, ssl.SSLServerKey)
 	if err != nil {
-		return nil, fmt.Errorf("tls: load cert %q: %w", ssl.TLSCert, err)
+		return nil, fmt.Errorf("tls: load cert %q: %w", ssl.SSLServerCert, err)
 	}
 	certs := []tls.Certificate{cert}
-	if ssl.TLSAltCert != "" && ssl.TLSAltKey != "" {
-		alt, err := tls.LoadX509KeyPair(ssl.TLSAltCert, ssl.TLSAltKey)
+	if ssl.SSLServerAltCert != "" && ssl.SSLServerAltKey != "" {
+		alt, err := tls.LoadX509KeyPair(ssl.SSLServerAltCert, ssl.SSLServerAltKey)
 		if err != nil {
-			return nil, fmt.Errorf("tls: load alt cert %q: %w", ssl.TLSAltCert, err)
+			return nil, fmt.Errorf("tls: load alt cert %q: %w", ssl.SSLServerAltCert, err)
 		}
 		certs = append(certs, alt)
 	}
 	tlsCfg := &tls.Config{
 		Certificates:             certs,
-		PreferServerCipherSuites: ssl.PreferServer,
+		PreferServerCipherSuites: ssl.SSLPreferCiphers,
 		MinVersion:               tls.VersionTLS12,
 	}
-	if ssl.TLSMinVersion == "TLS1.3" {
+	if ssl.SSLMinProtocol == "TLS1.3" {
 		tlsCfg.MinVersion = tls.VersionTLS13
 	}
 	return tlsCfg, nil
 }
 
 func expandEnv(cfg *Config) {
-	cfg.General.SSL.TLSCert = expand(cfg.General.SSL.TLSCert)
-	cfg.General.SSL.TLSKey = expand(cfg.General.SSL.TLSKey)
-	cfg.General.SSL.TLSAltCert = expand(cfg.General.SSL.TLSAltCert)
-	cfg.General.SSL.TLSAltKey = expand(cfg.General.SSL.TLSAltKey)
+	cfg.General.SSL.SSLServerCert = expand(cfg.General.SSL.SSLServerCert)
+	cfg.General.SSL.SSLServerKey = expand(cfg.General.SSL.SSLServerKey)
+	cfg.General.SSL.SSLServerAltCert = expand(cfg.General.SSL.SSLServerAltCert)
+	cfg.General.SSL.SSLServerAltKey = expand(cfg.General.SSL.SSLServerAltKey)
 	cfg.InternalTLS.Cert = expand(cfg.InternalTLS.Cert)
 	cfg.InternalTLS.Key = expand(cfg.InternalTLS.Key)
 	cfg.InternalTLS.CA = expand(cfg.InternalTLS.CA)
@@ -2587,10 +2623,10 @@ func expandSvcSSL(svc *ServiceConfig) {
 	if svc == nil || svc.SSL == nil {
 		return
 	}
-	svc.SSL.TLSCert = expand(svc.SSL.TLSCert)
-	svc.SSL.TLSKey = expand(svc.SSL.TLSKey)
-	svc.SSL.TLSAltCert = expand(svc.SSL.TLSAltCert)
-	svc.SSL.TLSAltKey = expand(svc.SSL.TLSAltKey)
+	svc.SSL.SSLServerCert = expand(svc.SSL.SSLServerCert)
+	svc.SSL.SSLServerKey = expand(svc.SSL.SSLServerKey)
+	svc.SSL.SSLServerAltCert = expand(svc.SSL.SSLServerAltCert)
+	svc.SSL.SSLServerAltKey = expand(svc.SSL.SSLServerAltKey)
 }
 
 func expand(s string) string {
@@ -2612,7 +2648,7 @@ func CheckListenerTLS(name string, svc *ServiceConfig, ssl SSLConfig) (warning s
 	if svc.SSL != nil {
 		ssl = *svc.SSL
 	}
-	if ssl.TLSCert != "" && ssl.TLSKey != "" {
+	if ssl.SSLServerCert != "" && ssl.SSLServerKey != "" {
 		return "", nil
 	}
 	switch strings.ToLower(svc.SSLMode) {

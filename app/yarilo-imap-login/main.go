@@ -68,7 +68,7 @@ func main() {
 
 	// External TLS (client-facing cert) for IMAPS / STARTTLS.
 	var extTLS *tls.Config
-	if cfg.General.SSL.TLSCert != "" && cfg.General.SSL.TLSKey != "" {
+	if cfg.General.SSL.SSLServerCert != "" && cfg.General.SSL.SSLServerKey != "" {
 		extTLS, err = config.BuildTLSConfig(cfg.General.SSL)
 		if err != nil {
 			slog.Error("TLS config failed", "err", err)
@@ -94,7 +94,7 @@ func main() {
 		}
 	}
 
-	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
+	haproxyNets := parseCIDRs(cfg.General.HAProxy.HAProxyTrustedNetworks)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
 	xclientNets := parseCIDRs(cfg.General.XClient.TrustedNets)
 	localIP := os.Getenv("POD_IP")

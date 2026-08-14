@@ -116,7 +116,7 @@ func main() {
 
 	// ---- TLS ----
 	var extTLS *tls.Config
-	if cfg.General.SSL.TLSCert != "" && cfg.General.SSL.TLSKey != "" {
+	if cfg.General.SSL.SSLServerCert != "" && cfg.General.SSL.SSLServerKey != "" {
 		extTLS, err = config.BuildTLSConfig(cfg.General.SSL)
 		if err != nil {
 			slog.Error("TLS config failed", "err", err)
@@ -125,7 +125,7 @@ func main() {
 		extTLS.NextProtos = []string{"smtp"}
 	}
 
-	haproxyNets := parseCIDRs(cfg.General.HAProxy.TrustedNets)
+	haproxyNets := parseCIDRs(cfg.General.HAProxy.HAProxyTrustedNetworks)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
 
 	authAddr := cfg.AuthService.ClientAddr()
