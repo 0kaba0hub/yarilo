@@ -46,3 +46,12 @@ var (
 		Help: "Maildir reconcile decisions: scanned means cur/ and new/ were walked, skipped means the change token said nothing had changed.",
 	}, []string{"result"}) // scanned | skipped
 )
+
+// metricSearchUnreadable counts messages a SEARCH could not read while
+// scanning. Every one of them is a message the answer silently excluded: a
+// body criterion cannot match bytes nobody read, and the client is told
+// "no match" either way (#1283).
+var metricSearchUnreadable = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "imap_search_unreadable_messages_total",
+	Help: "Messages a SEARCH scan could not read, and therefore silently excluded from its answer.",
+})
