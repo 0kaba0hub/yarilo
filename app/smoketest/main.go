@@ -26,7 +26,14 @@ import (
 )
 
 var (
-	flagHost            = flag.String("host", "localhost", "yarilo hostname")
+	flagHost = flag.String("host", "localhost", "yarilo hostname; the default for every per-protocol host below")
+	// One address does not serve every protocol: in the reference deployment
+	// POP3S and ManageSieve answer on the shared LoadBalancer while lmtp-login
+	// answers only on its ClusterIP, so a single -host left one row
+	// unreachable whatever it was set to (#1311).
+	flagPOP3Host        = flag.String("pop3-host", "", "hostname serving POP3S; defaults to -host")
+	flagManageSieveHost = flag.String("managesieve-host", "", "hostname serving ManageSieve; defaults to -host")
+	flagLMTPLoginHost   = flag.String("lmtp-login-host", "", "hostname serving lmtp-login; defaults to -host")
 	flagIMAPHost        = flag.String("imap-host", "", "IMAP hostname for sieve verify step (defaults to -host)")
 	flagSMTPHost        = flag.String("smtp-host", "", "SMTP hostname for sieve mail injection (defaults to -host)")
 	flagIMAPSPort       = flag.String("imap-port", "993", "IMAPS port (used by sieve verify step)")
@@ -132,6 +139,30 @@ type summary struct {
 type result struct {
 	name string
 	err  error
+}
+
+// pop3Host / manageSieveHost / lmtpLoginHost resolve their own flag, falling
+// back to -host so a deployment answering everything on one address needs no
+// extra flags.
+func pop3Host() string {
+	if *flagPOP3Host != "" {
+		return *flagPOP3Host
+	}
+	return *flagHost
+}
+
+func manageSieveHost() string {
+	if *flagManageSieveHost != "" {
+		return *flagManageSieveHost
+	}
+	return *flagHost
+}
+
+func lmtpLoginHost() string {
+	if *flagLMTPLoginHost != "" {
+		return *flagLMTPLoginHost
+	}
+	return *flagHost
 }
 
 func imapHost() string {
@@ -240,7 +271,12 @@ func register() []check {
 	want("imap", *flagFTSUser != "", "imap FTS (SEARCH BODY/TEXT/HEADER/FROM)", "needs -fts-user", func() error {
 		return checkFTS(*flagFTSUser, *flagFTSPass)
 	})
-	want("director", *flagDirectorAPI != "", "director admin API status (authenticated)", "needs -director-api", checkDirectorAPI)
+	// A missing credential is an unchecked surface, not a failure: every other
+	// under-configured row says what it needs and skips, and a red gate for an
+	// absent token reads as a broken deployment (#1311).
+	want("director", *flagDirectorAPI != "" && directorAPIToken() != "",
+		"director admin API status (authenticated)",
+		directorRowNeeds(), checkDirectorAPI)
 
 	registerConsistency(&checks)
 
@@ -404,14 +440,33 @@ func httpGet(url string) error {
 // checkDirectorAPI verifies the director admin API authenticates a bearer token.
 // Hits GET /api/director/ring with the token and asserts 200 with a peer list;
 // 403/401 is reported distinctly. Uses /ring because /status is backends-only.
+// directorAPIToken reads the bearer token: flag first, then the
+// service-specific env var, then the shared admin one.
+func directorAPIToken() string {
+	if *flagDirectorAPIToken != "" {
+		return *flagDirectorAPIToken
+	}
+	if t := os.Getenv("DIRECTOR_API_TOKEN"); t != "" {
+		return t
+	}
+	return os.Getenv("YARILO_ADMIN_TOKEN")
+}
+
+// directorRowNeeds names what is missing, so the skip is actionable rather than
+// a statement that something is absent.
+func directorRowNeeds() string {
+	switch {
+	case *flagDirectorAPI == "" && directorAPIToken() == "":
+		return "needs -director-api and a token (-director-api-token, or DIRECTOR_API_TOKEN / YARILO_ADMIN_TOKEN in the environment)"
+	case *flagDirectorAPI == "":
+		return "needs -director-api"
+	default:
+		return "needs a token: -director-api-token, or DIRECTOR_API_TOKEN / YARILO_ADMIN_TOKEN in the environment"
+	}
+}
+
 func checkDirectorAPI() error {
-	token := *flagDirectorAPIToken
-	if token == "" {
-		token = os.Getenv("DIRECTOR_API_TOKEN")
-	}
-	if token == "" {
-		token = os.Getenv("YARILO_ADMIN_TOKEN")
-	}
+	token := directorAPIToken()
 	url := strings.TrimRight(*flagDirectorAPI, "/") + "/api/director/ring"
 	c := &http.Client{Timeout: *flagTimeout}
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
@@ -474,10 +529,10 @@ func checkDirectorStatusBody(body []byte) error {
 // ---- POP3S (port 995) ----------------------------------------------------
 
 func checkPOP3S() error {
-	addr := net.JoinHostPort(*flagHost, *flagPOP3SPort)
+	addr := net.JoinHostPort(pop3Host(), *flagPOP3SPort)
 	dialer := &net.Dialer{Timeout: *flagTimeout}
 	tlsCfg := &tls.Config{
-		ServerName:         *flagHost,
+		ServerName:         pop3Host(),
 		InsecureSkipVerify: *flagInsecure, //nolint:gosec
 	}
 	conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
@@ -530,7 +585,7 @@ func checkPOP3S() error {
 // sends LHLO, and expects a 250 multi-line response with at least one known
 // LMTP extension before quitting cleanly.
 func checkLMTPLogin() error {
-	addr := net.JoinHostPort(*flagHost, *flagLMTPLoginPort)
+	addr := net.JoinHostPort(lmtpLoginHost(), *flagLMTPLoginPort)
 	dialer := &net.Dialer{Timeout: *flagTimeout}
 	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
@@ -593,7 +648,7 @@ func checkSMTPMX() error {
 //  1. EHLO advertises AUTH PLAIN and STARTTLS.
 //  2. Performs the STARTTLS upgrade and sends a second EHLO.
 func checkSMTPSubmission() error {
-	addr := net.JoinHostPort(*flagHost, *flagSMTPSubPort)
+	addr := net.JoinHostPort(smtpHost(), *flagSMTPSubPort)
 	conn, err := smtpDial(addr, false)
 	if err != nil {
 		return err
@@ -621,7 +676,7 @@ func checkSMTPSubmission() error {
 		return fmt.Errorf("STARTTLS: unexpected response %q", line)
 	}
 	tlsCfg := &tls.Config{
-		ServerName:         *flagHost,
+		ServerName:         smtpHost(),
 		InsecureSkipVerify: *flagInsecure, //nolint:gosec
 	}
 	tlsConn := tls.Client(conn, tlsCfg)
@@ -645,7 +700,7 @@ func checkSMTPSubmission() error {
 // and verifies the server responds with 220.
 // Only run when -proxy-protocol flag is set (requires proxy_protocol: true in config).
 func checkSMTPProxyProtocol() error {
-	addr := net.JoinHostPort(*flagHost, *flagSMTPMXPort)
+	addr := net.JoinHostPort(smtpHost(), *flagSMTPMXPort)
 	dialer := &net.Dialer{Timeout: *flagTimeout}
 	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
@@ -655,7 +710,7 @@ func checkSMTPProxyProtocol() error {
 	conn.SetDeadline(time.Now().Add(*flagTimeout)) //nolint:errcheck
 
 	// Send HAProxy PROXY header with a fake source IP.
-	fmt.Fprintf(conn, "PROXY TCP4 203.0.113.1 %s 12345 25\r\n", *flagHost)
+	fmt.Fprintf(conn, "PROXY TCP4 203.0.113.1 %s 12345 25\r\n", smtpHost())
 
 	// Expect normal SMTP banner.
 	banner, err := readLine(conn)

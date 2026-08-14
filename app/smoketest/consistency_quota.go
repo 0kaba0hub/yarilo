@@ -99,7 +99,7 @@ func adminReadQuota(user string) (*reading, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, explainBackendAPITransport(err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -123,6 +123,28 @@ func adminReadQuota(user string) (*reading, error) {
 	return newReading(surfAdminAPI).
 		field("storageUsedKiB", strconv.FormatInt(out.StorageValue, 10)).
 		field("storageLimitKiB", strconv.FormatInt(limit, 10)), nil
+}
+
+// explainBackendAPITransport turns the three transport failures this row
+// actually produces into the flag that fixes each. They cost a QA run apiece,
+// because the error names TLS or DNS and never the setting: "certificate
+// required" is the server asking for mTLS, and the flags for it exist (#1311).
+func explainBackendAPITransport(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "certificate required"):
+		return fmt.Errorf("%w — the admin API asks for a client certificate: set -backend-api-cert and -backend-api-key", err)
+	case strings.Contains(msg, "HTTP request to an HTTPS server"):
+		return fmt.Errorf("%w — the endpoint speaks TLS: use an https:// URL in -backend-api", err)
+	case strings.Contains(msg, "certificate signed by unknown authority"):
+		return fmt.Errorf("%w — the endpoint's certificate is not trusted here: set -backend-api-ca (or -insecure to skip verification)", err)
+	case strings.Contains(msg, "no such host"):
+		return fmt.Errorf("%w — in the reference deployment the admin API answers on the backend service itself (yarilo-backend:9105, HTTPS), not on a yarilo-backend-api name", err)
+	}
+	return err
 }
 
 // backendAPIClient dials the admin API. The reference deployment serves it
