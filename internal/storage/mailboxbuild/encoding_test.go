@@ -57,7 +57,7 @@ func createFolder(t *testing.T, sc config.StorageConfig, name string) string {
 	// call bypasses that boundary, so the test applies it here the way a session
 	// resolver does -- otherwise it would assert the driver still owns the
 	// transform, which is exactly what #1113 removed.
-	name = mailbox.NormalizeName(name, !sc.MailboxListNormalizeToNFC)
+	name = mailbox.NormalizeName(name, !sc.MailboxListNormalizeNamesToNFC)
 	if err := u.Create(name); err != nil {
 		t.Fatal(err)
 	}

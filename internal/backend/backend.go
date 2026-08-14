@@ -123,20 +123,20 @@ func New(cfg *config.Config) (*Server, error) {
 	if cfg.Storage.MaildirRoot == "" {
 		cfg.Storage.MaildirRoot = "/var/mail/vhosts"
 	}
-	if cfg.Storage.MailHomeTemplate == "" {
-		cfg.Storage.MailHomeTemplate = "%d/%u"
+	if cfg.Storage.MailHome == "" {
+		cfg.Storage.MailHome = "%d/%u"
 	}
 	resolver := &mailbox.Resolver{
 		Root:                     cfg.Storage.MaildirRoot,
-		HomeTemplate:             cfg.Storage.MailHomeTemplate,
-		DefaultVolatileDir:       cfg.Storage.VolatileDir,
-		DefaultIndexDir:          cfg.Storage.IndexDir,
-		DefaultControlDir:        cfg.Storage.ControlDir,
-		DefaultAltDir:            cfg.Storage.AltDir,
+		HomeTemplate:             cfg.Storage.MailHome,
+		DefaultVolatileDir:       cfg.Storage.MailVolatilePath,
+		DefaultIndexDir:          cfg.Storage.MailIndexPath,
+		DefaultControlDir:        cfg.Storage.MailControlPath,
+		DefaultAltDir:            cfg.Storage.MailAltPath,
 		DefaultMailPath:          cfg.Storage.MailPath,
 		DefaultSeparator:         personalSeparator(cfg.Namespaces),
 		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,
-		DefaultSkipNFCNormalize:  !cfg.Storage.MailboxListNormalizeToNFC,
+		DefaultSkipNFCNormalize:  !cfg.Storage.MailboxListNormalizeNamesToNFC,
 	}
 	locker, err := buildLocksClient(cfg)
 	if err != nil {
@@ -146,7 +146,7 @@ func New(cfg *config.Config) (*Server, error) {
 
 	// Per-namespace mailbox driver overrides; namespaces on the global
 	// driver are absent from the map.
-	nsMailboxes, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.Mailbox, cfg.Storage, locker)
+	nsMailboxes, err := buildNamespaceMailboxes(cfg.Namespaces, cfg.Storage.MailDriver, cfg.Storage, locker)
 	if err != nil {
 		return nil, fmt.Errorf("backend: namespace mailboxes: %w", err)
 	}
@@ -536,7 +536,7 @@ func New(cfg *config.Config) (*Server, error) {
 // signal: the leading non-templated prefix of the first configured location,
 // e.g. "/mnt/mail/%d/%n" -> "/mnt/mail". Empty disables the stat leg.
 func storeHealthPath(sc config.StorageConfig) string {
-	for _, loc := range []string{sc.MailPath, sc.MaildirRoot, sc.MailHomeTemplate} {
+	for _, loc := range []string{sc.MailPath, sc.MaildirRoot, sc.MailHome} {
 		if loc == "" {
 			continue
 		}
@@ -1162,25 +1162,25 @@ func BuildResolver(cfg *config.Config) *mailbox.Resolver {
 	if sc.MaildirRoot == "" {
 		sc.MaildirRoot = "/var/mail/vhosts"
 	}
-	if sc.MailHomeTemplate == "" {
-		sc.MailHomeTemplate = "%d/%u"
+	if sc.MailHome == "" {
+		sc.MailHome = "%d/%u"
 	}
 	return &mailbox.Resolver{
 		Root:                     sc.MaildirRoot,
-		HomeTemplate:             sc.MailHomeTemplate,
-		DefaultVolatileDir:       sc.VolatileDir,
-		DefaultIndexDir:          sc.IndexDir,
-		DefaultControlDir:        sc.ControlDir,
-		DefaultAltDir:            sc.AltDir,
+		HomeTemplate:             sc.MailHome,
+		DefaultVolatileDir:       sc.MailVolatilePath,
+		DefaultIndexDir:          sc.MailIndexPath,
+		DefaultControlDir:        sc.MailControlPath,
+		DefaultAltDir:            sc.MailAltPath,
 		DefaultMailPath:          sc.MailPath,
 		DefaultSeparator:         personalSeparator(cfg.Namespaces),
 		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,
-		DefaultSkipNFCNormalize:  !cfg.Storage.MailboxListNormalizeToNFC,
+		DefaultSkipNFCNormalize:  !cfg.Storage.MailboxListNormalizeNamesToNFC,
 	}
 }
 
 func buildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.MailboxBackend {
-	return buildMailboxByDriver(cfg.Mailbox, cfg, locker)
+	return buildMailboxByDriver(cfg.MailDriver, cfg, locker)
 }
 
 // buildMailboxByDriver wraps mailboxbuild.ByDriver so every binary builds

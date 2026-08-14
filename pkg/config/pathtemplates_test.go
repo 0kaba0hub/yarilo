@@ -10,15 +10,15 @@ func TestValidatePathTemplatesRefusesWhatCannotExpand(t *testing.T) {
 		storage StorageConfig
 		wantErr bool
 	}{
-		{"reference 2.4 form", StorageConfig{VolatileDir: "/tmp/v/%{user | sha1 % 256 | hex(2)}/%{user}"}, false},
-		{"legacy form", StorageConfig{VolatileDir: "/tmp/v/%2.256Nu/%u"}, false},
-		{"home template", StorageConfig{MailHomeTemplate: "%d/%u"}, false},
+		{"reference 2.4 form", StorageConfig{MailVolatilePath: "/tmp/v/%{user | sha1 % 256 | hex(2)}/%{user}"}, false},
+		{"legacy form", StorageConfig{MailVolatilePath: "/tmp/v/%2.256Nu/%u"}, false},
+		{"home template", StorageConfig{MailHome: "%d/%u"}, false},
 		{"no templates at all", StorageConfig{MailPath: "/var/mail"}, false},
-		{"unknown filter", StorageConfig{VolatileDir: "/tmp/v/%{user | nope}"}, true},
-		{"unknown variable", StorageConfig{IndexDir: "/idx/%{nope}"}, true},
-		{"unknown short variable", StorageConfig{ControlDir: "/ctl/%z"}, true},
-		{"unclosed expression", StorageConfig{AltDir: "/alt/%{user"}, true},
-		{"hash left as bytes", StorageConfig{MdboxAltStoragePath: "/cold/%{user | sha1}"}, true},
+		{"unknown filter", StorageConfig{MailVolatilePath: "/tmp/v/%{user | nope}"}, true},
+		{"unknown variable", StorageConfig{MailIndexPath: "/idx/%{nope}"}, true},
+		{"unknown short variable", StorageConfig{MailControlPath: "/ctl/%z"}, true},
+		{"unclosed expression", StorageConfig{MailAltPath: "/alt/%{user"}, true},
+		{"hash left as bytes", StorageConfig{MailAltPath: "/cold/%{user | sha1}"}, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

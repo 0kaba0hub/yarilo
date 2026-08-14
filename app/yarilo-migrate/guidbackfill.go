@@ -69,7 +69,7 @@ func runGUIDBackfill(o guidOpts) error {
 	resolver := guidResolver(cfg, o)
 	driver := o.Driver
 	if driver == "" {
-		driver = cfg.Storage.Mailbox
+		driver = cfg.Storage.MailDriver
 	}
 	if driver == "" {
 		return fmt.Errorf("no storage driver: set --driver or storage.mailbox in --config")
@@ -169,11 +169,11 @@ func guidConfig(path string) (*config.Config, error) {
 func guidResolver(cfg *config.Config, o guidOpts) *mailbox.Resolver {
 	r := &mailbox.Resolver{
 		Root:                     cfg.Storage.MaildirRoot,
-		HomeTemplate:             cfg.Storage.MailHomeTemplate,
-		DefaultVolatileDir:       cfg.Storage.VolatileDir,
-		DefaultIndexDir:          cfg.Storage.IndexDir,
-		DefaultControlDir:        cfg.Storage.ControlDir,
-		DefaultAltDir:            cfg.Storage.AltDir,
+		HomeTemplate:             cfg.Storage.MailHome,
+		DefaultVolatileDir:       cfg.Storage.MailVolatilePath,
+		DefaultIndexDir:          cfg.Storage.MailIndexPath,
+		DefaultControlDir:        cfg.Storage.MailControlPath,
+		DefaultAltDir:            cfg.Storage.MailAltPath,
 		DefaultMailPath:          cfg.Storage.MailPath,
 		DefaultSeparator:         guidSeparator(cfg.Namespaces),
 		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,

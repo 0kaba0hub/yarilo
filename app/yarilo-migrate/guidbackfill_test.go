@@ -318,8 +318,8 @@ func TestGUIDBackfillHonoursHomeTemplate(t *testing.T) {
 func TestGUIDBackfillResolverFromConfig(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Storage.MaildirRoot = "/srv/mail"
-	cfg.Storage.MailHomeTemplate = "%d/%u"
-	cfg.Storage.IndexDir = "/srv/index/%d/%u"
+	cfg.Storage.MailHome = "%d/%u"
+	cfg.Storage.MailIndexPath = "/srv/index/%d/%u"
 
 	r := guidResolver(cfg, guidOpts{})
 	if r.Root != "/srv/mail" || r.HomeTemplate != "%d/%u" {

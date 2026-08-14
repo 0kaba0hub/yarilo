@@ -26,10 +26,10 @@ func TestEscapedNamesRoundTripThroughListFolders(t *testing.T) {
 		for _, utf8 := range []bool{true, false} {
 			t.Run(label(driver, utf8), func(t *testing.T) {
 				sc := config.StorageConfig{
-					MailboxListValidateFSNames:   true,
-					MailboxListStorageEscapeChar: "^",
-					MailboxListUTF8:              utf8,
-					MailboxListNormalizeToNFC:    true,
+					MailboxListValidateFSNames:     true,
+					MailboxListStorageEscapeChar:   "^",
+					MailboxListUTF8:                utf8,
+					MailboxListNormalizeNamesToNFC: true,
 				}
 				u := ByDriver(driver, sc, nil).OpenUser(&mailbox.UserInfo{
 					Username:          "u@d.test",
@@ -193,10 +193,10 @@ func TestEscapingIsOrderedAroundTheEncoding(t *testing.T) {
 		for _, utf8 := range []bool{true, false} {
 			t.Run(esc+"/"+label("", utf8), func(t *testing.T) {
 				sc := config.StorageConfig{
-					MailboxListValidateFSNames:   true,
-					MailboxListStorageEscapeChar: esc,
-					MailboxListUTF8:              utf8,
-					MailboxListNormalizeToNFC:    true,
+					MailboxListValidateFSNames:     true,
+					MailboxListStorageEscapeChar:   esc,
+					MailboxListUTF8:                utf8,
+					MailboxListNormalizeNamesToNFC: true,
 				}
 				u := ByDriver("maildir", sc, nil).OpenUser(&mailbox.UserInfo{
 					Username: "u@d.test", Home: t.TempDir(), Driver: "maildir",

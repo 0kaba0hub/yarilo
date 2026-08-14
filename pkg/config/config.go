@@ -242,10 +242,43 @@ type NamespaceConfig struct {
 	Inbox bool `koanf:"inbox"`
 	// Location is the storage URL for this namespace (NS-1b), templated via
 	// pkg/dict/varexpand (%u, %h, %n, %d), e.g. "maildir:%h".
+	//
+	// The 2.4 reference writes the same fact as two keys, and both spellings
+	// are accepted here: mail_driver + mail_path inside the namespace say what
+	// "driver:path" says, in the shape an operator migrating a 2.4
+	// configuration already has. Giving both forms for one namespace is
+	// refused at startup rather than resolved by precedence.
 	Location string `koanf:"location"`
+	// MailDriver / MailPath are the split form of Location.
+	MailDriver string `koanf:"mail_driver"`
+	MailPath   string `koanf:"mail_path"`
 	// IgnoreACL bypasses ACL enforcement for this namespace even when
 	// acl.enabled is true — for trusted admin/public roots.
 	IgnoreACL bool `koanf:"acl_ignore"`
+}
+
+// foldNamespaceLocations turns the 2.4 split spelling (mail_driver + mail_path
+// inside a namespace) into the location URL the rest of the tree reads. Both
+// forms say the same thing; giving both for one namespace is refused rather
+// than resolved by precedence, for the reason every alias conflict is: a
+// rename must not silently pick a winner.
+func foldNamespaceLocations(nss []NamespaceConfig) error {
+	for i := range nss {
+		ns := &nss[i]
+		driver := strings.TrimSpace(ns.MailDriver)
+		path := strings.TrimSpace(ns.MailPath)
+		if driver == "" && path == "" {
+			continue
+		}
+		if strings.TrimSpace(ns.Location) != "" {
+			return fmt.Errorf("config: namespace %q sets both location and mail_driver/mail_path; they are two spellings of one setting, so keep one", ns.Prefix)
+		}
+		if driver == "" || path == "" {
+			return fmt.Errorf("config: namespace %q sets only one of mail_driver/mail_path; the pair is what names a location", ns.Prefix)
+		}
+		ns.Location = driver + ":" + path
+	}
+	return nil
 }
 
 // GeneralConfig holds shared infrastructure settings inherited by all services.
@@ -1826,13 +1859,26 @@ type PassdbEntry struct {
 }
 
 type StorageConfig struct {
-	Mailbox          string `koanf:"mailbox"`
-	MaildirRoot      string `koanf:"maildir_root"`
-	MailHomeTemplate string `koanf:"mail_home_template"`
-	MailPath         string `koanf:"mail_path"`
-	MailInboxPath    string `koanf:"mail_inbox_path"`
-	Index            string `koanf:"index"`
-	IndexDir         string `koanf:"index_dir"`
+	// MailDriver names the mailbox storage driver (maildir / mdbox / sdbox).
+	// Canonical spelling; "mailbox" is the pre-beta alias.
+	MailDriver  string `koanf:"mail_driver"`
+	MaildirRoot string `koanf:"maildir_root"`
+	// MailHome is the per-user home template (%u/%n/%d/%h). Canonical
+	// spelling; "mail_home_template" is the pre-beta alias.
+	MailHome      string `koanf:"mail_home"`
+	MailPath      string `koanf:"mail_path"`
+	MailInboxPath string `koanf:"mail_inbox_path"`
+	Index         string `koanf:"index"`
+	// MailIndexPath is the INDEX= template. Canonical spelling; "index_dir" is
+	// the pre-beta alias.
+	MailIndexPath string `koanf:"mail_index_path"`
+
+	// Pre-beta spellings of the keys above, accepted as aliases and removed
+	// after beta. Setting both spellings of one knob to different values is
+	// refused at startup rather than resolved silently.
+	MailboxAlias          string `koanf:"mailbox"`
+	MailHomeTemplateAlias string `koanf:"mail_home_template"`
+	IndexDirAlias         string `koanf:"index_dir"`
 
 	// MaildirSyncOnSelect reconciles the maildir index against the on-disk
 	// cur/ and new/ directories on every SELECT/EXAMINE so messages delivered
@@ -1858,7 +1904,7 @@ type StorageConfig struct {
 	// template variables as mail_home_template. Empty disables alt
 	// storage (default).
 	// Example: /mnt/cold/%d/%n
-	MdboxAltStoragePath string `koanf:"mdbox_alt_storage_path"`
+	MdboxAltStoragePathAlias string `koanf:"mdbox_alt_storage_path"`
 
 	// MdboxRotateSize is the maximum size of a single m.<N> file before a new save
 	// rolls to a fresh file. Accepts a human-readable size ("10M", "1G") or a raw
@@ -1889,7 +1935,9 @@ type StorageConfig struct {
 	// local tmpfs) and then copied to NFS, keeping the expensive fsync
 	// off the NFS path. Supports %u/%n/%d/%h template variables.
 	// Example: /run/yarilo-volatile/%d/%n
-	VolatileDir string `koanf:"volatile_dir"`
+	MailVolatilePath string `koanf:"mail_volatile_path"`
+	// VolatileDirAlias is the pre-beta spelling.
+	VolatileDirAlias string `koanf:"volatile_dir"`
 
 	// The log-rotation triple governs BOTH transaction logs that share the
 	// mailindex mechanics — the per-folder file index and the mdbox map — as
@@ -1926,14 +1974,22 @@ type StorageConfig struct {
 	// stored here instead of co-located with the mailbox data under
 	// home. Supports %u/%n/%d/%h template variables.
 	// Example: /var/yarilo-control/%d/%n
-	ControlDir string `koanf:"control_dir"`
+	MailControlPath string `koanf:"mail_control_path"`
+	// ControlDirAlias is the pre-beta spelling.
+	ControlDirAlias string `koanf:"control_dir"`
 
 	// AltDir is the cluster-wide ALT= template. When set, enables
 	// two-tier maildir storage: messages cold-tiered via altmove
 	// live here; reads check both primary (home) and alt tiers.
 	// Supports %u/%n/%d/%h template variables.
 	// Example: /mnt/cold/%d/%n
-	AltDir string `koanf:"alt_dir"`
+	// MailAltPath is the ALT= template: the cold tier both maildir and mdbox
+	// read and altmove writes to. One knob for one fact -- "alt_dir" and
+	// "mdbox_alt_storage_path" named the same path per driver and are both
+	// accepted as aliases, with a conflict between them refused at startup.
+	MailAltPath string `koanf:"mail_alt_path"`
+	// AltDirAlias / MdboxAltStoragePathAlias are the pre-beta spellings.
+	AltDirAlias string `koanf:"alt_dir"`
 
 	// MailboxListUTF8 controls on-disk folder name encoding.
 	// true (default): folder names are stored as UTF-8 on the filesystem.
@@ -1946,7 +2002,9 @@ type StorageConfig struct {
 	// names before they are stored or compared. Enabled by default so that
 	// equivalent-but-differently-composed names (e.g. from macOS HFS+) are
 	// treated as the same folder.
-	MailboxListNormalizeToNFC bool `koanf:"mailbox_list_normalize_to_nfc"`
+	MailboxListNormalizeNamesToNFC bool `koanf:"mailbox_list_normalize_names_to_nfc"`
+	// MailboxListNormalizeToNFCAlias is the pre-beta spelling.
+	MailboxListNormalizeToNFCAlias bool `koanf:"mailbox_list_normalize_to_nfc"`
 
 	// MailboxListValidateFSNames refuses client-supplied folder names that are
 	// unsafe as paths: "." and ".." segments, adjacent separators, a leading
@@ -2148,10 +2206,10 @@ func Load(path string) (*Config, error) {
 			// defaulted, so ByDriver passed false and every folder name went
 			// to disk as modified-UTF-7 with no NFC normalisation -- the
 			// opposite of what values.yaml promises (#1074).
-			MailboxListUTF8:            true,
-			MailboxListNormalizeToNFC:  true,
-			DboxReactiveRebuild:        true,
-			MailboxListValidateFSNames: true,
+			MailboxListUTF8:                true,
+			MailboxListNormalizeNamesToNFC: true,
+			DboxReactiveRebuild:            true,
+			MailboxListValidateFSNames:     true,
 			// The layout's own directories. A sandbox count over 996 maildir
 			// and 2338 dbox folders found no user folder colliding with one,
 			// so the default costs nothing there.
@@ -2363,6 +2421,9 @@ func resolveSize(name, raw string) (int64, error) {
 }
 
 func (cfg *Config) validate() error {
+	if err := foldNamespaceLocations(cfg.Namespaces); err != nil {
+		return err
+	}
 	if err := validateStorageEscapeChar(cfg.Storage.MailboxListStorageEscapeChar); err != nil {
 		return err
 	}
@@ -2776,14 +2837,14 @@ func ValidatePathTemplates(sc *StorageConfig) error {
 		key   string
 		value string
 	}{
-		{"mail_home_template", sc.MailHomeTemplate},
+		{"mail_home_template", sc.MailHome},
 		{"mail_path", sc.MailPath},
 		{"mail_inbox_path", sc.MailInboxPath},
-		{"index_dir", sc.IndexDir},
-		{"control_dir", sc.ControlDir},
-		{"volatile_dir", sc.VolatileDir},
-		{"alt_dir", sc.AltDir},
-		{"mdbox_alt_storage_path", sc.MdboxAltStoragePath},
+		{"index_dir", sc.MailIndexPath},
+		{"control_dir", sc.MailControlPath},
+		{"volatile_dir", sc.MailVolatilePath},
+		{"alt_dir", sc.MailAltPath},
+		{"mdbox_alt_storage_path", sc.MailAltPath},
 	} {
 		if t.value == "" {
 			continue

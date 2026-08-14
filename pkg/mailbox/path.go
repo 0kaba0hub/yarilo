@@ -395,7 +395,7 @@ func splitUser(u string) (local, domain string) {
 
 // Location is a parsed namespace storage URL "driver:path". Drivers other than
 // the active one are accepted by the parser for forward-compat but must match
-// the globally configured cfg.Storage.Mailbox driver; per-namespace driver
+// the globally configured cfg.Storage.MailDriver driver; per-namespace driver
 // mixing is deferred until backends gain a shared OpenNamespace dispatch.
 type Location struct {
 	Driver      string // "maildir", "sdbox" (alias: "dbox"), "mdbox"

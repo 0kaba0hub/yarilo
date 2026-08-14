@@ -45,7 +45,7 @@ func byDriver(driver string, sc config.StorageConfig, locker locks.Locker) mailb
 		return dboxv2.New(dboxv2.WithLocker(locker), dboxv2.WithMaxConcurrentWrites(sc.MaxConcurrentWrites),
 			dboxv2.WithListUTF8(sc.MailboxListUTF8))
 	case "mdbox":
-		return mdbox.New(mdbox.WithLocker(locker), mdbox.WithAltStorage(sc.MdboxAltStoragePath),
+		return mdbox.New(mdbox.WithLocker(locker), mdbox.WithAltStorage(sc.MailAltPath),
 			mdbox.WithMaxConcurrentWrites(sc.MaxConcurrentWrites),
 			mdbox.WithListUTF8(sc.MailboxListUTF8),
 			mdbox.WithRotateSize(uint32(quota.ParseSize(sc.MdboxRotateSize))),
