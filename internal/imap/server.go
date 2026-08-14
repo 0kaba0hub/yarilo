@@ -2609,6 +2609,12 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		// order as uidHits/seqHits (msgs is already scanned seq-ascending),
 		// used only to build the RELEVANCY list — see relevancyScores below.
 		matchedOrder []uint32
+		// unreadable collects the messages whose bytes the scan could not
+		// read. A body criterion cannot match what was never read, so without
+		// this an unreadable mailbox and an empty one answer identically
+		// (#1283).
+		unreadable  []uint32
+		lastReadErr error
 	)
 	for i, m := range msgs {
 		seqNum := uint32(i + 1)
@@ -2626,9 +2632,20 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		}
 		var rawMsg []byte
 		if needRaw && m.Filename != "" {
-			if rc, err := s.fetchSelected(m); err == nil {
-				rawMsg, _ = io.ReadAll(rc)
+			rc, err := s.fetchSelected(m)
+			if err == nil {
+				rawMsg, err = io.ReadAll(rc)
 				rc.Close()
+			}
+			if err != nil {
+				// MatchMessage answers TRUE for a BODY/TEXT criterion when it
+				// is given no message: with the read error dropped, every
+				// message the scan could not read matched every body search
+				// (#1283). Excluded and counted instead -- a message nobody
+				// looked at is not a message that matched.
+				unreadable = append(unreadable, m.UID)
+				lastReadErr = err
+				continue
 			}
 		}
 
@@ -2672,6 +2689,24 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		}
 	}
 
+	// A message the scan could not read did not "not match" -- it was never
+	// looked at. Reported once per SEARCH with counts and one example error,
+	// never per message: a mailbox whose storage is gone would otherwise write
+	// a line per record. WARN because the answer the client is about to get is
+	// incomplete and nothing else says so.
+	if len(unreadable) > 0 {
+		metricSearchUnreadable.Add(float64(len(unreadable)))
+		slog.Warn("imap: search could not read some messages; the result is incomplete",
+			"user", s.userInfo.Username,
+			"folder", s.folder.Name,
+			"unreadable", len(unreadable),
+			"records_scanned", len(msgs),
+			"matched", hitCount,
+			"first_unreadable_uid", unreadable[0],
+			"err", lastReadErr,
+		)
+	}
+
 	// On a zero-match search, log the scanned record count and UID range so a
 	// delivery/visibility mismatch is diagnosable. DEBUG-gated, counts only.
 	if hitCount == 0 {
@@ -2691,6 +2726,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 			"uid_min", uidMin,
 			"uid_max", uidMax,
 			"kind", kind,
+			"unreadable", len(unreadable),
 		)
 	}
 

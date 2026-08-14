@@ -76,6 +76,13 @@ func (f *fakeFTS) Close() error                        { return nil }
 
 func startFTSTestServer(t *testing.T, fake *fakeFTS, autoindex bool) *imapclient.Client {
 	t.Helper()
+	return startFTSTestServerIn(t, fake, autoindex, t.TempDir())
+}
+
+// startFTSTestServerIn is the same server over a storage root the caller can
+// reach, for tests that have to disturb what is on disk.
+func startFTSTestServerIn(t *testing.T, fake *fakeFTS, autoindex bool, root string) *imapclient.Client {
+	t.Helper()
 	set := language.DefaultSettings()
 	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, nil, set.TokenMaxLen, set.AddressMaxLen, 0)
 	if err != nil {
@@ -84,7 +91,7 @@ func startFTSTestServer(t *testing.T, fake *fakeFTS, autoindex bool) *imapclient
 	opts := imapserver.Options{
 		Mailbox:  maildir.New(),
 		Index:    file.New(),
-		Resolver: &mailbox.Resolver{Root: t.TempDir(), HomeTemplate: "%d/%n"},
+		Resolver: &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"},
 		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
 		FTS: imapserver.FTSOptions{
 			Client:        fake,
