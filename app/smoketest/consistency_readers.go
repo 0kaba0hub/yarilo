@@ -91,9 +91,9 @@ func sharedFields(anchor, other *reading) *reading {
 // message are the same fact under both protocols — so that comparison is real
 // and is made here.
 func pop3ReadProbe(user, pass, marker string) (*reading, error) {
-	addr := net.JoinHostPort(*flagHost, *flagPOP3SPort)
+	addr := net.JoinHostPort(pop3Host(), *flagPOP3SPort)
 	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: *flagTimeout}, "tcp", addr,
-		&tls.Config{ServerName: *flagHost, InsecureSkipVerify: *flagInsecure}) //nolint:gosec
+		&tls.Config{ServerName: pop3Host(), InsecureSkipVerify: *flagInsecure}) //nolint:gosec
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", addr, err)
 	}

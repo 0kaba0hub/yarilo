@@ -17,7 +17,7 @@ import (
 // pre-auth capability block, and performs a STARTTLS upgrade when advertised.
 // Returns the (possibly upgraded) connection with the greeting already consumed.
 func msieveDial() (net.Conn, error) {
-	addr := net.JoinHostPort(*flagHost, *flagManageSievePort)
+	addr := net.JoinHostPort(manageSieveHost(), *flagManageSievePort)
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
 	if err != nil {
 		return nil, err
@@ -44,7 +44,7 @@ func msieveDial() (net.Conn, error) {
 		return nil, fmt.Errorf("STARTTLS rejected: %q", line)
 	}
 	tlsCfg := &tls.Config{
-		ServerName:         *flagHost,
+		ServerName:         manageSieveHost(),
 		InsecureSkipVerify: *flagInsecure, //nolint:gosec
 	}
 	tlsConn := tls.Client(conn, tlsCfg)
