@@ -605,6 +605,14 @@ func (fs *folderState) flush(wholeNames bool) error {
 	if err := setLineage(fs.file, next); err != nil {
 		return fmt.Errorf("fileindex/flush: lineage: %w", err)
 	}
+	// One truth for the header size: whatever is about to be written decides
+	// it, recomputed from those very extensions. Every path that grows an
+	// extension header used to be responsible for recomputing it, and a path
+	// that grew one without recomputing produced a base Recreate refuses --
+	// with the folder then unflushable until someone noticed (#1285).
+	if err := fs.syncHeaderSizeLocked(); err != nil {
+		return err
+	}
 	ri := fs.file.ToRecreateInput(fs.indexPath)
 	// Recount from actual records so counter drift is corrected on every
 	// flush rather than persisted to the next base file.
@@ -1802,6 +1810,25 @@ func (fs *folderState) persistKeywordRegistry() error {
 		return err
 	}
 	fs.file.Header.HeaderSize = uint32(mailindex.HeaderMinSize) + uint32(len(extBytes))
+	return nil
+}
+
+// syncHeaderSizeLocked recomputes Header.HeaderSize from the extension headers
+// as they stand, the same way Recreate validates it: base size plus the encoded
+// extension region. Cheap (an encode of the header region, not of the records)
+// and idempotent, so it is a barrier every write passes rather than a rule
+// every writer has to remember.
+func (fs *folderState) syncHeaderSizeLocked() error {
+	extBytes, err := mailindex.EncodeExtHeaders(fs.file.Extensions)
+	if err != nil {
+		return fmt.Errorf("fileindex: encode extension headers: %w", err)
+	}
+	want := uint32(mailindex.HeaderMinSize) + uint32(len(extBytes))
+	if fs.file.Header.HeaderSize != want {
+		slog.Debug("fileindex: header size corrected before flush",
+			"folder", fs.folder, "was", fs.file.Header.HeaderSize, "now", want)
+		fs.file.Header.HeaderSize = want
+	}
 	return nil
 }
 
