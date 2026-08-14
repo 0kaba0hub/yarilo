@@ -495,7 +495,7 @@ components:
     ## MySQL as the main passdb; skip_schema + an explicit query, per the
     ## #1299 contract.
     master_users:
-      enabled: true
+      enabled: false
       separator: "*"
       masterdb:
         - driver: mysql
