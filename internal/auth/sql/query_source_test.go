@@ -75,3 +75,66 @@ func TestPasswordQuerySourceIsLogged(t *testing.T) {
 		})
 	}
 }
+
+// skip_schema and an absent password query contradict each other: one says the
+// tables are the operator's, the other asks for ours. A warning would be a
+// config that declares one thing and does another, so the combination is
+// refused — while every neighbouring combination still starts, which is what
+// makes the refusal about the contradiction rather than about either setting.
+func TestSkipSchemaWithoutQueryIsRefused(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "users.db")
+
+	tests := []struct {
+		name       string
+		skipSchema bool
+		query      string
+		wantErr    bool
+		errNames   []string
+	}{
+		{
+			name:       "skip_schema and no query contradict",
+			skipSchema: true,
+			wantErr:    true,
+			errNames:   []string{"skip_schema", "passdb_sql_query"},
+		},
+		{
+			name:       "skip_schema with a query is a complete statement",
+			skipSchema: true,
+			query:      "SELECT password FROM my_users WHERE email = %u",
+		},
+		{
+			// The built-in schema against an external database is what the
+			// default exists for; refusing it would make the schema unusable
+			// with any database but our own.
+			name:  "no query and no skip_schema is the out-of-the-box case",
+			query: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := authsql.New(authsql.Config{
+				Driver:        "sqlite",
+				DSN:           dsn,
+				PasswordQuery: tc.query,
+				SkipSchema:    tc.skipSchema,
+			})
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("refused a legitimate combination: %v", err)
+				}
+				p.Close() //nolint:errcheck
+				return
+			}
+			if err == nil {
+				p.Close() //nolint:errcheck
+				t.Fatal("the contradictory combination opened anyway")
+			}
+			for _, want := range tc.errNames {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("refusal %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
