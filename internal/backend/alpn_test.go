@@ -52,8 +52,8 @@ func TestBuildTLS_ALPNSet(t *testing.T) {
 	dir := writeTestCert(t)
 	cfg := &config.Config{
 		General: config.GeneralConfig{SSL: config.SSLConfig{
-			TLSCert: filepath.Join(dir, "cert.pem"),
-			TLSKey:  filepath.Join(dir, "key.pem"),
+			SSLServerCert: filepath.Join(dir, "cert.pem"),
+			SSLServerKey:  filepath.Join(dir, "key.pem"),
 		}},
 	}
 	svc := &config.ServiceConfig{Enabled: true, Port: 993, SSLMode: "ssl"}
@@ -85,8 +85,8 @@ func TestBuildTLS_ALPNMismatchRejected(t *testing.T) {
 	dir := writeTestCert(t)
 	cfg := &config.Config{
 		General: config.GeneralConfig{SSL: config.SSLConfig{
-			TLSCert: filepath.Join(dir, "cert.pem"),
-			TLSKey:  filepath.Join(dir, "key.pem"),
+			SSLServerCert: filepath.Join(dir, "cert.pem"),
+			SSLServerKey:  filepath.Join(dir, "key.pem"),
 		}},
 	}
 	svc := &config.ServiceConfig{Enabled: true, Port: 993, SSLMode: "ssl"}

@@ -120,7 +120,7 @@ func main() {
 		Warden:             wardenPool,
 		WardenFailOpen:     cfg.WardenService.FailOpen,
 		ProxyProtocol:      svc.HAProxy,
-		HAProxyTrustedNets: parseCIDRs(cfg.General.HAProxy.TrustedNets),
+		HAProxyTrustedNets: parseCIDRs(cfg.General.HAProxy.HAProxyTrustedNetworks),
 		HAProxyTimeout:     time.Duration(cfg.General.HAProxy.Timeout) * time.Second,
 		LocalIP:            os.Getenv("POD_IP"),
 		CORSAllowOrigins:   cfg.Protocol.JMAP.CORSAllowOrigins,
@@ -173,7 +173,7 @@ func clientTLS(cfg *config.Config, svc *config.ServiceConfig) (*tls.Config, erro
 	if svc.SSL != nil {
 		ssl = *svc.SSL
 	}
-	if ssl.TLSCert == "" || ssl.TLSKey == "" {
+	if ssl.SSLServerCert == "" || ssl.SSLServerKey == "" {
 		return nil, nil
 	}
 	t, err := config.BuildTLSConfig(ssl)

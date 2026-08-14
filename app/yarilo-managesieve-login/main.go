@@ -61,7 +61,7 @@ func main() {
 
 	// Client-facing TLS for STARTTLS on port 4190.
 	var extTLS *tls.Config
-	if cfg.General.SSL.TLSCert != "" && cfg.General.SSL.TLSKey != "" {
+	if cfg.General.SSL.SSLServerCert != "" && cfg.General.SSL.SSLServerKey != "" {
 		extTLS, err = config.BuildTLSConfig(cfg.General.SSL)
 		if err != nil {
 			slog.Error("TLS config failed", "err", err)

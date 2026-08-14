@@ -147,3 +147,107 @@ func storageAliases(cfg *Config) []aliasedKey {
 		},
 	}
 }
+
+// generalAliases lists the general-section renames of package 2 (#1286).
+func generalAliases(cfg *Config) []aliasedKey {
+	ssl := &cfg.General.SSL
+	hap := &cfg.General.HAProxy
+	str := func(canonical, alias string, c, a *string) aliasedKey {
+		return aliasedKey{canonical: canonical, alias: alias,
+			adopt: func() { *c = *a }, equal: func() bool { return *c == *a }}
+	}
+	return []aliasedKey{
+		str("general.ssl.ssl_server_cert_file", "general.ssl.tls_cert", &ssl.SSLServerCert, &ssl.TLSCertAlias),
+		str("general.ssl.ssl_server_key_file", "general.ssl.tls_key", &ssl.SSLServerKey, &ssl.TLSKeyAlias),
+		str("general.ssl.ssl_server_alt_cert_file", "general.ssl.tls_alt_cert", &ssl.SSLServerAltCert, &ssl.TLSAltCertAlias),
+		str("general.ssl.ssl_server_alt_key_file", "general.ssl.tls_alt_key", &ssl.SSLServerAltKey, &ssl.TLSAltKeyAlias),
+		str("general.ssl.ssl_min_protocol", "general.ssl.tls_min_version", &ssl.SSLMinProtocol, &ssl.TLSMinVersionAlias),
+		{
+			canonical: "general.ssl.ssl_prefer_server_ciphers",
+			alias:     "general.ssl.prefer_server_ciphers",
+			adopt:     func() { ssl.SSLPreferCiphers = ssl.PreferServerAlias },
+			equal:     func() bool { return ssl.SSLPreferCiphers == ssl.PreferServerAlias },
+		},
+		{
+			canonical: "general.haproxy.haproxy_trusted_networks",
+			alias:     "general.haproxy.trusted_nets",
+			adopt:     func() { hap.HAProxyTrustedNetworks = hap.TrustedNetsAlias },
+			equal:     func() bool { return equalStrings(hap.HAProxyTrustedNetworks, hap.TrustedNetsAlias) },
+		},
+	}
+}
+
+// aclAliases lists the acl-section renames of package 2.
+func aclAliases(cfg *Config) []aliasedKey {
+	a := &cfg.ACL
+	return []aliasedKey{
+		{
+			canonical: "acl.acl_globals_only",
+			alias:     "acl.globals_only",
+			adopt:     func() { a.GlobalsOnly = a.GlobalsOnlyAlias },
+			equal:     func() bool { return a.GlobalsOnly == a.GlobalsOnlyAlias },
+		},
+		{
+			canonical: "acl.acl_sharing_map",
+			alias:     "acl.acl_shared_dict",
+			adopt:     func() { a.SharedDict = a.SharedDictAlias },
+			equal:     func() bool { return a.SharedDict == a.SharedDictAlias },
+		},
+	}
+}
+
+// authAliases lists the auth-section renames of package 2.
+func authAliases(cfg *Config) []aliasedKey {
+	au := &cfg.Auth
+	c := &cfg.Auth.Cache
+	p := &cfg.Auth.Policy
+	m := &cfg.Auth.MasterUsers
+	boolKey := func(canonical, alias string, cv, av *bool) aliasedKey {
+		return aliasedKey{canonical: canonical, alias: alias,
+			adopt: func() { *cv = *av }, equal: func() bool { return *cv == *av }}
+	}
+	strKey := func(canonical, alias string, cv, av *string) aliasedKey {
+		return aliasedKey{canonical: canonical, alias: alias,
+			adopt: func() { *cv = *av }, equal: func() bool { return *cv == *av }}
+	}
+	intKey := func(canonical, alias string, cv, av *int) aliasedKey {
+		return aliasedKey{canonical: canonical, alias: alias,
+			adopt: func() { *cv = *av }, equal: func() bool { return *cv == *av }}
+	}
+	return []aliasedKey{
+		strKey("auth.cache.auth_cache_size", "auth.cache.cache_size", &c.CacheSize, &c.CacheSizeAlias),
+		intKey("auth.cache.auth_cache_ttl", "auth.cache.ttl_seconds", &c.TTLSeconds, &c.TTLSecondsAlias),
+		intKey("auth.cache.auth_cache_negative_ttl", "auth.cache.negative_ttl_seconds", &c.NegativeTTLSeconds, &c.NegativeTTLSecondsAlias),
+		intKey("auth.auth_failure_delay", "auth.failure_delay", &au.FailureDelaySeconds, &au.FailureDelaySecondsAlias),
+		strKey("auth.master_users.auth_master_user_separator", "auth.master_users.separator", &m.Separator, &m.SeparatorAlias),
+		strKey("auth.policy.auth_policy_server_url", "auth.policy.url", &p.URL, &p.URLAlias),
+		strKey("auth.policy.auth_policy_server_api_header", "auth.policy.api_header", &p.APIHeader, &p.APIHeaderAlias),
+		strKey("auth.policy.auth_policy_hash_mech", "auth.policy.hash_mech", &p.HashMech, &p.HashMechAlias),
+		strKey("auth.policy.auth_policy_hash_nonce", "auth.policy.hash_nonce", &p.HashNonce, &p.HashNonceAlias),
+		{
+			canonical: "auth.policy.auth_policy_hash_truncate",
+			alias:     "auth.policy.hash_truncate_bits",
+			adopt:     func() { p.HashTruncateBits = p.HashTruncateBitsAlias },
+			equal:     func() bool { return p.HashTruncateBits == p.HashTruncateBitsAlias },
+		},
+		boolKey("auth.policy.auth_policy_reject_on_fail", "auth.policy.reject_on_fail", &p.RejectOnFail, &p.RejectOnFailAlias),
+		boolKey("auth.policy.auth_policy_log_only", "auth.policy.log_only", &p.LogOnly, &p.LogOnlyAlias),
+		boolKey("auth.policy.auth_policy_check_before_auth", "auth.policy.check_before", &p.CheckBefore, &p.CheckBeforeAlias),
+		boolKey("auth.policy.auth_policy_check_after_auth", "auth.policy.check_after", &p.CheckAfter, &p.CheckAfterAlias),
+		boolKey("auth.policy.auth_policy_report_after_auth", "auth.policy.report_after", &p.ReportAfter, &p.ReportAfterAlias),
+	}
+}
+
+// equalStrings compares two string lists as values, for aliases whose knob is a
+// list rather than a scalar.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

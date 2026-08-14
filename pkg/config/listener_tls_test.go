@@ -2,8 +2,10 @@ package config
 
 import "testing"
 
-func withCert() SSLConfig { return SSLConfig{TLSCert: "/tls/tls.crt", TLSKey: "/tls/tls.key"} }
-func noCert() SSLConfig   { return SSLConfig{} }
+func withCert() SSLConfig {
+	return SSLConfig{SSLServerCert: "/tls/tls.crt", SSLServerKey: "/tls/tls.key"}
+}
+func noCert() SSLConfig { return SSLConfig{} }
 func svcMode(m string) *ServiceConfig {
 	return &ServiceConfig{Enabled: true, Port: 993, SSLMode: m}
 }
