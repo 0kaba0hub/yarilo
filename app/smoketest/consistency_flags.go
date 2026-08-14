@@ -63,6 +63,11 @@ func checkConsistencyFlagsJMAPToIMAP(user, pass string) error {
 	if err != nil {
 		return fmt.Errorf("read flags over imap: %w", err)
 	}
+	// Narrowed to system flags on purpose while the row cannot run: IMAP sets
+	// only \Seen here, and Email/set writes $flagged. When #712 lands, put a
+	// custom keyword back into this direction too (keywords/$smokelabel over
+	// Email/set) -- non-system keywords are the vulnerable class, and losing
+	// one is what #1278 was.
 	want := newReading(surfJMAP).set("flags", []string{"$seen", "$flagged"})
 	return judgeRow("jmap->imap flag visibility", want, back, defaultAllowances())
 }
