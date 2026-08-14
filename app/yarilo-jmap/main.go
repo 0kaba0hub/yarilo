@@ -145,6 +145,18 @@ func main() {
 		}
 	}
 
+	// Whether this process can answer a text filter at all is a deployment
+	// fact, and until now it was only observable by asking it one: without the
+	// client Email/query refuses text conditions with unsupportedFilter, which
+	// is correct and invisible (#1279).
+	if ftsOpts != nil {
+		slog.Info("jmap: full-text search wired", "fts_addr", cfg.FTS.Addr)
+	} else {
+		slog.Warn("jmap: full-text search is NOT wired in this process; Email/query text conditions will be refused as unsupportedFilter",
+			"fts_enabled", cfg.FTS.Enabled, "fts_mode", cfg.FTS.Mode,
+			"fts_addr", cfg.FTS.Addr, "fts_search", cfg.FTS.Search)
+	}
+
 	srv := jmap.New(jmap.Options{
 		Addr:              addr,
 		TLSConfig:         tlsCfg,

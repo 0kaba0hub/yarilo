@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -68,6 +69,31 @@ func TestFlagRowJudgement(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantIn) {
 				t.Errorf("verdict %q does not name %q", err, tc.wantIn)
+			}
+		})
+	}
+}
+
+// The JMAP write path does not exist yet (#712), so the row's second direction
+// answers "not checkable" rather than failing: a row that can never pass is a
+// red gate that says nothing, and the direction that can be checked is checked
+// above it. Any other JMAP error still fails the row — "not implemented" is a
+// specific answer, not a category for everything that went wrong.
+func TestUnknownMethodIsDistinguishedFromAnyOtherFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"the method does not exist", errors.New(`Email/set: {"type":"unknownMethod"}`), true},
+		{"the call was refused", errors.New(`Email/set: {"type":"invalidArguments"}`), false},
+		{"the transport failed", errors.New("post https://host: connection refused"), false},
+		{"no error at all", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isJMAPUnknownMethod(tc.err); got != tc.want {
+				t.Errorf("isJMAPUnknownMethod(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}
