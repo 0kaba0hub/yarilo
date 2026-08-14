@@ -1150,25 +1150,23 @@ func (u *userIndex) writeFlags(folderID uint64, uid uint32, flags, keywords []st
 		if err != nil {
 			return err
 		}
-		if mode != flagsReplace {
-			// Read the record's own keywords under the lock and fold the
-			// caller's into them, so a keyword set between the caller's read
-			// and this write is not dropped by a list that predates it.
-			for _, rec := range fs.file.Records {
-				if rec.UID != uid {
-					continue
-				}
-				have := keywordsFromBitmask(fs.keywords, decodeKeywordsRec(rec.Ext[extNameKeywords]))
-				if mode == flagsAdd {
-					keywords = unionStrings(have, keywords)
-				} else {
-					keywords = subtractStrings(have, keywords)
-				}
-				break
+		// Read the record's own keywords under the lock: Add/Remove fold the
+		// caller's list into them, so a keyword set between the caller's read
+		// and this write is not dropped by a list that predates it, and every
+		// mode needs them anyway to journal the difference.
+		var have []string
+		for _, rec := range fs.file.Records {
+			if rec.UID != uid {
+				continue
 			}
+			have = keywordsFromBitmask(fs.keywords, decodeKeywordsRec(rec.Ext[extNameKeywords]))
+			break
 		}
-		prevKwCount := len(fs.keywords.Names)
-		keywordsChanged := false
+		if mode == flagsAdd {
+			keywords = unionStrings(have, keywords)
+		} else if mode == flagsRemove {
+			keywords = subtractStrings(have, keywords)
+		}
 		kwBits, kwReg, err := keywordsBitmaskFor(fs.keywords, keywords)
 		if err != nil {
 			return err
@@ -1195,7 +1193,6 @@ func (u *userIndex) writeFlags(folderID uint64, uid uint32, flags, keywords []st
 			}
 			rec.Flags = newFlags
 			rec.Ext[extNameModSeq] = encodeModseqRec(modseq)
-			keywordsChanged = keywordsChanged || decodeKeywordsRec(rec.Ext[extNameKeywords]) != kwBits
 			rec.Ext[extNameKeywords] = encodeKeywordsRec(kwBits)
 			newSeen := newFlags&mailindex.FlagSeen != 0
 			newDel := newFlags&mailindex.FlagDeleted != 0
@@ -1213,30 +1210,20 @@ func (u *userIndex) writeFlags(folderID uint64, uid uint32, flags, keywords []st
 			}
 			break
 		}
-		// Keywords live on the record as a BIT, and the name that bit stands
-		// for lives in the extension header -- neither of which the log
-		// carries: it journals system flags (TxFlagUpdate) and nothing else.
-		// A keyword written to memory alone is invisible to every other
-		// process until something happens to rewrite the base, which is how a
-		// custom keyword set over IMAP was missing from JMAP (#1278). Until
-		// the log can carry them (#1281), a keyword change is persisted by
-		// rewriting the base. Only keyword changes pay it: an ordinary
-		// \Seen STORE takes the log path untouched.
-		if keywordsChanged || len(fs.keywords.Names) > prevKwCount {
-			if err := fs.flush(false); err != nil {
-				return err
-			}
-		}
-		return fs.appendMutLog(
+		recs := []([]byte){
 			encLogRec(mailindex.TxTypeModseqUpdate, 0, mailindex.EncodeTxModseqUpdatePayload([]mailindex.TxModseqUpdate{{
 				UID: uid, ModSeqLow32: uint32(modseq), ModSeqHigh32: uint32(modseq >> 32),
 			}})),
 			encLogRec(mailindex.TxTypeFlagUpdate, 0, mailindex.EncodeTxFlagUpdatePayload([]mailindex.TxFlagUpdate{{
 				UID1: uid, UID2: uid, AddFlags: newFlags, RemoveFlags: ^newFlags,
 			}})),
+		}
+		recs = append(recs, keywordLogRecords(uid, have, keywords)...)
+		recs = append(recs,
 			encU32Update(40, fs.file.Header.SeenMessagesCount),
 			encU32Update(44, fs.file.Header.DeletedMessagesCount),
 		)
+		return fs.appendMutLog(recs...)
 	})
 }
 
@@ -1286,7 +1273,6 @@ func (u *userIndex) ClearFolderCorrupt(folderID uint64) error {
 func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]mailbox.FlagsResult, error) {
 	result := make(map[uint32]mailbox.FlagsResult, len(updates))
 	err := u.withFolder(folderID, func(fs *folderState) error {
-		keywordsChanged := false
 		// Collect all unique keyword sets across the batch to register them first.
 		allKWs := make([]string, 0)
 		seen := make(map[string]struct{})
@@ -1311,6 +1297,7 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 
 		var modseqUpdates []mailindex.TxModseqUpdate
 		var flagUpdates []mailindex.TxFlagUpdate
+		var keywordRecs [][]byte
 		for _, rec := range fs.file.Records {
 			upd, ok := updates[rec.UID]
 			if !ok {
@@ -1324,13 +1311,11 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 			// is resolved here, against the record the lock is holding. A set
 			// computed by the caller would be as old as its last read.
 			kwWanted := upd.Keywords
-			if upd.Mode != mailbox.FlagsSet {
-				have := keywordsFromBitmask(fs.keywords, decodeKeywordsRec(rec.Ext[extNameKeywords]))
-				if upd.Mode == mailbox.FlagsAdd {
-					kwWanted = unionStrings(have, upd.Keywords)
-				} else {
-					kwWanted = subtractStrings(have, upd.Keywords)
-				}
+			have := keywordsFromBitmask(fs.keywords, decodeKeywordsRec(rec.Ext[extNameKeywords]))
+			if upd.Mode == mailbox.FlagsAdd {
+				kwWanted = unionStrings(have, upd.Keywords)
+			} else if upd.Mode == mailbox.FlagsRemove {
+				kwWanted = subtractStrings(have, upd.Keywords)
 			}
 			kwBits, kwReg2, err := keywordsBitmaskFor(fs.keywords, kwWanted)
 			if err != nil {
@@ -1349,8 +1334,8 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 			newFlags |= rec.Flags & mailindex.FlagBackend
 			rec.Flags = newFlags
 			rec.Ext[extNameModSeq] = encodeModseqRec(modseq)
-			keywordsChanged = keywordsChanged || decodeKeywordsRec(rec.Ext[extNameKeywords]) != kwBits
 			rec.Ext[extNameKeywords] = encodeKeywordsRec(kwBits)
+			keywordRecs = append(keywordRecs, keywordLogRecords(rec.UID, have, kwWanted)...)
 			newSeen := newFlags&mailindex.FlagSeen != 0
 			newDel := newFlags&mailindex.FlagDeleted != 0
 			switch {
@@ -1380,21 +1365,16 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 		if len(modseqUpdates) == 0 {
 			return nil
 		}
-		// See the note in writeFlags: the log carries system flags and not
-		// keyword bits, so a keyword change is persisted by rewriting the base
-		// (#1278, until #1281 lets the log carry them). An ordinary \Seen
-		// STORE never reaches this.
-		if keywordsChanged {
-			if err := fs.flush(false); err != nil {
-				return err
-			}
-		}
-		return fs.appendMutLog(
+		recs := []([]byte){
 			encLogRec(mailindex.TxTypeModseqUpdate, 0, mailindex.EncodeTxModseqUpdatePayload(modseqUpdates)),
 			encLogRec(mailindex.TxTypeFlagUpdate, 0, mailindex.EncodeTxFlagUpdatePayload(flagUpdates)),
+		}
+		recs = append(recs, keywordRecs...)
+		recs = append(recs,
 			encU32Update(40, fs.file.Header.SeenMessagesCount),
 			encU32Update(44, fs.file.Header.DeletedMessagesCount),
 		)
+		return fs.appendMutLog(recs...)
 	})
 	return result, err
 }
@@ -1965,6 +1945,42 @@ func encLogRec(txType mailindex.TxType, extraType mailindex.TxTypeFlags, payload
 	return out
 }
 
+// keywordLogRecords journals a keyword change the way the format has always
+// meant it to be journalled: the NAME travels inside the record, so a replay
+// learns both the bit and what it stands for, and never has to consult a
+// registry the log did not carry. That is why growing the registry is not a
+// separate case here -- a name it has not seen simply gets the next bit.
+//
+// An emptied set is one RESET rather than N removals; the format has the
+// record and the common "clear every label" store is one write instead of a
+// list that grows with the mailbox's vocabulary.
+func keywordLogRecords(uid uint32, have, want []string) [][]byte {
+	added := subtractStrings(want, have)
+	removed := subtractStrings(have, want)
+	if len(added) == 0 && len(removed) == 0 {
+		return nil
+	}
+	if len(want) == 0 {
+		return [][]byte{encLogRec(mailindex.TxTypeKeywordReset, 0,
+			mailindex.EncodeTxKeywordResetPayload([]mailindex.TxKeywordReset{{UID1: uid, UID2: uid}}))}
+	}
+	out := make([][]byte, 0, len(added)+len(removed))
+	for _, set := range []struct {
+		names  []string
+		modify uint8
+	}{{added, mailindex.TxKeywordModifyAdd}, {removed, mailindex.TxKeywordModifyRemove}} {
+		for _, name := range set.names {
+			out = append(out, encLogRec(mailindex.TxTypeKeywordUpdate, 0,
+				mailindex.EncodeTxKeywordUpdatePayload(mailindex.TxKeywordUpdate{
+					ModifyType: set.modify,
+					Name:       name,
+					UIDRanges:  []mailindex.TxKeywordUIDRange{{UID1: uid, UID2: uid}},
+				})))
+		}
+	}
+	return out
+}
+
 // encU32Update encodes a TxTypeHeaderUpdate record patching a single uint32
 // field at the given byte offset of the base index header.
 func encU32Update(offset uint16, v uint32) []byte {
@@ -2255,6 +2271,58 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 					fs.file.Header.DeletedMessagesCount++
 				}
 				appendedMsgs = true
+			}
+
+		case kind == mailindex.TxTypeKeywordUpdate:
+			rec, ok := mailindex.DecodeTxKeywordUpdatePayload(payload)
+			if !ok {
+				// The framing already passed, so this is not a torn tail: it is
+				// a whole record too short to hold its own name. Skipping it
+				// would be the #1314 class one floor down.
+				return committedEnd, fmt.Errorf("fileindex/applylog: malformed keyword record (type %#x) at offset %d", uint32(kind), recStart)
+			}
+			// The name arrived with the record, so the registry is grown from
+			// the log itself: no adapter, and no separate case for a keyword
+			// this reader has never seen.
+			bits, reg, kwErr := keywordsBitmaskFor(fs.keywords, []string{rec.Name})
+			if kwErr != nil {
+				// The 32-bit ceiling. Swallowing it here would drop the word
+				// in silence, which is the defect this whole change is about.
+				return committedEnd, fmt.Errorf("fileindex/applylog: keyword %q: %w", rec.Name, kwErr)
+			}
+			fs.keywords = reg
+			if regErr := fs.persistKeywordRegistry(); regErr != nil {
+				return committedEnd, fmt.Errorf("fileindex/applylog: keyword registry: %w", regErr)
+			}
+			for _, r := range rec.UIDRanges {
+				for _, mr := range fs.file.Records {
+					if mr.UID < r.UID1 || mr.UID > r.UID2 {
+						continue
+					}
+					cur := decodeKeywordsRec(mr.Ext[extNameKeywords])
+					if rec.ModifyType == mailindex.TxKeywordModifyRemove {
+						cur &^= bits
+					} else {
+						cur |= bits
+					}
+					if mr.Ext == nil {
+						mr.Ext = make(map[string][]byte)
+					}
+					mr.Ext[extNameKeywords] = encodeKeywordsRec(cur)
+				}
+			}
+
+		case kind == mailindex.TxTypeKeywordReset:
+			for _, r := range mailindex.DecodeTxKeywordResetPayload(payload) {
+				for _, mr := range fs.file.Records {
+					if mr.UID < r.UID1 || mr.UID > r.UID2 {
+						continue
+					}
+					if mr.Ext == nil {
+						mr.Ext = make(map[string][]byte)
+					}
+					mr.Ext[extNameKeywords] = encodeKeywordsRec(0)
+				}
 			}
 
 		case kind == mailindex.TxTypeExpunge || kind == mailindex.TxTypeExpungeGUID:

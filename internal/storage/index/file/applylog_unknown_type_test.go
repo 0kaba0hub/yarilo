@@ -31,15 +31,18 @@ func TestApplyLogRefusesAnUnknownTransactionType(t *testing.T) {
 			payload: []byte{1, 2, 3, 4},
 		},
 		{
-			// The type #1281 introduces, seen by a binary that predates it --
-			// the case the sequencing exists for.
-			name: "a keyword record from a newer writer",
+			// KEYWORD_UPDATE was the case this refusal was built for: until
+			// #1281 it was a type from a newer writer and belonged here. It is
+			// implemented now, so it belongs to the replay rows instead --
+			// this one only records that the refusal is not what applies it.
+			name: "a keyword record, now implemented",
 			kind: mailindex.TxTypeKeywordUpdate,
 			payload: mailindex.EncodeTxKeywordUpdatePayload(mailindex.TxKeywordUpdate{
 				ModifyType: mailindex.TxKeywordModifyAdd,
 				Name:       "$label1",
 				UIDRanges:  []mailindex.TxKeywordUIDRange{{UID1: 1, UID2: 1}},
 			}),
+			wantRead: true,
 		},
 		{
 			// A known type judged corrupt by the format's own rule is not an
