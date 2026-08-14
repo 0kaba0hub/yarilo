@@ -18,15 +18,12 @@ import (
 // would call healthy.
 const consistencyCustomFlag = "$smokelabel"
 
-func checkConsistencyFlags(user, pass string) error {
+func checkConsistencyFlagsIMAPToJMAP(user, pass string) error {
 	marker := consistencyMarker("flags")
 	if err := deliverConsistencyProbe(user, marker); err != nil {
 		return err
 	}
-
-	// IMAP writes, JMAP reads.
-	uid, err := imapStoreFlags(user, pass, marker, `\Seen `+consistencyCustomFlag)
-	if err != nil {
+	if _, err := imapStoreFlags(user, pass, marker, `\Seen `+consistencyCustomFlag); err != nil {
 		return fmt.Errorf("set flags over imap: %w", err)
 	}
 	id, err := jmapProbeID(marker)
@@ -38,13 +35,27 @@ func checkConsistencyFlags(user, pass string) error {
 	if err != nil {
 		return fmt.Errorf("read keywords over jmap: %w", err)
 	}
-	if err := judgeRow("imap->jmap flag visibility", left, right, defaultAllowances()); err != nil {
+	return judgeRow("imap->jmap flag visibility", left, right, defaultAllowances())
+}
+
+// The other direction, as its own row. It cannot run until Email/set exists
+// (#712), and a row that always passes because its write silently did nothing
+// reads in the report as a direction that was checked -- the softer form of the
+// pair nobody remembers is missing. Registered as a named skip instead, so the
+// day #712 lands the report itself asks for it.
+func checkConsistencyFlagsJMAPToIMAP(user, pass string) error {
+	marker := consistencyMarker("flags-back")
+	if err := deliverConsistencyProbe(user, marker); err != nil {
 		return err
 	}
-
-	// JMAP writes, IMAP reads. \Flagged is added rather than replacing what is
-	// there: the row is about one surface seeing the other's write, not about
-	// either surface's ability to clear state.
+	uid, err := imapStoreFlags(user, pass, marker, `\Seen`)
+	if err != nil {
+		return fmt.Errorf("prepare over imap: %w", err)
+	}
+	id, err := jmapProbeID(marker)
+	if err != nil {
+		return err
+	}
 	if err := jmapSetKeyword(id, "$flagged"); err != nil {
 		return fmt.Errorf("set keyword over jmap: %w", err)
 	}
@@ -52,7 +63,7 @@ func checkConsistencyFlags(user, pass string) error {
 	if err != nil {
 		return fmt.Errorf("read flags over imap: %w", err)
 	}
-	want := newReading(surfJMAP).set("flags", []string{"$seen", "$flagged", consistencyCustomFlag})
+	want := newReading(surfJMAP).set("flags", []string{"$seen", "$flagged"})
 	return judgeRow("jmap->imap flag visibility", want, back, defaultAllowances())
 }
 
