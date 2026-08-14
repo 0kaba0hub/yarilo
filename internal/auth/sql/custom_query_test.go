@@ -154,10 +154,13 @@ func TestLookupUser_NotConfigured(t *testing.T) {
 func TestIterate(t *testing.T) {
 	dsn := buildCustomSchemaDB(t)
 	p, err := authsql.New(authsql.Config{
-		Driver:       "sqlite",
-		DSN:          dsn,
-		SkipSchema:   true,
-		IterateQuery: `SELECT email FROM mailbox_users WHERE active = 1 ORDER BY email`,
+		Driver: "sqlite",
+		DSN:    dsn,
+		// skip_schema comes with a password query now (#1299); this test is
+		// about Iterate, so the pair is stated and left alone.
+		PasswordQuery: `SELECT pw_hash AS password FROM mailbox_users WHERE email = %u`,
+		SkipSchema:    true,
+		IterateQuery:  `SELECT email FROM mailbox_users WHERE active = 1 ORDER BY email`,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -184,9 +187,14 @@ func TestIterate_NotConfigured(t *testing.T) {
 func TestSkipSchema_PreventsTableCreation(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "no-schema.db")
 	p, err := authsql.New(authsql.Config{
-		Driver:     "sqlite",
-		DSN:        dsn,
-		SkipSchema: true,
+		Driver: "sqlite",
+		DSN:    dsn,
+		// A query goes with skip_schema now: the two together are the
+		// operator's complete statement, and skip_schema alone is refused as a
+		// contradiction (#1299). The subject of this test is unchanged --
+		// whether the table is created -- so it states the pair.
+		PasswordQuery: "SELECT password FROM my_users WHERE email = %u",
+		SkipSchema:    true,
 	})
 	if err != nil {
 		t.Fatal(err)

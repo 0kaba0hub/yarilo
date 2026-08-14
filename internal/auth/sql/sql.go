@@ -112,9 +112,31 @@ func New(c Config) (*Passdb, error) {
 			}
 		}
 	}
+	// Which query runs is a deployment fact and used to be invisible: an
+	// absent one silently becomes a query against OUR schema, so a deployment
+	// with its own tables authenticates nobody and the first sign is users
+	// unable to log in (#1299).
 	pw := c.PasswordQuery
+	if pw == "" && c.SkipSchema {
+		// The two settings contradict each other literally: skip_schema says
+		// "the tables are mine, do not touch them", and the built-in query
+		// asks for ours. Starting anyway would be a config that declares one
+		// thing and does another, so it is refused with the way out named
+		// (#1299).
+		db.Close() //nolint:errcheck,gosec // refusing to open; the error below is the answer
+		return nil, fmt.Errorf("auth/sql: skip_schema is set but no passdb_sql_query is: " +
+			"skip_schema says the tables are yours, while the built-in query asks for the yarilo_users schema; " +
+			"set passdb_sql_query, or drop skip_schema to use the built-in schema")
+	}
 	if pw == "" {
 		pw = defaultPasswordQuery
+		// The built-in schema with an external database is a legitimate
+		// out-of-the-box case, so this is a line rather than a refusal -- the
+		// contradiction above is the case that cannot be one.
+		slog.Warn("auth/sql: no password query configured; using the built-in yarilo_users query",
+			"driver", c.Driver)
+	} else {
+		slog.Info("auth/sql: using the configured password query", "driver", c.Driver)
 	}
 	return &Passdb{
 		db:            db,
