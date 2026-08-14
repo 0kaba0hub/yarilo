@@ -472,6 +472,7 @@ func New(cfg *config.Config) (*Server, error) {
 			DefaultName:     cfg.Sieve.DefaultName,
 			Resolver:        resolver,
 			Config:          cfg.Protocol.ManageSieve,
+			MaxScriptSize:   cfg.Sieve.MaxScriptSize,
 			AuthAddr:        authAddr,
 			AuthTLS:         authTLS,
 			PreambleTLS:     internalServerTLS,

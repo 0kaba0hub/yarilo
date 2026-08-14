@@ -294,6 +294,15 @@ func servicesByName(cfg *Config) map[string]*ServiceConfig {
 	}
 }
 
+// sieveAliases folds the duplicate managesieve limit onto the sieve key it
+// duplicates (#1286, package 4).
+func sieveAliases(cfg *Config) []aliasedKey {
+	return []aliasedKey{
+		intAlias("sieve.sieve_max_script_size", "protocol.managesieve.max_script_size",
+			&cfg.Sieve.MaxScriptSize, &cfg.Protocol.ManageSieve.MaxScriptSizeAlias),
+	}
+}
+
 // protocolAliases lists the package-2b renames: the protocol and provider
 // sections take the reference's flat prefixed spellings.
 func protocolAliases(cfg *Config) []aliasedKey {
@@ -439,4 +448,33 @@ func boolAlias(canonical, alias string, c, a *bool) aliasedKey {
 func listAlias(canonical, alias string, c, a *[]string) aliasedKey {
 	return aliasedKey{canonical: canonical, alias: alias,
 		adopt: func() { *c = *a }, equal: func() bool { return equalStrings(*c, *a) }}
+}
+
+// invertedPairs are the renames whose sense is flipped. They are NOT aliases
+// and are deliberately kept out of applyAliases: copying a value across an
+// inversion would turn an operator's security setting into its opposite on a
+// config nobody edited.
+//
+// The rule is stricter than for an alias, and stricter on purpose: both
+// spellings present is refused EVEN WHEN THEY AGREE. An operator carrying both
+// is one edit away from meaning the opposite of what they wrote, and the pair
+// reads as if the two lines reinforce each other when they cancel.
+func refuseInvertedPairs(cfg *Config) error {
+	for name, svc := range servicesByName(cfg) {
+		if svc == nil {
+			continue
+		}
+		if svc.AllowCleartext != nil && svc.DisablePlainAuth != nil {
+			return fmt.Errorf("config: services.%s sets both auth_allow_cleartext and disable_plaintext_auth; "+
+				"they are one setting with opposite senses (auth_allow_cleartext=false is disable_plaintext_auth=true), "+
+				"so keep auth_allow_cleartext and delete the other", name)
+		}
+		if svc.DisablePlainAuth != nil {
+			slog.Warn("config: deprecated key accepted, removed after beta",
+				"key", "services."+name+".disable_plaintext_auth",
+				"use", "services."+name+".auth_allow_cleartext",
+				"note", "the sense is inverted: disable_plaintext_auth=true is auth_allow_cleartext=false")
+		}
+	}
+	return nil
 }

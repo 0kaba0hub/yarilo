@@ -46,8 +46,20 @@ func TestEveryAliasFieldHasAnAdopter(t *testing.T) {
 		}
 	}
 
+	// The inverted pair is a KIND of its own, not an exception: its two
+	// spellings mean opposite things, so nothing may adopt one into the other,
+	// and refuseInvertedPairs handles it instead. Naming it here keeps it
+	// inside the check rather than hidden from it -- an exception nobody can
+	// see is how a pair like this goes wrong quietly.
+	inverted := map[string]bool{
+		"services.<service>.disable_plaintext_auth": true,
+	}
+
 	var orphans []string
 	walkAliasPaths(reflect.TypeOf(Config{}), "", "", func(goPath, koanfPath string) {
+		if inverted[normalisePath(koanfPath)] {
+			return
+		}
 		if !adopted[normalisePath(koanfPath)] {
 			orphans = append(orphans, goPath+" (koanf path "+koanfPath+")")
 		}
@@ -83,6 +95,7 @@ func allAliasSets(cfg *Config) [][]aliasedKey {
 	return [][]aliasedKey{
 		storageAliases(cfg), generalAliases(cfg), aclAliases(cfg),
 		authAliases(cfg), serviceSSLAliases(cfg), protocolAliases(cfg),
+		sieveAliases(cfg),
 	}
 }
 
@@ -191,3 +204,23 @@ func TestCoverageIsJudgedByPathNotByKeyName(t *testing.T) {
 		}
 	}
 }
+
+// And the inverted pair is checked as its own kind rather than merely skipped:
+// it must be refused when both spellings are present, which is the property an
+// ordinary alias does NOT have (an alias tolerates agreement).
+func TestInvertedPairIsRefusedEvenWhenTheSpellingsAgree(t *testing.T) {
+	agree := &Config{Services: ServicesConfig{IMAP: &ServiceConfig{
+		AllowCleartext:   boolPtr(false),
+		DisablePlainAuth: boolPtr(true), // the same policy, said twice
+	}}}
+	if err := refuseInvertedPairs(agree); err == nil {
+		t.Error("both spellings of an inverted pair were accepted because they agreed")
+	}
+
+	only := &Config{Services: ServicesConfig{IMAP: &ServiceConfig{DisablePlainAuth: boolPtr(true)}}}
+	if err := refuseInvertedPairs(only); err != nil {
+		t.Errorf("the pre-beta spelling alone was refused: %v", err)
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }

@@ -146,7 +146,7 @@ func main() {
 		HAProxyNets:      haproxyNets,
 		AuthAddr:         authAddr,
 		AuthTLS:          authTLS,
-		DisablePlainAuth: primary.DisablePlainAuth,
+		DisablePlainAuth: primary.PlainAuthDisabled(),
 		TLSConfig:        extTLS,
 		Config:           cfg.Protocol.Submission,
 		Auth:             chainAuth{protocol.NewAuthenticator(dbs, authOpts...)},
