@@ -331,3 +331,76 @@ func TestOursOnlyKeysAreUntouched(t *testing.T) {
 		t.Errorf("auth.token.ttl_seconds read as %d, want 120", cfg.Auth.Token.TTLSeconds)
 	}
 }
+
+// Package 2b: the protocol and provider sections. The rows below are the ones
+// whose shape differs from a plain scalar rename — the repeated key name, the
+// list entry, the size-valued knob and the one the reference spells against the
+// pattern. The rest are covered mechanically by the alias-coverage check.
+func TestProtocolRenamesPackageTwoB(t *testing.T) {
+	t.Run("the same key name in three sections stays three keys", func(t *testing.T) {
+		cfg, err := loadYAML(t, "protocol:\n"+
+			"  imap:\n    client_workarounds: [\"delay-newmail\"]\n"+
+			"  lmtp:\n    client_workarounds: [\"whitespace-before-path\"]\n"+
+			"  submission:\n    client_workarounds: [\"mailbox-for-path\"]\n")
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if got := cfg.Protocol.IMAP.ClientWorkarounds; len(got) != 1 || got[0] != "delay-newmail" {
+			t.Errorf("imap workarounds = %v", got)
+		}
+		if got := cfg.Protocol.LMTP.ClientWorkarounds; len(got) != 1 || got[0] != "whitespace-before-path" {
+			t.Errorf("lmtp workarounds = %v", got)
+		}
+		if got := cfg.Protocol.Submission.Workarounds; len(got) != 1 || got[0] != "mailbox-for-path" {
+			t.Errorf("submission workarounds = %v", got)
+		}
+	})
+
+	t.Run("a list entry adopts per entry, not per section", func(t *testing.T) {
+		cfg, err := loadYAML(t, "auth:\n  passdb:\n"+
+			"    - driver: sql\n      password_query: \"SELECT 1\"\n"+
+			"    - driver: passwd-file\n      passwd_file: /etc/yarilo/users\n")
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if len(cfg.Auth.Passdb) != 2 {
+			t.Fatalf("%d passdb entries", len(cfg.Auth.Passdb))
+		}
+		if got := cfg.Auth.Passdb[0].PasswordQuery; got != "SELECT 1" {
+			t.Errorf("first entry query = %q", got)
+		}
+		if got := cfg.Auth.Passdb[1].PasswdFile; got != "/etc/yarilo/users" {
+			t.Errorf("second entry passwd file = %q", got)
+		}
+	})
+
+	t.Run("the size-valued knob is parsed after adoption", func(t *testing.T) {
+		cfg, err := loadYAML(t, "quota:\n  quota_grace: 20M\n")
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		// Read the way the consumers read it: the canonical field has to hold
+		// the string, or the size parses to zero and the grace silently
+		// disappears.
+		if cfg.Quota.Grace != "20M" {
+			t.Errorf("grace = %q, want 20M through the alias", cfg.Quota.Grace)
+		}
+	})
+
+	t.Run("passwd_file_path carries no passdb prefix", func(t *testing.T) {
+		cfg, err := loadYAML(t, "auth:\n  passdb:\n    - driver: passwd-file\n      passwd_file_path: /etc/yarilo/users\n")
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if got := cfg.Auth.Passdb[0].PasswdFile; got != "/etc/yarilo/users" {
+			t.Errorf("canonical spelling read as %q", got)
+		}
+	})
+
+	t.Run("both spellings disagreeing refuse startup", func(t *testing.T) {
+		_, err := loadYAML(t, "protocol:\n  lmtp:\n    lmtp_verbose_replies: true\n    verbose_replies: false\n")
+		if err == nil {
+			t.Error("two spellings of verbose replies loaded anyway")
+		}
+	})
+}

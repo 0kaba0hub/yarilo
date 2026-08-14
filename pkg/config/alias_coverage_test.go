@@ -2,6 +2,7 @@ package config
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,11 @@ func TestEveryAliasFieldHasAnAdopter(t *testing.T) {
 		ManageSieveBE: &ServiceConfig{SSL: &SSLConfig{}}, JMAP: &ServiceConfig{SSL: &SSLConfig{}},
 		JMAPBE: &ServiceConfig{SSL: &SSLConfig{}},
 	}
+	// One entry in each list-shaped section, so the per-entry alias sets are
+	// built rather than skipped: a chain nobody declared covers nothing.
+	cfg.Auth.Passdb = []PassdbEntry{{}}
+	cfg.Auth.MasterUsers.Masterdb = []PassdbEntry{{}}
+	cfg.Auth.OAuth2 = []OAuth2Entry{{}}
 
 	// Matched by FULL koanf path, not by the key's last segment. The same tail
 	// lives in several sections -- client_workarounds is an imap key, an lmtp
@@ -36,13 +42,13 @@ func TestEveryAliasFieldHasAnAdopter(t *testing.T) {
 	adopted := map[string]bool{}
 	for _, set := range allAliasSets(cfg) {
 		for _, key := range set {
-			adopted[normaliseServicePath(key.alias)] = true
+			adopted[normalisePath(key.alias)] = true
 		}
 	}
 
 	var orphans []string
 	walkAliasPaths(reflect.TypeOf(Config{}), "", "", func(goPath, koanfPath string) {
-		if !adopted[normaliseServicePath(koanfPath)] {
+		if !adopted[normalisePath(koanfPath)] {
 			orphans = append(orphans, goPath+" (koanf path "+koanfPath+")")
 		}
 	})
@@ -56,14 +62,17 @@ func TestEveryAliasFieldHasAnAdopter(t *testing.T) {
 // nothing, which is the same silence seen from the other side.
 func TestEveryAdoptedAliasHasAField(t *testing.T) {
 	cfg := &Config{Services: ServicesConfig{IMAP: &ServiceConfig{SSL: &SSLConfig{}}}}
+	cfg.Auth.Passdb = []PassdbEntry{{}}
+	cfg.Auth.MasterUsers.Masterdb = []PassdbEntry{{}}
+	cfg.Auth.OAuth2 = []OAuth2Entry{{}}
 
 	fields := map[string]bool{}
 	walkAliasPaths(reflect.TypeOf(Config{}), "", "", func(_, koanfPath string) {
-		fields[normaliseServicePath(koanfPath)] = true
+		fields[normalisePath(koanfPath)] = true
 	})
 	for _, set := range allAliasSets(cfg) {
 		for _, key := range set {
-			if !fields[normaliseServicePath(key.alias)] {
+			if !fields[normalisePath(key.alias)] {
 				t.Errorf("alias set adopts %q, but no *Alias field lives at that path", key.alias)
 			}
 		}
@@ -73,8 +82,23 @@ func TestEveryAdoptedAliasHasAField(t *testing.T) {
 func allAliasSets(cfg *Config) [][]aliasedKey {
 	return [][]aliasedKey{
 		storageAliases(cfg), generalAliases(cfg), aclAliases(cfg),
-		authAliases(cfg), serviceSSLAliases(cfg),
+		authAliases(cfg), serviceSSLAliases(cfg), protocolAliases(cfg),
 	}
+}
+
+// normalisePath folds the two path shapes whose leaf is repeated: a service
+// block (same type under many names) and a list entry (same type at many
+// indices). Both build one alias entry per occurrence, so comparing by name or
+// index would make coverage depend on what a test config happens to declare.
+func normalisePath(path string) string {
+	out := make([]string, 0, 8)
+	for _, seg := range strings.Split(normaliseServicePath(path), ".") {
+		if _, err := strconv.Atoi(seg); err == nil {
+			continue // a list index is not part of the key's identity
+		}
+		out = append(out, seg)
+	}
+	return strings.Join(out, ".")
 }
 
 // normaliseServicePath folds every services.<name>.ssl path onto one, because
