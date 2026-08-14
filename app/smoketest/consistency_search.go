@@ -28,7 +28,12 @@ func checkConsistencySearch(user, pass string) error {
 	// default): a term that lands exactly on the boundary is indexed and
 	// queried by different rules on either side of it, and a row that fails
 	// there says nothing about the surfaces it compares (#1279).
-	term := fmt.Sprintf("xterm%d", time.Now().UnixNano()%1_000_000)
+	//
+	// Twelve digits, not six: the term also has to be unique across runs, and
+	// a six-digit tail repeats within seconds on a busy sandbox — a row that
+	// finds a previous run's message is a false pass. 17 bytes total, still
+	// far inside the cap.
+	term := fmt.Sprintf("xterm%d", time.Now().UnixNano()%1_000_000_000_000)
 	inSubject := consistencyMarker("search-subj")
 	inBody := consistencyMarker("search-body")
 	neither := consistencyMarker("search-none")
