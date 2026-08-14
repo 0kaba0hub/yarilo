@@ -490,6 +490,21 @@ components:
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
+    ## Master users (#1301 window): impersonation via SASL authzid or the
+    ## target*master separator. The masterdb is a dedicated table in the same
+    ## MySQL as the main passdb; skip_schema + an explicit query, per the
+    ## #1299 contract.
+    master_users:
+      enabled: true
+      separator: "*"
+      masterdb:
+        - driver: mysql
+          dsn: "${YARILO_DB_DSN}"
+          skip_schema: true
+          password_query: |
+            SELECT password, active AS enabled
+            FROM yarilo_masters
+            WHERE username = %u
     passdb:
       - driver: mysql
         dsn: "${YARILO_DB_DSN}"
