@@ -1936,7 +1936,9 @@ protocol:
       command_timeout: 300
 
   managesieve:
-    max_script_size: 65536
+    ## The script-size limit lives in the sieve section as sieve_max_script_size:
+    ## one limit, one key. A values file still carrying max_script_size here
+    ## keeps working — the server folds it onto the sieve key and says so once.
     max_invalid_commands: 3
 
   jmap:
