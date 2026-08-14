@@ -28,8 +28,13 @@ type Options struct {
 	DefaultName string
 	// Resolver maps usernames to home directories.
 	Resolver *mailbox.Resolver
-	// Config holds protocol-level tunables (max script size).
+	// Config holds protocol-level tunables.
 	Config config.ManageSieveProtocolConfig
+	// MaxScriptSize is the script-size limit, which lives in the sieve section
+	// (sieve_max_script_size): the managesieve duplicate was folded onto it
+	// (#1286), so the server is handed the resolved value rather than reading
+	// one of two keys and choosing.
+	MaxScriptSize int
 	// SieveExtensions is the whitelist of permitted Sieve extensions.
 	// Corresponds to sieve.sieve_extensions in yarilo.yaml. Empty = allow all.
 	SieveExtensions []string
@@ -97,7 +102,7 @@ func (srv *Server) handleConn(ctx context.Context, conn net.Conn) {
 
 	slog.Info("managesieve: session started", "user", username, "session", pc.SessionID)
 
-	maxSize := srv.opts.Config.MaxScriptSize
+	maxSize := srv.opts.MaxScriptSize
 	if maxSize <= 0 {
 		maxSize = 64 * 1024
 	}

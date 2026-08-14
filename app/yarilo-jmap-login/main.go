@@ -114,7 +114,7 @@ func main() {
 		Addr:               addr,
 		ExtTLS:             extTLS,
 		Auth:               authAdapter{auth},
-		DisablePlainAuth:   svc.DisablePlainAuth,
+		DisablePlainAuth:   svc.PlainAuthDisabled(),
 		Router:             router(cfg),
 		BackendTLS:         intTLS,
 		Warden:             wardenPool,

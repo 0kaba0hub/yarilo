@@ -343,9 +343,47 @@ type ServiceConfig struct {
 	// XClient enables native inbound client-IP forwarding on this listener
 	// (IMAP ID x-originating-ip, POP3/Submission XCLIENT); applied only when
 	// the socket peer is inside general.xclient.trusted_nets.
-	XClient          bool `koanf:"xclient_protocol"`
-	DisablePlainAuth bool `koanf:"disable_plaintext_auth"`
+	XClient bool `koanf:"xclient_protocol"`
+
+	// AllowCleartext is the reference spelling of this listener's cleartext
+	// policy, and it means the OPPOSITE of what our key meant:
+	// auth_allow_cleartext=false is disable_plaintext_auth=true.
+	//
+	// Because the sense is inverted, this pair is not an ordinary alias and
+	// must never be adopted like one: an alias layer that copied the value
+	// across would flip an operator's security setting on a config nobody
+	// edited. Both spellings are accepted, and BOTH SET AT ONCE is refused --
+	// even when they agree, since an operator carrying both is one edit away
+	// from meaning the opposite of what they wrote (#1286, package 4).
+	//
+	// Defaults to true (cleartext allowed) so an unset key keeps the old
+	// unset behaviour of disable_plaintext_auth=false; the loader sets it from
+	// whichever spelling was given.
+	AllowCleartext *bool `koanf:"auth_allow_cleartext"`
+	// DisablePlainAuth is the pre-beta spelling, inverted. Read by the loader
+	// only -- every consumer reads CleartextAllowed().
+	DisablePlainAuth *bool `koanf:"disable_plaintext_auth"`
 }
+
+// CleartextAllowed reports whether this listener permits cleartext
+// authentication, resolving the two spellings in ONE place: the inversion
+// exists here and nowhere else, so no consumer can get the direction wrong.
+// Unset means allowed, which is what an unset disable_plaintext_auth meant.
+func (s *ServiceConfig) CleartextAllowed() bool {
+	if s == nil {
+		return true
+	}
+	if s.AllowCleartext != nil {
+		return *s.AllowCleartext
+	}
+	if s.DisablePlainAuth != nil {
+		return !*s.DisablePlainAuth
+	}
+	return true
+}
+
+// PlainAuthDisabled is the same fact in the spelling the login servers use.
+func (s *ServiceConfig) PlainAuthDisabled() bool { return !s.CleartextAllowed() }
 
 // Active returns true if the service is configured and enabled.
 func (s *ServiceConfig) Active() bool { return s != nil && s.Enabled }
@@ -1523,9 +1561,15 @@ func ValidateBackendOrDirector(component, backendAddr, directorAddr string) erro
 
 // ManageSieveProtocolConfig holds ManageSieve protocol-level behaviour settings.
 type ManageSieveProtocolConfig struct {
-	// MaxScriptSize is the maximum size in bytes of a single Sieve script.
-	// Default: 65536.
-	MaxScriptSize int `koanf:"max_script_size"`
+	// MaxScriptSizeAlias is the pre-beta duplicate of sieve.sieve_max_script_size:
+	// two keys for one limit, in two sections. The sieve key is the one that
+	// stays (#1286); this spelling is accepted and folded onto it, and the two
+	// set to different values refuse startup like any other pair.
+	//
+	// Removal rather than rename, which is why it is not in packages 1-2:
+	// deleting a key changes which knob wins when both are set, and that has to
+	// be decided rather than pattern-matched.
+	MaxScriptSizeAlias int `koanf:"max_script_size"`
 	// MaxInvalidCommands is the number of unrecognised pre-auth commands
 	// after which the server sends BYE and closes the connection. Default: 3.
 	MaxInvalidCommands int `koanf:"max_invalid_commands"`
@@ -1679,9 +1723,12 @@ const (
 // name is OURS under the section-prefix rule, not a reference name invented
 // for it: oauth2_jwks_url and oauth2_issuer_url describe a local-validation
 // setup the reference expresses as oauth2_openid_configuration_url, and
-// oauth2_mode / oauth2_audience / oauth2_issuers / oauth2_prefer_introspection
-// / oauth2_http_timeout_ms / oauth2_token_expire_grace_seconds have no
-// reference counterpart at all.
+// oauth2_mode / oauth2_audience / oauth2_prefer_introspection /
+// oauth2_http_timeout_ms / oauth2_token_expire_grace_seconds have no reference
+// counterpart at all. oauth2_issuers IS a reference key (2.4.4 db-oauth2.c:39)
+// and belongs to the first group -- corrected here so the comment and the
+// inventory agree, because a classification that drifts reads as permission to
+// change the key.
 //
 // Half a section prefixed and half bare was the alternative, and it is the
 // inconsistency this package exists to end.
@@ -2508,11 +2555,14 @@ func Load(path string) (*Config, error) {
 	}
 	for _, set := range [][]aliasedKey{
 		storageAliases(cfg), generalAliases(cfg), aclAliases(cfg), authAliases(cfg),
-		serviceSSLAliases(cfg), protocolAliases(cfg),
+		serviceSSLAliases(cfg), protocolAliases(cfg), sieveAliases(cfg),
 	} {
 		if err := applyAliases(k, set); err != nil {
 			return nil, err
 		}
+	}
+	if err := refuseInvertedPairs(cfg); err != nil {
+		return nil, err
 	}
 	expandEnv(cfg)
 	if err := cfg.validate(); err != nil {
