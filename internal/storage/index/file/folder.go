@@ -2276,7 +2276,10 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 		case kind == mailindex.TxTypeKeywordUpdate:
 			rec, ok := mailindex.DecodeTxKeywordUpdatePayload(payload)
 			if !ok {
-				break // torn write -- stop before applying half a keyword
+				// The framing already passed, so this is not a torn tail: it is
+				// a whole record too short to hold its own name. Skipping it
+				// would be the #1314 class one floor down.
+				return committedEnd, fmt.Errorf("fileindex/applylog: malformed keyword record (type %#x) at offset %d", uint32(kind), recStart)
 			}
 			// The name arrived with the record, so the registry is grown from
 			// the log itself: no adapter, and no separate case for a keyword
@@ -2312,9 +2315,13 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 		case kind == mailindex.TxTypeKeywordReset:
 			for _, r := range mailindex.DecodeTxKeywordResetPayload(payload) {
 				for _, mr := range fs.file.Records {
-					if mr.UID >= r.UID1 && mr.UID <= r.UID2 {
-						mr.Ext[extNameKeywords] = encodeKeywordsRec(0)
+					if mr.UID < r.UID1 || mr.UID > r.UID2 {
+						continue
 					}
+					if mr.Ext == nil {
+						mr.Ext = make(map[string][]byte)
+					}
+					mr.Ext[extNameKeywords] = encodeKeywordsRec(0)
 				}
 			}
 

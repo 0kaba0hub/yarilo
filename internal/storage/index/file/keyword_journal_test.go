@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
@@ -59,6 +60,46 @@ func TestKeywordStoreDoesNotRewriteTheBase(t *testing.T) {
 	}
 	if logAfter.Size() <= logBefore.Size() {
 		t.Error("the log did not grow; the keyword was written to memory alone, which is #1278")
+	}
+}
+
+// A whole, well-framed KEYWORD_UPDATE whose payload is shorter than the name
+// it declares: the framing already passed, so this is a corrupt record, not a
+// torn tail. Skipping it would put the #1314 class back one floor down.
+func TestApplyLogRefusesAMalformedKeywordRecord(t *testing.T) {
+	dir := t.TempDir()
+	b := openIdx(dir, testUser)
+	f, err := b.OpenFolder("INBOX", 1, "")
+	if err != nil {
+		t.Fatalf("OpenFolder: %v", err)
+	}
+	uid, err := b.AllocateUID(f.ID)
+	if err != nil {
+		t.Fatalf("AllocateUID: %v", err)
+	}
+	if err := b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, Filename: "1.eml", Size: 10}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	fs := b.open[f.ID]
+	// name_size says 64, the payload carries four bytes of it.
+	payload := []byte{mailindex.TxKeywordModifyAdd, 0, 64, 0, 'a', 'b', 'c', 'd'}
+	appendRawLogRecord(t, fs.indexPath+".log", mailindex.TxTypeKeywordUpdate, payload)
+
+	fs.mu.Lock()
+	fs.file, err = mailindex.Open(fs.indexPath)
+	if err != nil {
+		fs.mu.Unlock()
+		t.Fatalf("reopen base: %v", err)
+	}
+	_, applyErr := fs.applyLog(0)
+	fs.mu.Unlock()
+
+	if applyErr == nil {
+		t.Fatal("a corrupt keyword record was skipped and the tail reported as replayed")
+	}
+	if !strings.Contains(applyErr.Error(), "malformed keyword record") {
+		t.Errorf("refusal does not name the cause: %v", applyErr)
 	}
 }
 
