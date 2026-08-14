@@ -2256,6 +2256,18 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 				}
 				appendedMsgs = true
 			}
+
+		case kind == mailindex.TxTypeExpunge || kind == mailindex.TxTypeExpungeGUID:
+			// A known type judged corrupt, not an unknown one: an expunge
+			// without its corruption-defence bit is ignored by the format's
+			// own rule, and saying so here keeps it out of the refusal below.
+
+		default:
+			// Proceeding past a record we cannot read reports a fully replayed
+			// tail and a state missing whatever it said -- silence in the shape
+			// of an answer (#1314). Refuse instead: an open that fails names
+			// the version skew, a mailbox quietly missing a keyword does not.
+			return committedEnd, fmt.Errorf("fileindex/applylog: unknown transaction type %#x at offset %d", uint32(kind), recStart)
 		}
 	}
 

@@ -380,6 +380,53 @@ func EncodeTxKeywordUpdatePayload(rec TxKeywordUpdate) []byte {
 	return out
 }
 
+// DecodeTxKeywordUpdatePayload is the inverse. The name travels inside the
+// record, which is what makes the log self-describing for keywords: a replay
+// learns both the bit and what it stands for, and never has to consult a
+// registry the log did not carry.
+//
+// ok is false when the payload is too short to hold its own name -- a torn
+// write, which the caller stops on rather than applying half a keyword.
+func DecodeTxKeywordUpdatePayload(payload []byte) (TxKeywordUpdate, bool) {
+	le := binary.LittleEndian
+	if len(payload) < 4 {
+		return TxKeywordUpdate{}, false
+	}
+	nameLen := int(le.Uint16(payload[2:]))
+	if 4+nameLen > len(payload) {
+		return TxKeywordUpdate{}, false
+	}
+	rec := TxKeywordUpdate{
+		ModifyType: payload[0],
+		Padding:    payload[1],
+		Name:       string(payload[4 : 4+nameLen]),
+	}
+	headerLen := 4 + nameLen
+	off := headerLen + (4-(headerLen%4))%4
+	for ; off+8 <= len(payload); off += 8 {
+		rec.UIDRanges = append(rec.UIDRanges, TxKeywordUIDRange{
+			UID1: le.Uint32(payload[off:]),
+			UID2: le.Uint32(payload[off+4:]),
+		})
+	}
+	return rec, true
+}
+
+// DecodeTxKeywordResetPayload is the inverse of the reset encoder. A trailing
+// partial record is ignored, as for every other fixed-stride payload.
+func DecodeTxKeywordResetPayload(payload []byte) []TxKeywordReset {
+	const sz = 8
+	out := make([]TxKeywordReset, 0, len(payload)/sz)
+	le := binary.LittleEndian
+	for i := 0; i+sz <= len(payload); i += sz {
+		out = append(out, TxKeywordReset{
+			UID1: le.Uint32(payload[i:]),
+			UID2: le.Uint32(payload[i+4:]),
+		})
+	}
+	return out
+}
+
 // EncodeTxKeywordResetPayload emits the payload for KEYWORD_RESET.
 // 8 bytes per record.
 func EncodeTxKeywordResetPayload(recs []TxKeywordReset) []byte {
