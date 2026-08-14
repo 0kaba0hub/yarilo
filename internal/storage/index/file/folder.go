@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
@@ -466,6 +467,19 @@ func (fs *folderState) persistVsizeLocked() {
 	}
 }
 
+// extInventory renders the extension set for a log line: name, header size and
+// record geometry, which is what a header-size disagreement is made of.
+func extInventory(exts []mailindex.Extension) string {
+	var b strings.Builder
+	for i, e := range exts {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "%s(hdr=%d,rec=%d,align=%d)", e.Name, e.HdrSize, e.RecordSize, e.RecordAlign)
+	}
+	return b.String()
+}
+
 // snapshot returns a mailbox.Folder describing the current state.
 func (fs *folderState) snapshot(id uint64) (*mailbox.Folder, error) {
 	highest, err := fs.highestModSeq()
@@ -615,6 +629,16 @@ func (fs *folderState) flush(wholeNames bool) error {
 		ri.TmpDir = fs.volatileDir
 	}
 	if _, err := mailindex.Recreate(ri); err != nil {
+		// A rejected base is unwritable until someone can see WHY: the sizes in
+		// the error name a disagreement without naming which extension carries
+		// it, and the state that produced it is gone by the time anyone reads
+		// the log (#1285). The inventory is what turns the next occurrence into
+		// a diagnosis instead of another reproduction attempt.
+		slog.Error("fileindex: base rewrite refused; the folder cannot be flushed",
+			"folder", fs.folder, "err", err,
+			"header_size", ri.Header.HeaderSize, "record_size", ri.Header.RecordSize,
+			"extensions", extInventory(ri.Extensions),
+			"keyword_names", len(fs.keywords.Names))
 		return fmt.Errorf("fileindex/flush: recreate: %w", err)
 	}
 	fs.lineage = next
