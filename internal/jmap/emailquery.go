@@ -21,8 +21,15 @@ import (
 // them from what it can see.
 func (s *Server) filterEvaluator(h *userHandle) filterEvaluator {
 	if s.opts.FTS != nil && s.opts.FTS.Client != nil && s.opts.FTS.Chain != nil {
+		slog.Debug("jmap: filter evaluator selected", "evaluator", "full-text")
 		return s.newFTSEvaluator(h)
 	}
+	// Which of the three is missing decides how a text condition is answered,
+	// and from outside the answer looks the same either way (#1279).
+	slog.Debug("jmap: filter evaluator selected", "evaluator", "index-only",
+		"fts_options", s.opts.FTS != nil,
+		"fts_client", s.opts.FTS != nil && s.opts.FTS.Client != nil,
+		"language_chain", s.opts.FTS != nil && s.opts.FTS.Chain != nil)
 	return indexEvaluator{}
 }
 

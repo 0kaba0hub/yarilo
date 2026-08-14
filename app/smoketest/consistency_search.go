@@ -24,7 +24,11 @@ import (
 //   - one carries it in the BODY only;
 //   - one carries neither, so a surface that answers "everything" is refused.
 func checkConsistencySearch(user, pass string) error {
-	term := fmt.Sprintf("xsearchterm%d", time.Now().UnixNano())
+	// Short enough to sit well inside the tokenizer's length cap (30 bytes by
+	// default): a term that lands exactly on the boundary is indexed and
+	// queried by different rules on either side of it, and a row that fails
+	// there says nothing about the surfaces it compares (#1279).
+	term := fmt.Sprintf("xterm%d", time.Now().UnixNano()%1_000_000)
 	inSubject := consistencyMarker("search-subj")
 	inBody := consistencyMarker("search-body")
 	neither := consistencyMarker("search-none")
