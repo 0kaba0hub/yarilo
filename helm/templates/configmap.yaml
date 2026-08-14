@@ -122,7 +122,7 @@ data:
         login_greeting: {{ .Values.protocol.imap.login_greeting | quote }}
         imap_logout_format: {{ .Values.protocol.imap.imap_logout_format | quote }}
         {{- with .Values.protocol.imap.client_workarounds }}
-        client_workarounds:
+        imap_client_workarounds:
           {{- range . }}
           - {{ . | quote }}
           {{- end }}
@@ -145,36 +145,36 @@ data:
         pop3_deleted_flag: {{ .Values.protocol.pop3.pop3_deleted_flag | quote }}
       lmtp:
         login_greeting: {{ .Values.protocol.lmtp.login_greeting | quote }}
-        add_received_header: {{ .Values.protocol.lmtp.add_received_header }}
-        save_to_detail_mailbox: {{ .Values.protocol.lmtp.save_to_detail_mailbox }}
-        hdr_delivery_address: {{ .Values.protocol.lmtp.hdr_delivery_address | quote }}
-        verbose_replies: {{ .Values.protocol.lmtp.verbose_replies }}
-        user_concurrency_limit: {{ .Values.protocol.lmtp.user_concurrency_limit }}
+        lmtp_add_received_header: {{ .Values.protocol.lmtp.add_received_header }}
+        lmtp_save_to_detail_mailbox: {{ .Values.protocol.lmtp.save_to_detail_mailbox }}
+        lmtp_hdr_delivery_address: {{ .Values.protocol.lmtp.hdr_delivery_address | quote }}
+        lmtp_verbose_replies: {{ .Values.protocol.lmtp.verbose_replies }}
+        lmtp_user_concurrency_limit: {{ .Values.protocol.lmtp.user_concurrency_limit }}
         read_timeout: {{ .Values.protocol.lmtp.read_timeout }}
         write_timeout: {{ .Values.protocol.lmtp.write_timeout }}
         {{- with .Values.protocol.lmtp.client_workarounds }}
-        client_workarounds:
+        lmtp_client_workarounds:
           {{- range . }}
           - {{ . | quote }}
           {{- end }}
         {{- end }}
       submission:
         hostname: {{ .Values.protocol.submission.hostname | quote }}
-        max_message_size: {{ .Values.protocol.submission.max_message_size | quote }}
+        submission_max_mail_size: {{ .Values.protocol.submission.max_message_size | quote }}
         max_line_length: {{ int .Values.protocol.submission.max_line_length }}
-        max_recipients: {{ .Values.protocol.submission.max_recipients }}
+        submission_max_recipients: {{ .Values.protocol.submission.max_recipients }}
         recipient_delimiter: {{ .Values.protocol.submission.recipient_delimiter | quote }}
         submission_add_received_header: {{ .Values.protocol.submission.add_received_header }}
         relay:
-          host: {{ .Values.protocol.submission.relay.host | quote }}
-          port: {{ .Values.protocol.submission.relay.port }}
-          user: {{ .Values.protocol.submission.relay.user | quote }}
-          password: {{ .Values.protocol.submission.relay.password | quote }}
-          ssl: {{ .Values.protocol.submission.relay.ssl | quote }}
-          ssl_verify: {{ .Values.protocol.submission.relay.ssl_verify }}
-          trusted: {{ .Values.protocol.submission.relay.trusted }}
-          connect_timeout: {{ .Values.protocol.submission.relay.connect_timeout }}
-          command_timeout: {{ .Values.protocol.submission.relay.command_timeout }}
+          submission_relay_host: {{ .Values.protocol.submission.relay.host | quote }}
+          submission_relay_port: {{ .Values.protocol.submission.relay.port }}
+          submission_relay_user: {{ .Values.protocol.submission.relay.user | quote }}
+          submission_relay_password: {{ .Values.protocol.submission.relay.password | quote }}
+          submission_relay_ssl: {{ .Values.protocol.submission.relay.ssl | quote }}
+          submission_relay_ssl_verify: {{ .Values.protocol.submission.relay.ssl_verify }}
+          submission_relay_trusted: {{ .Values.protocol.submission.relay.trusted }}
+          submission_relay_connect_timeout: {{ .Values.protocol.submission.relay.connect_timeout }}
+          submission_relay_command_timeout: {{ .Values.protocol.submission.relay.command_timeout }}
       managesieve:
         max_script_size: {{ (.Values.protocol.managesieve | default dict).max_script_size | default 65536 | int64 }}
         max_invalid_commands: {{ (.Values.protocol.managesieve | default dict).max_invalid_commands | default 3 }}
@@ -280,60 +280,60 @@ data:
         auth_policy_report_after_auth: {{ .Values.components.auth.policy.report_after | default true }}
       oauth2:
         {{- range (.Values.components.auth.oauth2 | default list) }}
-        - mode: {{ .mode | quote }}
+        - oauth2_mode: {{ .mode | quote }}
           {{- with .jwks_url }}
-          jwks_url: {{ . | quote }}
+          oauth2_jwks_url: {{ . | quote }}
           {{- end }}
           {{- with .introspection_url }}
-          introspection_url: {{ . | quote }}
+          oauth2_introspection_url: {{ . | quote }}
           {{- end }}
           {{- with .tokeninfo_url }}
-          tokeninfo_url: {{ . | quote }}
+          oauth2_tokeninfo_url: {{ . | quote }}
           {{- end }}
           {{- with .issuer_url }}
-          issuer_url: {{ . | quote }}
+          oauth2_issuer_url: {{ . | quote }}
           {{- end }}
           {{- with .introspection_mode }}
-          introspection_mode: {{ . | quote }}
+          oauth2_introspection_mode: {{ . | quote }}
           {{- end }}
           {{- if .prefer_introspection }}
-          prefer_introspection: true
+          oauth2_prefer_introspection: true
           {{- end }}
           {{- with .client_id }}
-          client_id: {{ . | quote }}
+          oauth2_client_id: {{ . | quote }}
           {{- end }}
           {{- with .client_secret }}
-          client_secret: {{ . | quote }}
+          oauth2_client_secret: {{ . | quote }}
           {{- end }}
           {{- with .issuers }}
-          issuers: {{ . | toJson }}
+          oauth2_issuers: {{ . | toJson }}
           {{- end }}
           {{- with .audience }}
-          audience: {{ . | quote }}
+          oauth2_audience: {{ . | quote }}
           {{- end }}
           {{- with .scopes }}
-          scopes: {{ . | toJson }}
+          oauth2_scope: {{ . | toJson }}
           {{- end }}
           {{- with .username_attribute }}
-          username_attribute: {{ . | quote }}
+          oauth2_username_attribute: {{ . | quote }}
           {{- end }}
           {{- with .username_validation_format }}
-          username_validation_format: {{ . | quote }}
+          oauth2_username_validation_format: {{ . | quote }}
           {{- end }}
           {{- with .active_attribute }}
-          active_attribute: {{ . | quote }}
+          oauth2_active_attribute: {{ . | quote }}
           {{- end }}
           {{- with .active_value }}
-          active_value: {{ . | quote }}
+          oauth2_active_value: {{ . | quote }}
           {{- end }}
           {{- with .extra_fields }}
-          extra_fields: {{ . | toJson }}
+          oauth2_fields: {{ . | toJson }}
           {{- end }}
           {{- with .token_expire_grace_seconds }}
-          token_expire_grace_seconds: {{ . }}
+          oauth2_token_expire_grace_seconds: {{ . }}
           {{- end }}
           {{- with .http_timeout_ms }}
-          http_timeout_ms: {{ . }}
+          oauth2_http_timeout_ms: {{ . }}
           {{- end }}
         {{- end }}
       passdb:
@@ -343,22 +343,22 @@ data:
           dsn: {{ . | quote }}
           {{- end }}
           {{- with .passwd_file }}
-          passwd_file: {{ . | quote }}
+          passwd_file_path: {{ . | quote }}
           {{- end }}
           {{- with .password_query }}
-          password_query: |
+          passdb_sql_query: |
             {{- . | nindent 12 }}
           {{- end }}
           {{- with .user_query }}
-          user_query: |
+          userdb_sql_query: |
             {{- . | nindent 12 }}
           {{- end }}
           {{- with .iterate_query }}
-          iterate_query: |
+          userdb_sql_iterate_query: |
             {{- . | nindent 12 }}
           {{- end }}
           {{- with .default_pass_scheme }}
-          default_pass_scheme: {{ . | quote }}
+          passdb_default_password_scheme: {{ . | quote }}
           {{- end }}
           {{- if .skip_schema }}
           skip_schema: true
@@ -378,7 +378,7 @@ data:
         {{- end }}
       master_users:
         enabled: {{ .Values.components.auth.master_users.enabled | default false }}
-        separator: {{ .Values.components.auth.master_users.separator | default "*" | quote }}
+        auth_master_user_separator: {{ .Values.components.auth.master_users.separator | default "*" | quote }}
         masterdb:
           {{- range (.Values.components.auth.master_users.masterdb | default list) }}
           - driver: {{ .driver | quote }}
@@ -386,22 +386,22 @@ data:
             dsn: {{ . | quote }}
             {{- end }}
             {{- with .passwd_file }}
-            passwd_file: {{ . | quote }}
+            passwd_file_path: {{ . | quote }}
             {{- end }}
             {{- with .password_query }}
-            password_query: |
+            passdb_sql_query: |
               {{- . | nindent 14 }}
             {{- end }}
             {{- with .user_query }}
-            user_query: |
+            userdb_sql_query: |
               {{- . | nindent 14 }}
             {{- end }}
             {{- with .iterate_query }}
-            iterate_query: |
+            userdb_sql_iterate_query: |
               {{- . | nindent 14 }}
             {{- end }}
             {{- with .default_pass_scheme }}
-            default_pass_scheme: {{ . | quote }}
+            passdb_default_password_scheme: {{ . | quote }}
             {{- end }}
             {{- if .skip_schema }}
             skip_schema: true
@@ -460,7 +460,7 @@ data:
       fts_commit_limit: {{ $.Values.fts.fts_commit_limit }}
       fts_search_add_missing: {{ $.Values.fts.fts_search_add_missing | quote }}
       fts_search_read_fallback: {{ $.Values.fts.fts_search_read_fallback }}
-      fts_search_timeout_secs: {{ $.Values.fts.fts_search_timeout_secs }}
+      fts_search_timeout: {{ $.Values.fts.fts_search_timeout_secs }}
       fts_search_strict: {{ $.Values.fts.fts_search_strict }}
       fts_search: {{ $.Values.fts.fts_search | default true }}
       languages: {{ $.Values.fts.languages | toJson }}
@@ -469,11 +469,11 @@ data:
       fts_language_filters_override:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      fts_language_tokenizer_generic_token_maxlen: {{ $.Values.fts.fts_language_tokenizer_generic_token_maxlen | default 0 }}
-      fts_language_tokenizer_address_token_maxlen: {{ $.Values.fts.fts_language_tokenizer_address_token_maxlen | default 0 }}
-      fts_language_tokenizer_generic_algorithm: {{ $.Values.fts.fts_language_tokenizer_generic_algorithm | default "simple" | quote }}
-      fts_language_tokenizer_generic_wb5a: {{ $.Values.fts.fts_language_tokenizer_generic_wb5a | default false }}
-      fts_language_tokenizer_generic_explicit_prefix: {{ $.Values.fts.fts_language_tokenizer_generic_explicit_prefix | default false }}
+      language_tokenizer_generic_token_maxlen: {{ $.Values.fts.fts_language_tokenizer_generic_token_maxlen | default 0 }}
+      language_tokenizer_address_token_maxlen: {{ $.Values.fts.fts_language_tokenizer_address_token_maxlen | default 0 }}
+      language_tokenizer_generic_algorithm: {{ $.Values.fts.fts_language_tokenizer_generic_algorithm | default "simple" | quote }}
+      language_tokenizer_generic_wb5a: {{ $.Values.fts.fts_language_tokenizer_generic_wb5a | default false }}
+      language_tokenizer_generic_explicit_prefix: {{ $.Values.fts.fts_language_tokenizer_generic_explicit_prefix | default false }}
       fts_detection_sample_bytes: {{ $.Values.fts.fts_detection_sample_bytes | quote }}
       fts_detection_min_runes: {{ $.Values.fts.fts_detection_min_runes }}
       fts_flatcurve_commit_limit: {{ $.Values.fts.fts_flatcurve_commit_limit }}
@@ -518,7 +518,7 @@ data:
       quota_storage_extra: {{ .quota_storage_extra | quote }}
       {{- end }}
       {{- if .quota_grace }}
-      quota_grace: {{ .quota_grace | quote }}
+      quota_storage_grace: {{ .quota_grace | quote }}
       {{- end }}
       {{- if .quota_ignore_unlimited }}
       quota_ignore_unlimited: true

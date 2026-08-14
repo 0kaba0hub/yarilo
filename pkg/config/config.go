@@ -437,30 +437,37 @@ type LMTPProtocolConfig struct {
 	// Greeting shown in the 220 banner. Default: "Yarilo ready."
 	LoginGreeting string `koanf:"login_greeting"`
 	// AddReceivedHeader prepends a Received: header to delivered messages. Default: true.
-	AddReceivedHeader bool `koanf:"add_received_header"`
+	AddReceivedHeader bool `koanf:"lmtp_add_received_header"`
 	// SaveToDetailMailbox delivers user+folder@domain to mailbox 'folder' instead of INBOX. Default: false.
-	SaveToDetailMailbox bool `koanf:"save_to_detail_mailbox"`
+	SaveToDetailMailbox bool `koanf:"lmtp_save_to_detail_mailbox"`
 	// HdrDeliveryAddress controls the Delivered-To header: none | final | original. Default: "final".
-	HdrDeliveryAddress string `koanf:"hdr_delivery_address"`
+	HdrDeliveryAddress string `koanf:"lmtp_hdr_delivery_address"`
 	// VerboseReplies includes diagnostic details in error responses. Default: false.
-	VerboseReplies bool `koanf:"verbose_replies"`
+	VerboseReplies bool `koanf:"lmtp_verbose_replies"`
 	// UserConcurrencyLimit is the max concurrent deliveries per user enforced
 	// cluster-wide via yarilo-warden at RCPT TO. Default: 10.
 	// Value 0 is a hard configuration error — operators that genuinely want
 	// no limit MUST set -1 ("unlimited"), so a missing or zeroed config can
 	// never silently turn off the DoS guard.
-	UserConcurrencyLimit int `koanf:"user_concurrency_limit"`
+	UserConcurrencyLimit int `koanf:"lmtp_user_concurrency_limit"`
 	// ReadTimeout is the per-command read timeout in seconds. Default: 300.
 	ReadTimeout int `koanf:"read_timeout"`
 	// WriteTimeout is the per-command write timeout in seconds. Default: 300.
 	WriteTimeout int `koanf:"write_timeout"`
 	// ClientWorkarounds is a list of client compatibility workarounds.
-	ClientWorkarounds []string `koanf:"client_workarounds"`
+	ClientWorkarounds []string `koanf:"lmtp_client_workarounds"`
 	// Proxy configures LMTP proxy mode (director → backend routing).
 	Proxy LMTPProxyConfig `koanf:"proxy"`
 	// RateLimit caps deliveries per (sender IP, recipient mailbox) pair
 	// within a sliding window.
 	RateLimit LMTPRateLimitConfig `koanf:"rate_limit"`
+	// Pre-beta spellings, accepted as aliases and removed after beta.
+	AddReceivedHeaderAlias    bool     `koanf:"add_received_header"`
+	SaveToDetailMailboxAlias  bool     `koanf:"save_to_detail_mailbox"`
+	HdrDeliveryAddressAlias   string   `koanf:"hdr_delivery_address"`
+	VerboseRepliesAlias       bool     `koanf:"verbose_replies"`
+	UserConcurrencyLimitAlias int      `koanf:"user_concurrency_limit"`
+	ClientWorkaroundsAlias    []string `koanf:"client_workarounds"`
 }
 
 // LMTPRateLimitConfig configures the per-(IP, mailbox) limit enforced at
@@ -489,7 +496,7 @@ type IMAPProtocolConfig struct {
 	IDSend             string   `koanf:"imap_id_send"`              // ID pairs; * = default; empty = disabled
 	LoginGreeting      string   `koanf:"login_greeting"`
 	LogoutFormat       string   `koanf:"imap_logout_format"`
-	ClientWorkarounds  []string `koanf:"client_workarounds"`
+	ClientWorkarounds  []string `koanf:"imap_client_workarounds"`
 	// IMAPQuota toggles the IMAP QUOTA extension (RFC 9208). Independent of
 	// the quota engine (enforcement). Default on.
 	IMAPQuota bool `koanf:"imap_quota"`
@@ -497,6 +504,8 @@ type IMAPProtocolConfig struct {
 	// special-use attribute. Per-user CREATE (USE ...) overrides win via the
 	// on-disk special_use file.
 	SpecialUseDefaults map[string]string `koanf:"imap_special_use_defaults"`
+	// Pre-beta spelling, accepted as an alias and removed after beta.
+	ClientWorkaroundsAlias []string `koanf:"client_workarounds"`
 }
 
 // ACLConfig groups RFC 4314 ACL knobs.
@@ -556,27 +565,41 @@ type POP3ProtocolConfig struct {
 type SubmissionProtocolConfig struct {
 	Hostname           string      `koanf:"hostname"`
 	MaxMsgSize         int64       `koanf:"-"` // resolved from MaxMsgSizeRaw at load
-	MaxMsgSizeRaw      string      `koanf:"max_message_size"`
+	MaxMsgSizeRaw      string      `koanf:"submission_max_mail_size"`
 	MaxLineLength      int         `koanf:"max_line_length"`
-	MaxRecipients      int         `koanf:"max_recipients"` // 0 = unlimited
+	MaxRecipients      int         `koanf:"submission_max_recipients"` // 0 = unlimited
 	RecipientDelimiter string      `koanf:"recipient_delimiter"`
-	Workarounds        []string    `koanf:"client_workarounds"` // whitespace-before-path | mailbox-for-path | implicit-auth-external
+	Workarounds        []string    `koanf:"submission_client_workarounds"` // whitespace-before-path | mailbox-for-path | implicit-auth-external
 	AddReceivedHeader  bool        `koanf:"submission_add_received_header"`
 	Relay              RelayConfig `koanf:"relay"`
+	// Pre-beta spellings, accepted as aliases and removed after beta.
+	MaxMsgSizeRawAlias string   `koanf:"max_message_size"`
+	MaxRecipientsAlias int      `koanf:"max_recipients"`
+	WorkaroundsAlias   []string `koanf:"client_workarounds"`
 }
 
 // RelayConfig holds SMTP relay settings (submission_relay_* knobs).
 // Host must be non-empty to enable relaying; otherwise submission returns 451.
 type RelayConfig struct {
-	Host           string `koanf:"host"`
-	Port           int    `koanf:"port"` // default 25
-	User           string `koanf:"user"`
-	Password       string `koanf:"password"`        // supports ${ENV_VAR}
-	SSL            string `koanf:"ssl"`             // no | smtps | starttls
-	SSLVerify      bool   `koanf:"ssl_verify"`      // default true
-	Trusted        bool   `koanf:"trusted"`         // send XCLIENT to relay (Postfix)
-	ConnectTimeout int    `koanf:"connect_timeout"` // seconds, default 30
-	CommandTimeout int    `koanf:"command_timeout"` // seconds, default 300
+	Host           string `koanf:"submission_relay_host"`
+	Port           int    `koanf:"submission_relay_port"` // default 25
+	User           string `koanf:"submission_relay_user"`
+	Password       string `koanf:"submission_relay_password"`        // supports ${ENV_VAR}
+	SSL            string `koanf:"submission_relay_ssl"`             // no | smtps | starttls
+	SSLVerify      bool   `koanf:"submission_relay_ssl_verify"`      // default true
+	Trusted        bool   `koanf:"submission_relay_trusted"`         // send XCLIENT to relay (Postfix)
+	ConnectTimeout int    `koanf:"submission_relay_connect_timeout"` // seconds, default 30
+	CommandTimeout int    `koanf:"submission_relay_command_timeout"` // seconds, default 300
+	// Pre-beta spellings, accepted as aliases and removed after beta.
+	HostAlias           string `koanf:"host"`
+	PortAlias           int    `koanf:"port"`
+	UserAlias           string `koanf:"user"`
+	PasswordAlias       string `koanf:"password"`
+	SSLAlias            string `koanf:"ssl"`
+	SSLVerifyAlias      bool   `koanf:"ssl_verify"`
+	TrustedAlias        bool   `koanf:"trusted"`
+	ConnectTimeoutAlias int    `koanf:"connect_timeout"`
+	CommandTimeoutAlias int    `koanf:"command_timeout"`
 }
 
 // InternalTLSConfig controls mTLS for all inter-component connections.
@@ -629,7 +652,12 @@ type QuotaConfig struct {
 	StorageExtra string `koanf:"quota_storage_extra"`
 	// Grace is the storage overshoot allowed past the limit on inbound delivery
 	// (LMTP/LDA) only — never interactive IMAP (human size). Default "10M".
-	Grace string `koanf:"quota_grace"`
+	// Canonical spelling; "quota_grace" is the pre-beta alias. The value is a
+	// size, so both spellings must reach the same resolve() branch -- an alias
+	// adopted after the sizes were resolved would leave the canonical field
+	// parsed from nothing.
+	Grace      string `koanf:"quota_storage_grace"`
+	GraceAlias string `koanf:"quota_grace"`
 	// IgnoreUnlimited omits the quota root from IMAP GETQUOTA/GETQUOTAROOT for a
 	// user whose limits are all unlimited.
 	IgnoreUnlimited bool `koanf:"quota_ignore_unlimited"`
@@ -950,9 +978,10 @@ type FTSConfig struct {
 	// that surface the flag cannot choose a fallback and a failed lookup is
 	// refused instead (serverFail; a lagging index is serverUnavailable, which
 	// says "retry"). Deliberate divergence, not an oversight.
-	SearchReadFallback bool `koanf:"fts_search_read_fallback"`
-	SearchTimeoutSecs  int  `koanf:"fts_search_timeout_secs"`
-	SearchStrict       bool `koanf:"fts_search_strict"`
+	SearchReadFallback     bool `koanf:"fts_search_read_fallback"`
+	SearchTimeoutSecs      int  `koanf:"fts_search_timeout"`
+	SearchTimeoutSecsAlias int  `koanf:"fts_search_timeout_secs"`
+	SearchStrict           bool `koanf:"fts_search_strict"`
 	// Search disables FTS SEARCH while indexing keeps running (#726 item
 	// 3) — incident degradation (bad query results, engine misbehaving)
 	// without losing index freshness. Sessions treat Search=false as "no
@@ -974,17 +1003,17 @@ type FTSConfig struct {
 	// generic/address tokenizer byte caps, 0 = language package defaults
 	// (30 / 250) — the most common operator tunings for index size vs.
 	// long-token searchability.
-	LanguageTokenMaxLen   int `koanf:"fts_language_tokenizer_generic_token_maxlen"`
-	LanguageAddressMaxLen int `koanf:"fts_language_tokenizer_address_token_maxlen"`
+	LanguageTokenMaxLen   int `koanf:"language_tokenizer_generic_token_maxlen"`
+	LanguageAddressMaxLen int `koanf:"language_tokenizer_address_token_maxlen"`
 	// LanguageTokenizerAlgorithm (#726 item 2): "simple" (default, the only
 	// one implemented) or "tr29" — accepted but rejected at startup with a
 	// clear error until the TR29 tokenizer lands (blocked on the Bleve
 	// stream). LanguageTokenizerWB5A / LanguageTokenizerExplicitPrefix are
 	// TR29-only knobs, also accepted-but-rejected-if-true for the same
 	// reason: a silent no-op would be worse than a clear startup error.
-	LanguageTokenizerAlgorithm      string `koanf:"fts_language_tokenizer_generic_algorithm"`
-	LanguageTokenizerWB5A           bool   `koanf:"fts_language_tokenizer_generic_wb5a"`
-	LanguageTokenizerExplicitPrefix bool   `koanf:"fts_language_tokenizer_generic_explicit_prefix"`
+	LanguageTokenizerAlgorithm      string `koanf:"language_tokenizer_generic_algorithm"`
+	LanguageTokenizerWB5A           bool   `koanf:"language_tokenizer_generic_wb5a"`
+	LanguageTokenizerExplicitPrefix bool   `koanf:"language_tokenizer_generic_explicit_prefix"`
 
 	// IndexRoot is where FTS data lives: a location template expanded per user
 	// with ~/, %h, %u, %n and %d, like every other storage location.
@@ -1127,6 +1156,12 @@ type FTSConfig struct {
 	// which detection is considered unreliable and falls back to the first
 	// configured language (0 = language package's own default). See #696.
 	DetectionMinRunes int `koanf:"fts_detection_min_runes"`
+	// Pre-beta spellings, accepted as aliases and removed after beta.
+	LanguageTokenMaxLenAlias             int    `koanf:"fts_language_tokenizer_generic_token_maxlen"`
+	LanguageAddressMaxLenAlias           int    `koanf:"fts_language_tokenizer_address_token_maxlen"`
+	LanguageTokenizerAlgorithmAlias      string `koanf:"fts_language_tokenizer_generic_algorithm"`
+	LanguageTokenizerWB5AAlias           bool   `koanf:"fts_language_tokenizer_generic_wb5a"`
+	LanguageTokenizerExplicitPrefixAlias bool   `koanf:"fts_language_tokenizer_generic_explicit_prefix"`
 }
 
 // LocksServiceConfig configures the standalone yarilo-locks process.
@@ -1635,68 +1670,103 @@ const (
 //
 // Username / Issuers / Audience / Scope / Active / Grace fields
 // apply across modes.
+// One rule for the whole section: every key carries the oauth2_ prefix.
+// Where the reference has a key, the reference spelling is used
+// (oauth2_scope, oauth2_username_attribute, oauth2_active_attribute,
+// oauth2_active_value, oauth2_fields, oauth2_username_validation_format,
+// oauth2_introspection_url, oauth2_tokeninfo_url, oauth2_client_id,
+// oauth2_client_secret, oauth2_introspection_mode). Where it has none, the
+// name is OURS under the section-prefix rule, not a reference name invented
+// for it: oauth2_jwks_url and oauth2_issuer_url describe a local-validation
+// setup the reference expresses as oauth2_openid_configuration_url, and
+// oauth2_mode / oauth2_audience / oauth2_issuers / oauth2_prefer_introspection
+// / oauth2_http_timeout_ms / oauth2_token_expire_grace_seconds have no
+// reference counterpart at all.
+//
+// Half a section prefixed and half bare was the alternative, and it is the
+// inconsistency this package exists to end.
 type OAuth2Entry struct {
 	// Mode picks the validation transport. REQUIRED.
-	Mode OAuth2Mode `koanf:"mode"`
+	Mode OAuth2Mode `koanf:"oauth2_mode"`
 
 	// Endpoints — one of these must be set, per Mode.
-	JWKSURL          string `koanf:"jwks_url"`
-	IntrospectionURL string `koanf:"introspection_url"`
-	TokeninfoURL     string `koanf:"tokeninfo_url"`
-	IssuerURL        string `koanf:"issuer_url"`
+	JWKSURL          string `koanf:"oauth2_jwks_url"`
+	IntrospectionURL string `koanf:"oauth2_introspection_url"`
+	TokeninfoURL     string `koanf:"oauth2_tokeninfo_url"`
+	IssuerURL        string `koanf:"oauth2_issuer_url"`
 
 	// IntrospectionMode controls the introspection request shape.
 	// One of "post" (default — RFC 7662), "auth", "get".
-	IntrospectionMode string `koanf:"introspection_mode"`
+	IntrospectionMode string `koanf:"oauth2_introspection_mode"`
 
 	// PreferIntrospection (discovery mode only) — when true,
 	// prefers the introspection endpoint over JWKS when both are
 	// advertised in the discovery document.
-	PreferIntrospection bool `koanf:"prefer_introspection"`
+	PreferIntrospection bool `koanf:"oauth2_prefer_introspection"`
 
 	// ClientID / ClientSecret authenticate the introspection call
 	// itself. Ignored in JWKS and tokeninfo modes.
-	ClientID     string `koanf:"client_id"`
-	ClientSecret string `koanf:"client_secret"`
+	ClientID     string `koanf:"oauth2_client_id"`
+	ClientSecret string `koanf:"oauth2_client_secret"`
 
 	// Issuers is the allow-list of `iss` claim values. Empty =
 	// no check (any signed token from a key in JWKS passes).
 	// In discovery mode the document's iss is auto-added.
-	Issuers []string `koanf:"issuers"`
+	Issuers []string `koanf:"oauth2_issuers"`
 
 	// Audience is the required `aud` claim. Empty = no check.
-	Audience string `koanf:"audience"`
+	Audience string `koanf:"oauth2_audience"`
 
 	// Scopes lists scopes every token MUST carry. Empty = no
 	// check.
-	Scopes []string `koanf:"scopes"`
+	Scopes []string `koanf:"oauth2_scope"`
 
 	// UsernameAttribute is the response/claim name resolving to
 	// the mail user. Default "email".
-	UsernameAttribute string `koanf:"username_attribute"`
+	UsernameAttribute string `koanf:"oauth2_username_attribute"`
 
 	// UsernameValidationFormat is the template applied to the
 	// SASL authzid before comparing to the username claim.
 	// Default "%{user}" (identity). Supports %u, %{user}, %Lu,
 	// %n, %Ln, %d, %Ld.
-	UsernameValidationFormat string `koanf:"username_validation_format"`
+	UsernameValidationFormat string `koanf:"oauth2_username_validation_format"`
 
 	// ActiveAttribute / ActiveValue — optional check. The claim
 	// named by ActiveAttribute must be present (and equal
 	// ActiveValue if non-empty) for the login to succeed.
-	ActiveAttribute string `koanf:"active_attribute"`
-	ActiveValue     string `koanf:"active_value"`
+	ActiveAttribute string `koanf:"oauth2_active_attribute"`
+	ActiveValue     string `koanf:"oauth2_active_value"`
 
 	// ExtraFields are the claim names that get projected back
 	// onto the auth response as userdb_<claim> fields.
-	ExtraFields []string `koanf:"extra_fields"`
+	ExtraFields []string `koanf:"oauth2_fields"`
 
 	// TokenExpireGraceSeconds tolerates clock skew. Default 60.
-	TokenExpireGraceSeconds int `koanf:"token_expire_grace_seconds"`
+	TokenExpireGraceSeconds int `koanf:"oauth2_token_expire_grace_seconds"`
 
 	// HTTPTimeoutMs caps the validation round-trip (introspection
 	// / tokeninfo / discovery / JWKS-refresh). Default 5000.
-	HTTPTimeoutMs int `koanf:"http_timeout_ms"`
+	HTTPTimeoutMs int `koanf:"oauth2_http_timeout_ms"`
+	// Pre-beta spellings, accepted as aliases and removed after beta.
+	ModeAlias                     string   `koanf:"mode"`
+	AudienceAlias                 string   `koanf:"audience"`
+	ScopesAlias                   []string `koanf:"scopes"`
+	UsernameAttributeAlias        string   `koanf:"username_attribute"`
+	UsernameValidationFormatAlias string   `koanf:"username_validation_format"`
+	ActiveAttributeAlias          string   `koanf:"active_attribute"`
+	ActiveValueAlias              string   `koanf:"active_value"`
+	ExtraFieldsAlias              []string `koanf:"extra_fields"`
+	TokenExpireGraceSecondsAlias  int      `koanf:"token_expire_grace_seconds"`
+	HTTPTimeoutMsAlias            int      `koanf:"http_timeout_ms"`
+	JWKSURLAlias                  string   `koanf:"jwks_url"`
+	IntrospectionURLAlias         string   `koanf:"introspection_url"`
+	TokeninfoURLAlias             string   `koanf:"tokeninfo_url"`
+	IssuerURLAlias                string   `koanf:"issuer_url"`
+	IntrospectionModeAlias        string   `koanf:"introspection_mode"`
+	PreferIntrospectionAlias      bool     `koanf:"prefer_introspection"`
+	ClientIDAlias                 string   `koanf:"client_id"`
+	ClientSecretAlias             string   `koanf:"client_secret"`
+	IssuersAlias                  []string `koanf:"issuers"`
 }
 
 // AuthPenaltyConfig configures cross-pod IP-bound auth backoff.
@@ -1865,14 +1935,14 @@ type MasterUsersConfig struct {
 }
 
 type PassdbEntry struct {
-	Driver            string `koanf:"driver"`              // sqlite | mysql | postgres | passwd-file
-	DSN               string `koanf:"dsn"`                 // SQL drivers
-	PasswdFile        string `koanf:"passwd_file"`         // passwd-file driver: path to the file
-	PasswordQuery     string `koanf:"password_query"`      // custom SELECT; %u/%n/%d substituted as parameters
-	UserQuery         string `koanf:"user_query"`          // optional userdb lookup; %u/%n/%d substituted
-	IterateQuery      string `koanf:"iterate_query"`       // optional list-users query (admin tooling)
-	DefaultPassScheme string `koanf:"default_pass_scheme"` // assumed scheme when stored password has no {SCHEME} prefix (default PLAIN)
-	SkipSchema        bool   `koanf:"skip_schema"`         // do not run CREATE TABLE IF NOT EXISTS on startup
+	Driver            string `koanf:"driver"`                         // sqlite | mysql | postgres | passwd-file
+	DSN               string `koanf:"dsn"`                            // SQL drivers
+	PasswdFile        string `koanf:"passwd_file_path"`               // passwd-file driver: path to the file
+	PasswordQuery     string `koanf:"passdb_sql_query"`               // custom SELECT; %u/%n/%d substituted as parameters
+	UserQuery         string `koanf:"userdb_sql_query"`               // optional userdb lookup; %u/%n/%d substituted
+	IterateQuery      string `koanf:"userdb_sql_iterate_query"`       // optional list-users query (admin tooling)
+	DefaultPassScheme string `koanf:"passdb_default_password_scheme"` // assumed scheme when stored password has no {SCHEME} prefix (default PLAIN)
+	SkipSchema        bool   `koanf:"skip_schema"`                    // do not run CREATE TABLE IF NOT EXISTS on startup
 
 	// Connection-pool limits for the SQL drivers (#886). Zero values select
 	// bounded, reusing defaults — Go's own defaults retain only two idle
@@ -1887,6 +1957,15 @@ type PassdbEntry struct {
 	StaticPassword string            `koanf:"static_password"` // shared password ({SCHEME} or default scheme)
 	Nopassword     bool              `koanf:"nopassword"`      // accept any password (proxy front); requires empty static_password
 	Fields         map[string]string `koanf:"fields"`          // templated fields (%u/%n/%d); userdb_-prefixed → userdb, bare → passdb
+	// Pre-beta spellings, accepted as aliases and removed after beta.
+	// passwd_file_path carries no passdb_ prefix in the reference (verified in
+	// 2.4.4 source, package 3), so it is spelled exactly as the reference has
+	// it rather than as the pattern would suggest.
+	PasswordQueryAlias     string `koanf:"password_query"`
+	UserQueryAlias         string `koanf:"user_query"`
+	IterateQueryAlias      string `koanf:"iterate_query"`
+	DefaultPassSchemeAlias string `koanf:"default_pass_scheme"`
+	PasswdFileAlias        string `koanf:"passwd_file"`
 }
 
 type StorageConfig struct {
@@ -2429,7 +2508,7 @@ func Load(path string) (*Config, error) {
 	}
 	for _, set := range [][]aliasedKey{
 		storageAliases(cfg), generalAliases(cfg), aclAliases(cfg), authAliases(cfg),
-		serviceSSLAliases(cfg),
+		serviceSSLAliases(cfg), protocolAliases(cfg),
 	} {
 		if err := applyAliases(k, set); err != nil {
 			return nil, err

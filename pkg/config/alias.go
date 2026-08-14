@@ -30,6 +30,11 @@ type aliasedKey struct {
 	// equal reports whether both spellings carry the same value, and is only
 	// consulted when both are set.
 	equal func() bool
+	// present overrides how set-ness is decided. koanf addresses a list as one
+	// opaque value -- "auth.passdb" is a key, "auth.passdb.0.password_query" is
+	// not -- so an entry inside a list has to be asked of the parsed maps
+	// instead. Nil means the ordinary path lookup.
+	present func(k *koanf.Koanf) (canonical, alias bool)
 }
 
 func applyAliases(k *koanf.Koanf, keys []aliasedKey) error {
@@ -41,6 +46,9 @@ func applyAliases(k *koanf.Koanf, keys []aliasedKey) error {
 	adopted := map[string]string{}
 	for _, key := range keys {
 		hasCanonical, hasAlias := k.Exists(key.canonical), k.Exists(key.alias)
+		if key.present != nil {
+			hasCanonical, hasAlias = key.present(k)
+		}
 		if !hasAlias {
 			continue
 		}
@@ -284,4 +292,151 @@ func servicesByName(cfg *Config) map[string]*ServiceConfig {
 		"lmtp": s.LMTP, "managesieve": s.ManageSieve, "managesieve_be": s.ManageSieveBE,
 		"jmap": s.JMAP, "jmap_be": s.JMAPBE,
 	}
+}
+
+// protocolAliases lists the package-2b renames: the protocol and provider
+// sections take the reference's flat prefixed spellings.
+func protocolAliases(cfg *Config) []aliasedKey {
+	l := &cfg.Protocol.LMTP
+	im := &cfg.Protocol.IMAP
+	sub := &cfg.Protocol.Submission
+	rel := &sub.Relay
+	q := &cfg.Quota
+	f := &cfg.FTS
+
+	out := []aliasedKey{
+		boolAlias("protocol.lmtp.lmtp_add_received_header", "protocol.lmtp.add_received_header", &l.AddReceivedHeader, &l.AddReceivedHeaderAlias),
+		boolAlias("protocol.lmtp.lmtp_save_to_detail_mailbox", "protocol.lmtp.save_to_detail_mailbox", &l.SaveToDetailMailbox, &l.SaveToDetailMailboxAlias),
+		strAlias("protocol.lmtp.lmtp_hdr_delivery_address", "protocol.lmtp.hdr_delivery_address", &l.HdrDeliveryAddress, &l.HdrDeliveryAddressAlias),
+		boolAlias("protocol.lmtp.lmtp_verbose_replies", "protocol.lmtp.verbose_replies", &l.VerboseReplies, &l.VerboseRepliesAlias),
+		intAlias("protocol.lmtp.lmtp_user_concurrency_limit", "protocol.lmtp.user_concurrency_limit", &l.UserConcurrencyLimit, &l.UserConcurrencyLimitAlias),
+		listAlias("protocol.lmtp.lmtp_client_workarounds", "protocol.lmtp.client_workarounds", &l.ClientWorkarounds, &l.ClientWorkaroundsAlias),
+
+		listAlias("protocol.imap.imap_client_workarounds", "protocol.imap.client_workarounds", &im.ClientWorkarounds, &im.ClientWorkaroundsAlias),
+
+		strAlias("protocol.submission.submission_max_mail_size", "protocol.submission.max_message_size", &sub.MaxMsgSizeRaw, &sub.MaxMsgSizeRawAlias),
+		intAlias("protocol.submission.submission_max_recipients", "protocol.submission.max_recipients", &sub.MaxRecipients, &sub.MaxRecipientsAlias),
+		listAlias("protocol.submission.submission_client_workarounds", "protocol.submission.client_workarounds", &sub.Workarounds, &sub.WorkaroundsAlias),
+
+		strAlias("protocol.submission.relay.submission_relay_host", "protocol.submission.relay.host", &rel.Host, &rel.HostAlias),
+		intAlias("protocol.submission.relay.submission_relay_port", "protocol.submission.relay.port", &rel.Port, &rel.PortAlias),
+		strAlias("protocol.submission.relay.submission_relay_user", "protocol.submission.relay.user", &rel.User, &rel.UserAlias),
+		strAlias("protocol.submission.relay.submission_relay_password", "protocol.submission.relay.password", &rel.Password, &rel.PasswordAlias),
+		strAlias("protocol.submission.relay.submission_relay_ssl", "protocol.submission.relay.ssl", &rel.SSL, &rel.SSLAlias),
+		boolAlias("protocol.submission.relay.submission_relay_ssl_verify", "protocol.submission.relay.ssl_verify", &rel.SSLVerify, &rel.SSLVerifyAlias),
+		boolAlias("protocol.submission.relay.submission_relay_trusted", "protocol.submission.relay.trusted", &rel.Trusted, &rel.TrustedAlias),
+		intAlias("protocol.submission.relay.submission_relay_connect_timeout", "protocol.submission.relay.connect_timeout", &rel.ConnectTimeout, &rel.ConnectTimeoutAlias),
+		intAlias("protocol.submission.relay.submission_relay_command_timeout", "protocol.submission.relay.command_timeout", &rel.CommandTimeout, &rel.CommandTimeoutAlias),
+
+		// The value is a size, resolved once at load. Adoption happens before
+		// that pass, so the canonical field is what gets parsed -- an alias
+		// adopted afterwards would leave it holding an unparsed string and the
+		// grace would read as zero.
+		strAlias("quota.quota_storage_grace", "quota.quota_grace", &q.Grace, &q.GraceAlias),
+
+		intAlias("fts.fts_search_timeout", "fts.fts_search_timeout_secs", &f.SearchTimeoutSecs, &f.SearchTimeoutSecsAlias),
+		intAlias("fts.language_tokenizer_generic_token_maxlen", "fts.fts_language_tokenizer_generic_token_maxlen", &f.LanguageTokenMaxLen, &f.LanguageTokenMaxLenAlias),
+		intAlias("fts.language_tokenizer_address_token_maxlen", "fts.fts_language_tokenizer_address_token_maxlen", &f.LanguageAddressMaxLen, &f.LanguageAddressMaxLenAlias),
+		strAlias("fts.language_tokenizer_generic_algorithm", "fts.fts_language_tokenizer_generic_algorithm", &f.LanguageTokenizerAlgorithm, &f.LanguageTokenizerAlgorithmAlias),
+		boolAlias("fts.language_tokenizer_generic_wb5a", "fts.fts_language_tokenizer_generic_wb5a", &f.LanguageTokenizerWB5A, &f.LanguageTokenizerWB5AAlias),
+		boolAlias("fts.language_tokenizer_generic_explicit_prefix", "fts.fts_language_tokenizer_generic_explicit_prefix", &f.LanguageTokenizerExplicitPrefix, &f.LanguageTokenizerExplicitPrefixAlias),
+	}
+
+	// List entries: the path carries the index, since that is what koanf reads
+	// them under. A chain of three passdbs is three sets of pairs, not one.
+	for i := range cfg.Auth.Passdb {
+		out = append(out, passdbAliases("auth.passdb", i, &cfg.Auth.Passdb[i])...)
+	}
+	for i := range cfg.Auth.MasterUsers.Masterdb {
+		out = append(out, passdbAliases("auth.master_users.masterdb", i, &cfg.Auth.MasterUsers.Masterdb[i])...)
+	}
+	for i := range cfg.Auth.OAuth2 {
+		out = append(out, oauth2Aliases("auth.oauth2", i, &cfg.Auth.OAuth2[i])...)
+	}
+	return out
+}
+
+// listEntryPresence answers set-ness for a key inside a list entry, reading the
+// parsed value rather than the key index: koanf holds the whole list under one
+// key, so a path with an index in it never "exists".
+func listEntryPresence(listPath string, idx int, canonical, alias string) func(*koanf.Koanf) (bool, bool) {
+	return func(k *koanf.Koanf) (bool, bool) {
+		entries, ok := k.Get(listPath).([]any)
+		if !ok || idx >= len(entries) {
+			return false, false
+		}
+		m, ok := entries[idx].(map[string]any)
+		if !ok {
+			return false, false
+		}
+		_, hasCanonical := m[canonical]
+		_, hasAlias := m[alias]
+		return hasCanonical, hasAlias
+	}
+}
+
+func passdbAliases(listPath string, idx int, e *PassdbEntry) []aliasedKey {
+	path := fmt.Sprintf("%s.%d", listPath, idx)
+	with := func(k aliasedKey, canonical, alias string) aliasedKey {
+		k.present = listEntryPresence(listPath, idx, canonical, alias)
+		return k
+	}
+	return []aliasedKey{
+		with(strAlias(path+".passdb_sql_query", path+".password_query", &e.PasswordQuery, &e.PasswordQueryAlias), "passdb_sql_query", "password_query"),
+		with(strAlias(path+".userdb_sql_query", path+".user_query", &e.UserQuery, &e.UserQueryAlias), "userdb_sql_query", "user_query"),
+		with(strAlias(path+".userdb_sql_iterate_query", path+".iterate_query", &e.IterateQuery, &e.IterateQueryAlias), "userdb_sql_iterate_query", "iterate_query"),
+		with(strAlias(path+".passdb_default_password_scheme", path+".default_pass_scheme", &e.DefaultPassScheme, &e.DefaultPassSchemeAlias), "passdb_default_password_scheme", "default_pass_scheme"),
+		// No passdb_ prefix on this one: that is how the reference spells it
+		// (2.4.4 source, package 3), and the pattern does not outrank the source.
+		with(strAlias(path+".passwd_file_path", path+".passwd_file", &e.PasswdFile, &e.PasswdFileAlias), "passwd_file_path", "passwd_file"),
+	}
+}
+
+func oauth2Aliases(listPath string, idx int, e *OAuth2Entry) []aliasedKey {
+	path := fmt.Sprintf("%s.%d", listPath, idx)
+	with := func(k aliasedKey, canonical, alias string) aliasedKey {
+		k.present = listEntryPresence(listPath, idx, canonical, alias)
+		return k
+	}
+	return []aliasedKey{
+		with(strAlias(path+".oauth2_jwks_url", path+".jwks_url", &e.JWKSURL, &e.JWKSURLAlias), "oauth2_jwks_url", "jwks_url"),
+		with(strAlias(path+".oauth2_introspection_url", path+".introspection_url", &e.IntrospectionURL, &e.IntrospectionURLAlias), "oauth2_introspection_url", "introspection_url"),
+		with(strAlias(path+".oauth2_tokeninfo_url", path+".tokeninfo_url", &e.TokeninfoURL, &e.TokeninfoURLAlias), "oauth2_tokeninfo_url", "tokeninfo_url"),
+		with(strAlias(path+".oauth2_issuer_url", path+".issuer_url", &e.IssuerURL, &e.IssuerURLAlias), "oauth2_issuer_url", "issuer_url"),
+		with(strAlias(path+".oauth2_introspection_mode", path+".introspection_mode", &e.IntrospectionMode, &e.IntrospectionModeAlias), "oauth2_introspection_mode", "introspection_mode"),
+		with(boolAlias(path+".oauth2_prefer_introspection", path+".prefer_introspection", &e.PreferIntrospection, &e.PreferIntrospectionAlias), "oauth2_prefer_introspection", "prefer_introspection"),
+		with(strAlias(path+".oauth2_client_id", path+".client_id", &e.ClientID, &e.ClientIDAlias), "oauth2_client_id", "client_id"),
+		with(strAlias(path+".oauth2_client_secret", path+".client_secret", &e.ClientSecret, &e.ClientSecretAlias), "oauth2_client_secret", "client_secret"),
+		with(listAlias(path+".oauth2_issuers", path+".issuers", &e.Issuers, &e.IssuersAlias), "oauth2_issuers", "issuers"),
+		with(strAlias(path+".oauth2_mode", path+".mode", (*string)(&e.Mode), &e.ModeAlias), "oauth2_mode", "mode"),
+		with(strAlias(path+".oauth2_audience", path+".audience", &e.Audience, &e.AudienceAlias), "oauth2_audience", "audience"),
+		with(listAlias(path+".oauth2_scope", path+".scopes", &e.Scopes, &e.ScopesAlias), "oauth2_scope", "scopes"),
+		with(strAlias(path+".oauth2_username_attribute", path+".username_attribute", &e.UsernameAttribute, &e.UsernameAttributeAlias), "oauth2_username_attribute", "username_attribute"),
+		with(strAlias(path+".oauth2_username_validation_format", path+".username_validation_format", &e.UsernameValidationFormat, &e.UsernameValidationFormatAlias), "oauth2_username_validation_format", "username_validation_format"),
+		with(strAlias(path+".oauth2_active_attribute", path+".active_attribute", &e.ActiveAttribute, &e.ActiveAttributeAlias), "oauth2_active_attribute", "active_attribute"),
+		with(strAlias(path+".oauth2_active_value", path+".active_value", &e.ActiveValue, &e.ActiveValueAlias), "oauth2_active_value", "active_value"),
+		with(listAlias(path+".oauth2_fields", path+".extra_fields", &e.ExtraFields, &e.ExtraFieldsAlias), "oauth2_fields", "extra_fields"),
+		with(intAlias(path+".oauth2_token_expire_grace_seconds", path+".token_expire_grace_seconds", &e.TokenExpireGraceSeconds, &e.TokenExpireGraceSecondsAlias), "oauth2_token_expire_grace_seconds", "token_expire_grace_seconds"),
+		with(intAlias(path+".oauth2_http_timeout_ms", path+".http_timeout_ms", &e.HTTPTimeoutMs, &e.HTTPTimeoutMsAlias), "oauth2_http_timeout_ms", "http_timeout_ms"),
+	}
+}
+
+func strAlias(canonical, alias string, c, a *string) aliasedKey {
+	return aliasedKey{canonical: canonical, alias: alias,
+		adopt: func() { *c = *a }, equal: func() bool { return *c == *a }}
+}
+
+func intAlias(canonical, alias string, c, a *int) aliasedKey {
+	return aliasedKey{canonical: canonical, alias: alias,
+		adopt: func() { *c = *a }, equal: func() bool { return *c == *a }}
+}
+
+func boolAlias(canonical, alias string, c, a *bool) aliasedKey {
+	return aliasedKey{canonical: canonical, alias: alias,
+		adopt: func() { *c = *a }, equal: func() bool { return *c == *a }}
+}
+
+func listAlias(canonical, alias string, c, a *[]string) aliasedKey {
+	return aliasedKey{canonical: canonical, alias: alias,
+		adopt: func() { *c = *a }, equal: func() bool { return equalStrings(*c, *a) }}
 }
