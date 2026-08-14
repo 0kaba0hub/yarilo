@@ -50,7 +50,7 @@ func checkConsistencySearch(user, pass string) error {
 	}
 
 	want := []string{inSubject, inBody}
-	left, err := imapSearchMarkers(user, pass, term, len(want))
+	left, err := imapSearchMarkers(user, pass, term, append([]string{neither}, want...), len(want))
 	if err != nil {
 		return fmt.Errorf("search over imap: %w", err)
 	}
@@ -71,10 +71,19 @@ func checkConsistencySearch(user, pass string) error {
 	return judgeRow("imap SEARCH <-> jmap Email/query", left, right, defaultAllowances())
 }
 
-// imapSearchMarkers runs one TEXT search and reads each hit back as its marker.
-// Waits for the index to catch up on the same budget the FTS checks use: a set
-// read before indexing settles is a race, not a disagreement.
-func imapSearchMarkers(user, pass, term string, want int) (*reading, error) {
+// imapSearchMarkers runs one TEXT search and reports which of the seeded
+// markers it hit, by asking IMAP for each marker's UID rather than by reading
+// subjects back.
+//
+// Reading them back was the defect: the probe subject is an encoded-word plus a
+// marker, long enough that a server may return ENVELOPE as a literal rather
+// than a quoted string. The scraper handled quoted strings only, so it found no
+// markers, reported an empty IMAP set, and the row failed while both surfaces
+// were answering correctly -- and it failed before it ever queried JMAP, which
+// is why the JMAP side left no trace at all (#1279).
+//
+// A UID is what both searches already speak, so nothing has to be parsed.
+func imapSearchMarkers(user, pass, term string, markers []string, want int) (*reading, error) {
 	c, err := imapDial()
 	if err != nil {
 		return nil, err
@@ -88,33 +97,42 @@ func imapSearchMarkers(user, pass, term string, want int) (*reading, error) {
 		if _, err := c.selectFolder("INBOX"); err != nil {
 			return nil, fmt.Errorf("select INBOX: %w", err)
 		}
-		uids, err := c.uidSearch("TEXT " + term)
+		hits, err := c.uidSearch("TEXT " + term)
 		if err != nil {
 			return nil, fmt.Errorf("uid search: %w", err)
 		}
-		if len(uids) >= want || time.Now().After(deadline) {
-			markers, err := imapMarkersOf(c, uids)
+		if len(hits) >= want || time.Now().After(deadline) {
+			found, err := markersAmong(c, hits, markers)
 			if err != nil {
 				return nil, err
 			}
-			return newReading(surfIMAP).set("search", markers), nil
+			return newReading(surfIMAP).set("search", found), nil
 		}
 		time.Sleep(time.Second)
 	}
 }
 
-func imapMarkersOf(c *imapClient, uids []string) ([]string, error) {
-	var out []string
-	for _, uid := range uids {
-		lines, err := c.cmd("UID FETCH " + uid + " (ENVELOPE)")
+// markersAmong maps the term's hits back to the markers that name them: each
+// marker is searched for by header, and counted when its UID is among the hits.
+func markersAmong(c *imapClient, hits []string, markers []string) ([]string, error) {
+	inHits := make(map[string]bool, len(hits))
+	for _, uid := range hits {
+		inHits[uid] = true
+	}
+	var found []string
+	for _, m := range markers {
+		uids, err := c.uidSearch("HEADER SUBJECT " + m)
 		if err != nil {
-			return nil, fmt.Errorf("uid fetch envelope: %w", err)
+			return nil, fmt.Errorf("uid search for %s: %w", m, err)
 		}
-		if m := markerIn(envelopeSubject(strings.Join(lines, " "))); m != "" {
-			out = append(out, m)
+		for _, uid := range uids {
+			if inHits[uid] {
+				found = append(found, m)
+				break
+			}
 		}
 	}
-	return out, nil
+	return found, nil
 }
 
 func jmapQueryMarkers(term string, want int) (*reading, error) {

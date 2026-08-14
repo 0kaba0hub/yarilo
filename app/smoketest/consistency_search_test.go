@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -81,4 +82,46 @@ func TestMarkerSurvivesBothSubjectSpellings(t *testing.T) {
 	if got := markerIn("Rechnung für März"); got != "" {
 		t.Errorf("a subject with no marker yielded %q", got)
 	}
+}
+
+// The row failed while both surfaces answered correctly, because the IMAP side
+// read its hits back by scraping ENVELOPE and the server returned the subject
+// as a literal — which the scraper did not understand (#1279). Two guards
+// against that class now: the search row maps hits to markers by UID and parses
+// nothing, and the envelope reader understands literals where it is still used.
+func TestEnvelopeSubjectReadsLiteralsAndQuotedStrings(t *testing.T) {
+	const subject = "=?utf-8?Q?Rechnung?= xconsistency-identity-1700000000"
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "quoted string",
+			body: `* 1 FETCH (ENVELOPE ("Fri, 14 Aug 2026 09:30:00 +0300" "` + subject + `" NIL NIL))`,
+		},
+		{
+			// cmd() joins the response lines with one space, so the literal's
+			// bytes follow the brace and that separator.
+			name: "literal",
+			body: `* 1 FETCH (ENVELOPE ("Fri, 14 Aug 2026 09:30:00 +0300" {` +
+				itoa(len(subject)) + `} ` + subject + ` NIL NIL))`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := envelopeSubject(tc.body)
+			if got != subject {
+				t.Errorf("subject = %q, want %q", got, subject)
+			}
+			if m := markerIn(got); m != "xconsistency-identity-1700000000" {
+				t.Errorf("marker from the subject = %q", m)
+			}
+		})
+	}
+}
+
+func itoa(n int) string {
+	return strconv.Itoa(n)
 }
