@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -225,12 +226,32 @@ func envelopeSubject(body string) string {
 	return subject
 }
 
-// imapQuoted reads the next quoted string (or NIL) and returns it with the
-// remainder of the input.
+// imapQuoted reads the next quoted string, literal or NIL, and returns it with
+// the remainder of the input.
+//
+// Literals are not optional to support: a server may answer any string that
+// way, and a subject carrying an encoded-word is long enough to make it likely.
+// A reader that understood quoted strings only reported no subject at all and
+// the row failed while the server was answering correctly (#1279).
 func imapQuoted(s string) (value, rest string) {
 	s = strings.TrimLeft(s, " ")
 	if strings.HasPrefix(s, "NIL") {
 		return "NIL", strings.TrimPrefix(s, "NIL")
+	}
+	if strings.HasPrefix(s, "{") {
+		if end := strings.Index(s, "}"); end > 0 {
+			n, err := strconv.Atoi(s[1:end])
+			// cmd() joins the response lines with a single space, so the
+			// literal's bytes start right after the brace and that separator.
+			if err == nil && n >= 0 {
+				body := strings.TrimPrefix(s[end+1:], " ")
+				if n <= len(body) {
+					return body[:n], body[n:]
+				}
+				return body, ""
+			}
+		}
+		return "", s
 	}
 	if !strings.HasPrefix(s, `"`) {
 		return "", s
