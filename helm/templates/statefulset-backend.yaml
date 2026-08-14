@@ -278,6 +278,10 @@ spec:
             - name: ready
               mountPath: {{ $readyDir }}
             {{- include "yarilo.internalTLSMount" $itls | nindent 12 }}
+            {{- /* extraVolumeMounts are deliberately NOT here: this sidecar
+                   reads the config and the readiness directory and nothing
+                   else, so mounting an operator secret into it would widen
+                   exposure for no use (#1303). */}}
           resources:
             {{- toYaml $root.Values.components.backend.regResources | nindent 12 }}
       volumes:

@@ -273,6 +273,15 @@ Args: dict "root" $ "itls" <internalTLS config>.
   mountPath: {{ $root.Values.storage.maildir_root | default "/var/mail/vhosts" }}
 {{- end }}
 {{- include "yarilo.internalTLSMount" .itls }}
+{{- /* extraVolumes are rendered on the StatefulSet, so the matching mounts
+       belong on every backend container. Without them a volume an operator
+       added is present in the pod and mounted nowhere: a passwd-file passdb
+       renders into the shared config, the backend reads it, does not find the
+       file, and crashloops -- the volume looking configured while doing
+       nothing (#1303). Every Deployment in this chart already does this. */}}
+{{- with $root.Values.extraVolumeMounts }}
+{{ toYaml . | trimSuffix "\n" }}
+{{- end }}
 {{- end -}}
 
 {{/*
