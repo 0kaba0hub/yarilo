@@ -378,7 +378,7 @@ data:
         {{- end }}
       master_users:
         enabled: {{ .Values.components.auth.master_users.enabled | default false }}
-        separator: {{ .Values.components.auth.master_users.separator | default "*" | quote }}
+        auth_master_user_separator: {{ .Values.components.auth.master_users.separator | default "*" | quote }}
         masterdb:
           {{- range (.Values.components.auth.master_users.masterdb | default list) }}
           - driver: {{ .driver | quote }}
