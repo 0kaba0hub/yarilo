@@ -363,6 +363,28 @@ func (fs *folderState) createFresh(uidValidity uint32) error {
 	return ensureLogStub(fs.indexPath, fs.volatileDir, indexID, fs.lineage.Lineage)
 }
 
+// refreshExtStateFromDisk re-reads the base file's extension HEADERS -- never
+// its records -- and re-parses fs's typed copies from them. For the path that
+// keeps the records it already has and must still pick up what the headers now
+// say (see the adopt branch in reload).
+func (fs *folderState) refreshExtStateFromDisk() error {
+	exts, err := peekExtHeaders(fs.indexPath)
+	if err != nil {
+		return fmt.Errorf("fileindex/refresh: peek extension headers: %w", err)
+	}
+	if len(exts) == 0 {
+		return nil
+	}
+	// The typed copies come from the freshly read headers; fs.file keeps its
+	// own extension list, which describes the record layout the records in
+	// memory were decoded with.
+	saved := fs.file.Extensions
+	fs.file.Extensions = exts
+	err = fs.refreshExtState()
+	fs.file.Extensions = saved
+	return err
+}
+
 // refreshExtState re-parses the dbox-hdr and keywords extension headers
 // into fs's typed copies after every open or re-read.
 func (fs *folderState) refreshExtState() error {
@@ -725,6 +747,16 @@ func (fs *folderState) reload() error {
 				fs.baseMod = newBaseMod
 				fs.baseIdent = baseStat
 				fs.logSize = 0
+				// The records are the ones we hold -- that is what the digest
+				// proved -- but the extension HEADERS are not covered by it,
+				// and a base is rewritten for them alone: registering a
+				// keyword name changes no record. Keeping the stale registry
+				// here made a bitmask bit set by another process decode to no
+				// name at all, so a custom keyword set over IMAP was invisible
+				// over JMAP (#1278).
+				if err := fs.refreshExtStateFromDisk(); err != nil {
+					return err
+				}
 				metricReload.WithLabelValues("adopt").Inc()
 				return fs.applyLogTail(lg)
 			}
@@ -1103,6 +1135,8 @@ func (u *userIndex) writeFlags(folderID uint64, uid uint32, flags, keywords []st
 				break
 			}
 		}
+		prevKwCount := len(fs.keywords.Names)
+		keywordsChanged := false
 		kwBits, kwReg, err := keywordsBitmaskFor(fs.keywords, keywords)
 		if err != nil {
 			return err
@@ -1129,6 +1163,7 @@ func (u *userIndex) writeFlags(folderID uint64, uid uint32, flags, keywords []st
 			}
 			rec.Flags = newFlags
 			rec.Ext[extNameModSeq] = encodeModseqRec(modseq)
+			keywordsChanged = keywordsChanged || decodeKeywordsRec(rec.Ext[extNameKeywords]) != kwBits
 			rec.Ext[extNameKeywords] = encodeKeywordsRec(kwBits)
 			newSeen := newFlags&mailindex.FlagSeen != 0
 			newDel := newFlags&mailindex.FlagDeleted != 0
@@ -1145,6 +1180,20 @@ func (u *userIndex) writeFlags(folderID uint64, uid uint32, flags, keywords []st
 				fs.file.Header.DeletedMessagesCount++
 			}
 			break
+		}
+		// Keywords live on the record as a BIT, and the name that bit stands
+		// for lives in the extension header -- neither of which the log
+		// carries: it journals system flags (TxFlagUpdate) and nothing else.
+		// A keyword written to memory alone is invisible to every other
+		// process until something happens to rewrite the base, which is how a
+		// custom keyword set over IMAP was missing from JMAP (#1278). Until
+		// the log can carry them (#1281), a keyword change is persisted by
+		// rewriting the base. Only keyword changes pay it: an ordinary
+		// \Seen STORE takes the log path untouched.
+		if keywordsChanged || len(fs.keywords.Names) > prevKwCount {
+			if err := fs.flush(false); err != nil {
+				return err
+			}
 		}
 		return fs.appendMutLog(
 			encLogRec(mailindex.TxTypeModseqUpdate, 0, mailindex.EncodeTxModseqUpdatePayload([]mailindex.TxModseqUpdate{{
@@ -1205,6 +1254,7 @@ func (u *userIndex) ClearFolderCorrupt(folderID uint64) error {
 func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]mailbox.FlagsResult, error) {
 	result := make(map[uint32]mailbox.FlagsResult, len(updates))
 	err := u.withFolder(folderID, func(fs *folderState) error {
+		keywordsChanged := false
 		// Collect all unique keyword sets across the batch to register them first.
 		allKWs := make([]string, 0)
 		seen := make(map[string]struct{})
@@ -1267,6 +1317,7 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 			newFlags |= rec.Flags & mailindex.FlagBackend
 			rec.Flags = newFlags
 			rec.Ext[extNameModSeq] = encodeModseqRec(modseq)
+			keywordsChanged = keywordsChanged || decodeKeywordsRec(rec.Ext[extNameKeywords]) != kwBits
 			rec.Ext[extNameKeywords] = encodeKeywordsRec(kwBits)
 			newSeen := newFlags&mailindex.FlagSeen != 0
 			newDel := newFlags&mailindex.FlagDeleted != 0
@@ -1296,6 +1347,15 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 		}
 		if len(modseqUpdates) == 0 {
 			return nil
+		}
+		// See the note in writeFlags: the log carries system flags and not
+		// keyword bits, so a keyword change is persisted by rewriting the base
+		// (#1278, until #1281 lets the log carry them). An ordinary \Seen
+		// STORE never reaches this.
+		if keywordsChanged {
+			if err := fs.flush(false); err != nil {
+				return err
+			}
 		}
 		return fs.appendMutLog(
 			encLogRec(mailindex.TxTypeModseqUpdate, 0, mailindex.EncodeTxModseqUpdatePayload(modseqUpdates)),
