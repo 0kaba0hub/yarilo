@@ -2837,14 +2837,17 @@ func ValidatePathTemplates(sc *StorageConfig) error {
 		key   string
 		value string
 	}{
-		{"mail_home_template", sc.MailHome},
+		// The canonical spellings: an operator who wrote mail_index_path and
+		// got a refusal naming index_dir would go looking for a key that is
+		// not in their file. The alt path is one entry now, because it is one
+		// key.
+		{"mail_home", sc.MailHome},
 		{"mail_path", sc.MailPath},
 		{"mail_inbox_path", sc.MailInboxPath},
-		{"index_dir", sc.MailIndexPath},
-		{"control_dir", sc.MailControlPath},
-		{"volatile_dir", sc.MailVolatilePath},
-		{"alt_dir", sc.MailAltPath},
-		{"mdbox_alt_storage_path", sc.MailAltPath},
+		{"mail_index_path", sc.MailIndexPath},
+		{"mail_control_path", sc.MailControlPath},
+		{"mail_volatile_path", sc.MailVolatilePath},
+		{"mail_alt_path", sc.MailAltPath},
 	} {
 		if t.value == "" {
 			continue

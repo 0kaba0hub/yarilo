@@ -169,3 +169,35 @@ func mustLoadStorage(t *testing.T, body string) *Config {
 	}
 	return cfg
 }
+
+// A refusal has to name the key the operator wrote. Before the rename the
+// template check reported the pre-beta spelling whatever the config said, so
+// someone who wrote mail_index_path was sent looking for index_dir — a key not
+// in their file. The value below is a template naming a variable that does not
+// exist, which is what ValidatePathTemplates refuses.
+func TestTemplateRefusalNamesTheCanonicalKey(t *testing.T) {
+	tests := []struct {
+		field func(*StorageConfig)
+		want  string
+	}{
+		{func(s *StorageConfig) { s.MailIndexPath = "/idx/%{nosuchvar}" }, "mail_index_path"},
+		{func(s *StorageConfig) { s.MailControlPath = "/ctl/%{nosuchvar}" }, "mail_control_path"},
+		{func(s *StorageConfig) { s.MailVolatilePath = "/run/%{nosuchvar}" }, "mail_volatile_path"},
+		{func(s *StorageConfig) { s.MailAltPath = "/cold/%{nosuchvar}" }, "mail_alt_path"},
+		{func(s *StorageConfig) { s.MailHome = "/home/%{nosuchvar}" }, "mail_home"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.want, func(t *testing.T) {
+			sc := &StorageConfig{}
+			tc.field(sc)
+			err := ValidatePathTemplates(sc)
+			if err == nil {
+				t.Fatalf("a template naming an unknown variable was accepted")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("refusal %q does not name %q", err, tc.want)
+			}
+		})
+	}
+}
