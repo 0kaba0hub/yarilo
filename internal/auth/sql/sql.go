@@ -112,9 +112,20 @@ func New(c Config) (*Passdb, error) {
 			}
 		}
 	}
+	// Which query runs is a deployment fact and used to be invisible: an
+	// absent one silently becomes a query against OUR schema, so a deployment
+	// with its own tables authenticates nobody and the first sign is users
+	// unable to log in (#1299).
 	pw := c.PasswordQuery
 	if pw == "" {
 		pw = defaultPasswordQuery
+		// Warn rather than Info: with SkipSchema the tables are the
+		// operator's, so falling back to the built-in query means asking a
+		// schema nobody promised exists.
+		slog.Warn("auth/sql: no password query configured; using the built-in yarilo_users query",
+			"driver", c.Driver, "skip_schema", c.SkipSchema)
+	} else {
+		slog.Info("auth/sql: using the configured password query", "driver", c.Driver)
 	}
 	return &Passdb{
 		db:            db,
