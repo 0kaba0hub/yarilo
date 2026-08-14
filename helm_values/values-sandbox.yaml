@@ -89,7 +89,7 @@ namespaces:
     location: "maildir:%h/Maildir"
 
 storage:
-  volatile_dir: "/tmp/yarilo-volatile/%2.256Nu/%u"
+  mail_volatile_path: "/tmp/yarilo-volatile/%2.256Nu/%u"
   ## On-disk format of the per-user mdbox map index. Declared, not inherited:
   ## the value decides what an older image can still open.
   mdbox_map_format: v2
