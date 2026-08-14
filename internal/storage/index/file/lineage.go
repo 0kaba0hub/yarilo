@@ -174,6 +174,34 @@ func digestRecords(f *mailindex.File) uint64 {
 // lives there. A few hundred bytes instead of the whole index, which is the
 // point -- deciding whether a rewritten base needs reading at all must not cost
 // reading it.
+// peekExtHeaders reads only the base file's extension headers -- header plus
+// the extension header block, never the records. Used where a handle must
+// refresh what the extension HEADERS say without re-reading a base whose
+// records it already holds.
+func peekExtHeaders(path string) ([]mailindex.Extension, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	hdrBuf := make([]byte, mailindex.HeaderMinSize)
+	if _, err := io.ReadFull(f, hdrBuf); err != nil {
+		return nil, err
+	}
+	hdr, err := mailindex.DecodeHeaderBytes(hdrBuf)
+	if err != nil {
+		return nil, err
+	}
+	if hdr.HeaderSize <= uint32(mailindex.HeaderMinSize) {
+		return nil, nil
+	}
+	extBuf := make([]byte, hdr.HeaderSize-uint32(mailindex.HeaderMinSize))
+	if _, err := io.ReadFull(f, extBuf); err != nil {
+		return nil, err
+	}
+	return mailindex.DecodeExtHeaders(extBuf)
+}
+
 func peekLineage(path string) (lineageHdr, error) {
 	f, err := os.Open(path)
 	if err != nil {
