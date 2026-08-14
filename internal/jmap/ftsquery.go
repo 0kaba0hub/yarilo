@@ -157,6 +157,14 @@ func (e *ftsEvaluator) prepare(ctx context.Context, h *userHandle, sf scopeFolde
 		// A condition whose every token expanded to nothing can never match:
 		// stopwords were never indexed. That is a definite answer, so it does
 		// not consult the service at all.
+		//
+		// Said out loud, because from outside it is indistinguishable from a
+		// query that ran and found nothing: no FTS line, no hits, no error
+		// (#1279). A term that expands to nothing is usually a stopword, a
+		// token past the tokenizer's length cap, or a chain configured
+		// differently from the one that indexed.
+		slog.Info("jmap: query expanded to nothing, answering without consulting fts",
+			"user", e.user, "folder", sf.name, "conditions", terms)
 		e.store(sf.id, &folderMatches{covered: map[uint32]bool{}})
 		return nil
 	}
