@@ -29,19 +29,21 @@ func TestEveryAliasFieldHasAnAdopter(t *testing.T) {
 		JMAPBE: &ServiceConfig{SSL: &SSLConfig{}},
 	}
 
+	// Matched by FULL koanf path, not by the key's last segment. The same tail
+	// lives in several sections -- client_workarounds is an imap key, an lmtp
+	// key and a submission key -- so one adopted tail would vouch for orphans
+	// elsewhere, which is the very thing this check exists to refuse.
 	adopted := map[string]bool{}
 	for _, set := range allAliasSets(cfg) {
 		for _, key := range set {
-			// The last path element is the key name; a field may be adopted
-			// under several paths (one per service block).
-			adopted[lastSegment(key.alias)] = true
+			adopted[normaliseServicePath(key.alias)] = true
 		}
 	}
 
 	var orphans []string
-	walkAliasFields(reflect.TypeOf(Config{}), "", func(path, koanfTag string) {
-		if !adopted[koanfTag] {
-			orphans = append(orphans, path+" (koanf:\""+koanfTag+"\")")
+	walkAliasPaths(reflect.TypeOf(Config{}), "", "", func(goPath, koanfPath string) {
+		if !adopted[normaliseServicePath(koanfPath)] {
+			orphans = append(orphans, goPath+" (koanf path "+koanfPath+")")
 		}
 	})
 	if len(orphans) > 0 {
@@ -56,12 +58,13 @@ func TestEveryAdoptedAliasHasAField(t *testing.T) {
 	cfg := &Config{Services: ServicesConfig{IMAP: &ServiceConfig{SSL: &SSLConfig{}}}}
 
 	fields := map[string]bool{}
-	walkAliasFields(reflect.TypeOf(Config{}), "", func(_, koanfTag string) { fields[koanfTag] = true })
+	walkAliasPaths(reflect.TypeOf(Config{}), "", "", func(_, koanfPath string) {
+		fields[normaliseServicePath(koanfPath)] = true
+	})
 	for _, set := range allAliasSets(cfg) {
 		for _, key := range set {
-			name := lastSegment(key.alias)
-			if !fields[name] {
-				t.Errorf("alias set adopts %q, but no *Alias field carries that key", key.alias)
+			if !fields[normaliseServicePath(key.alias)] {
+				t.Errorf("alias set adopts %q, but no *Alias field lives at that path", key.alias)
 			}
 		}
 	}
@@ -74,16 +77,26 @@ func allAliasSets(cfg *Config) [][]aliasedKey {
 	}
 }
 
-func lastSegment(path string) string {
-	if i := strings.LastIndex(path, "."); i >= 0 {
-		return path[i+1:]
+// normaliseServicePath folds every services.<name>.ssl path onto one, because
+// the blocks are the same type and the alias set builds one entry per deployed
+// service: comparing them by name would make coverage depend on which services
+// a test config happens to declare.
+func normaliseServicePath(path string) string {
+	if !strings.HasPrefix(path, "services.") {
+		return path
 	}
-	return path
+	rest := strings.SplitN(strings.TrimPrefix(path, "services."), ".", 2)
+	if len(rest) != 2 {
+		return path
+	}
+	return "services.<service>." + rest[1]
 }
 
-// walkAliasFields visits every field whose name ends in "Alias", anywhere in
-// the config tree, and reports its dotted Go path and koanf tag.
-func walkAliasFields(t reflect.Type, path string, visit func(path, koanfTag string)) {
+// walkAliasPaths visits every field whose name ends in "Alias", anywhere in the
+// config tree, and reports its Go path and its full koanf path — the section
+// chain the loader reads it under, which is what makes two same-named keys in
+// different sections distinguishable.
+func walkAliasPaths(t reflect.Type, goPath, koanfPath string, visit func(goPath, koanfPath string)) {
 	for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice {
 		t = t.Elem()
 	}
@@ -95,17 +108,62 @@ func walkAliasFields(t reflect.Type, path string, visit func(path, koanfTag stri
 		if f.PkgPath != "" {
 			continue // unexported
 		}
-		here := f.Name
-		if path != "" {
-			here = path + "." + f.Name
+		tag := f.Tag.Get("koanf")
+		if tag == "-" {
+			continue
+		}
+		goHere := f.Name
+		if goPath != "" {
+			goHere = goPath + "." + f.Name
+		}
+		koanfHere := tag
+		if koanfPath != "" && tag != "" {
+			koanfHere = koanfPath + "." + tag
+		} else if tag == "" {
+			koanfHere = koanfPath
 		}
 		if strings.HasSuffix(f.Name, "Alias") {
-			tag := f.Tag.Get("koanf")
-			if tag != "" && tag != "-" {
-				visit(here, tag)
+			if tag != "" {
+				visit(goHere, koanfHere)
 			}
 			continue
 		}
-		walkAliasFields(f.Type, here, visit)
+		walkAliasPaths(f.Type, goHere, koanfHere, visit)
+	}
+}
+
+// The reason the match is by full path: the same key name lives in several
+// sections. If coverage were judged by the last segment, one adopted
+// client_workarounds would vouch for the two that nobody adopts — and package
+// 2b introduces exactly that shape in imap, lmtp and submission at once.
+func TestCoverageIsJudgedByPathNotByKeyName(t *testing.T) {
+	type inner struct {
+		SameNameAlias string `koanf:"same_name"`
+	}
+	type outer struct {
+		A inner `koanf:"a"`
+		B inner `koanf:"b"`
+	}
+
+	var paths []string
+	walkAliasPaths(reflect.TypeOf(outer{}), "", "", func(_, koanfPath string) {
+		paths = append(paths, koanfPath)
+	})
+	if len(paths) != 2 {
+		t.Fatalf("walked %v, want both sections", paths)
+	}
+	if paths[0] == paths[1] {
+		t.Fatalf("both sections walked to %q: two different keys are indistinguishable", paths[0])
+	}
+	for _, want := range []string{"a.same_name", "b.same_name"} {
+		var found bool
+		for _, p := range paths {
+			if p == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("path %q not walked; got %v", want, paths)
+		}
 	}
 }
