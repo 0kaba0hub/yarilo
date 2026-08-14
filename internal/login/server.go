@@ -667,7 +667,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			// repeat: internal failures do not touch the auth-penalty counter.
 			for tfAttempt := 0; ; tfAttempt++ {
 				authStart := time.Now()
-				authResult, aerr = authCl.Authenticate(pre.username, pre.password, wardenService(s.opts.Protocol), clientIP, sessID)
+				authResult, aerr = authCl.AuthenticateAs(pre.authzid, pre.username, pre.password, wardenService(s.opts.Protocol), clientIP, sessID)
 				// One observation per attempt: each is its own round-trip.
 				s.observePhase(phaseAuth, authStart)
 				if !errors.Is(aerr, authclient.ErrTempFail) {
