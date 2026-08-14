@@ -9,18 +9,70 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      volumes:
+      # The backend admin API speaks mTLS; the quota consistency row needs a
+      # client certificate, not just the bearer token.
+      - name: internal-tls
+        secret:
+          secretName: yarilo-internal-tls
       containers:
       - name: smoketest
-        image: ghcr.io/yarilomail/yarilo:2.0.59
+        image: ghcr.io/yarilomail/yarilo:2.3.174
+        volumeMounts:
+        - name: internal-tls
+          mountPath: /tls
+          readOnly: true
+        env:
+        # The director row authenticates with this token; without it the row
+        # fails with HTTP 401 rather than skipping, because -director-api is set.
+        - name: DIRECTOR_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: yarilo-director-api-token
+              key: token
         command:
         - yarilo-smoketest
         args:
-        - -host=yarilo-managesieve-login.yarilo-sb.svc.cluster.local
-        - -imap-host=yarilo-imap-login.yarilo-sb.svc.cluster.local
-        - -smtp-host=relay-mx.yarilo-relay.svc.cluster.local
+        # A row whose surfaces are not all configured registers as a visible
+        # skip rather than a silent pass, so every flag below adds a row that
+        # is either checked or reported as skipped. Dropping one hides a check.
+        # -host is shared by POP3S (995), ManageSieve (4190) and the
+        # lmtp-login row (24). Here the first two answer on the LoadBalancer
+        # address and lmtp-login only on its ClusterIP, so one address cannot
+        # satisfy all three: the lmtp-login row stays a visible skip.
+        - -host=10.50.80.29
+        - -imap-port=993
+        - -insecure=true
+        - -timeout=20s
+        - -telemetry=http://yarilo-imap-login-telemetry:8080
+        - -pop3s
+        - -pop3s-port=995
         - -managesieve
+        - -managesieve-port=4190
         - -managesieve-user=u1@d00001.test
         - -managesieve-pass=Yarilo!test1
         - -sieve
-        - -insecure
-        - -telemetry=
+        - -delivery-host=yarilo-lmtp-login
+        - -delivery-port=24
+        - -delivery-proto=lmtp
+        - -passwd-file-user=u1@d00001.test
+        - -passwd-file-pass=Yarilo!test1
+        - -quota-user=u1@d00001.test
+        - -quota-pass=Yarilo!test1
+        - -acl-user=u1@d00001.test
+        - -acl-pass=Yarilo!test1
+        - -envelope-user=u1@d00001.test
+        - -envelope-pass=Yarilo!test1
+        - -fts-user=u1@d00001.test
+        - -fts-pass=Yarilo!test1
+        - -director-api=http://yarilo-director-api:9103
+        # The service is yarilo-backend (not -backend-api) and 9105 is HTTPS.
+        - -backend-api=https://yarilo-backend:9105
+        - -backend-api-cert=/tls/tls.crt
+        - -backend-api-key=/tls/tls.key
+        - -backend-api-ca=/tls/ca.crt
+        - -jmap
+        - -jmap-host=10.50.80.29
+        - -jmap-port=443
+        - -jmap-user=u1@d00001.test
+        - -jmap-pass=Yarilo!test1
