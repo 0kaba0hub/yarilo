@@ -1670,9 +1670,24 @@ const (
 //
 // Username / Issuers / Audience / Scope / Active / Grace fields
 // apply across modes.
+// One rule for the whole section: every key carries the oauth2_ prefix.
+// Where the reference has a key, the reference spelling is used
+// (oauth2_scope, oauth2_username_attribute, oauth2_active_attribute,
+// oauth2_active_value, oauth2_fields, oauth2_username_validation_format,
+// oauth2_introspection_url, oauth2_tokeninfo_url, oauth2_client_id,
+// oauth2_client_secret, oauth2_introspection_mode). Where it has none, the
+// name is OURS under the section-prefix rule, not a reference name invented
+// for it: oauth2_jwks_url and oauth2_issuer_url describe a local-validation
+// setup the reference expresses as oauth2_openid_configuration_url, and
+// oauth2_mode / oauth2_audience / oauth2_issuers / oauth2_prefer_introspection
+// / oauth2_http_timeout_ms / oauth2_token_expire_grace_seconds have no
+// reference counterpart at all.
+//
+// Half a section prefixed and half bare was the alternative, and it is the
+// inconsistency this package exists to end.
 type OAuth2Entry struct {
 	// Mode picks the validation transport. REQUIRED.
-	Mode OAuth2Mode `koanf:"mode"`
+	Mode OAuth2Mode `koanf:"oauth2_mode"`
 
 	// Endpoints — one of these must be set, per Mode.
 	JWKSURL          string `koanf:"oauth2_jwks_url"`
@@ -1700,48 +1715,58 @@ type OAuth2Entry struct {
 	Issuers []string `koanf:"oauth2_issuers"`
 
 	// Audience is the required `aud` claim. Empty = no check.
-	Audience string `koanf:"audience"`
+	Audience string `koanf:"oauth2_audience"`
 
 	// Scopes lists scopes every token MUST carry. Empty = no
 	// check.
-	Scopes []string `koanf:"scopes"`
+	Scopes []string `koanf:"oauth2_scope"`
 
 	// UsernameAttribute is the response/claim name resolving to
 	// the mail user. Default "email".
-	UsernameAttribute string `koanf:"username_attribute"`
+	UsernameAttribute string `koanf:"oauth2_username_attribute"`
 
 	// UsernameValidationFormat is the template applied to the
 	// SASL authzid before comparing to the username claim.
 	// Default "%{user}" (identity). Supports %u, %{user}, %Lu,
 	// %n, %Ln, %d, %Ld.
-	UsernameValidationFormat string `koanf:"username_validation_format"`
+	UsernameValidationFormat string `koanf:"oauth2_username_validation_format"`
 
 	// ActiveAttribute / ActiveValue — optional check. The claim
 	// named by ActiveAttribute must be present (and equal
 	// ActiveValue if non-empty) for the login to succeed.
-	ActiveAttribute string `koanf:"active_attribute"`
-	ActiveValue     string `koanf:"active_value"`
+	ActiveAttribute string `koanf:"oauth2_active_attribute"`
+	ActiveValue     string `koanf:"oauth2_active_value"`
 
 	// ExtraFields are the claim names that get projected back
 	// onto the auth response as userdb_<claim> fields.
-	ExtraFields []string `koanf:"extra_fields"`
+	ExtraFields []string `koanf:"oauth2_fields"`
 
 	// TokenExpireGraceSeconds tolerates clock skew. Default 60.
-	TokenExpireGraceSeconds int `koanf:"token_expire_grace_seconds"`
+	TokenExpireGraceSeconds int `koanf:"oauth2_token_expire_grace_seconds"`
 
 	// HTTPTimeoutMs caps the validation round-trip (introspection
 	// / tokeninfo / discovery / JWKS-refresh). Default 5000.
-	HTTPTimeoutMs int `koanf:"http_timeout_ms"`
+	HTTPTimeoutMs int `koanf:"oauth2_http_timeout_ms"`
 	// Pre-beta spellings, accepted as aliases and removed after beta.
-	JWKSURLAlias             string   `koanf:"jwks_url"`
-	IntrospectionURLAlias    string   `koanf:"introspection_url"`
-	TokeninfoURLAlias        string   `koanf:"tokeninfo_url"`
-	IssuerURLAlias           string   `koanf:"issuer_url"`
-	IntrospectionModeAlias   string   `koanf:"introspection_mode"`
-	PreferIntrospectionAlias bool     `koanf:"prefer_introspection"`
-	ClientIDAlias            string   `koanf:"client_id"`
-	ClientSecretAlias        string   `koanf:"client_secret"`
-	IssuersAlias             []string `koanf:"issuers"`
+	ModeAlias                     string   `koanf:"mode"`
+	AudienceAlias                 string   `koanf:"audience"`
+	ScopesAlias                   []string `koanf:"scopes"`
+	UsernameAttributeAlias        string   `koanf:"username_attribute"`
+	UsernameValidationFormatAlias string   `koanf:"username_validation_format"`
+	ActiveAttributeAlias          string   `koanf:"active_attribute"`
+	ActiveValueAlias              string   `koanf:"active_value"`
+	ExtraFieldsAlias              []string `koanf:"extra_fields"`
+	TokenExpireGraceSecondsAlias  int      `koanf:"token_expire_grace_seconds"`
+	HTTPTimeoutMsAlias            int      `koanf:"http_timeout_ms"`
+	JWKSURLAlias                  string   `koanf:"jwks_url"`
+	IntrospectionURLAlias         string   `koanf:"introspection_url"`
+	TokeninfoURLAlias             string   `koanf:"tokeninfo_url"`
+	IssuerURLAlias                string   `koanf:"issuer_url"`
+	IntrospectionModeAlias        string   `koanf:"introspection_mode"`
+	PreferIntrospectionAlias      bool     `koanf:"prefer_introspection"`
+	ClientIDAlias                 string   `koanf:"client_id"`
+	ClientSecretAlias             string   `koanf:"client_secret"`
+	IssuersAlias                  []string `koanf:"issuers"`
 }
 
 // AuthPenaltyConfig configures cross-pod IP-bound auth backoff.

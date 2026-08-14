@@ -280,7 +280,7 @@ data:
         auth_policy_report_after_auth: {{ .Values.components.auth.policy.report_after | default true }}
       oauth2:
         {{- range (.Values.components.auth.oauth2 | default list) }}
-        - mode: {{ .mode | quote }}
+        - oauth2_mode: {{ .mode | quote }}
           {{- with .jwks_url }}
           oauth2_jwks_url: {{ . | quote }}
           {{- end }}
@@ -309,31 +309,31 @@ data:
           oauth2_issuers: {{ . | toJson }}
           {{- end }}
           {{- with .audience }}
-          audience: {{ . | quote }}
+          oauth2_audience: {{ . | quote }}
           {{- end }}
           {{- with .scopes }}
-          scopes: {{ . | toJson }}
+          oauth2_scope: {{ . | toJson }}
           {{- end }}
           {{- with .username_attribute }}
-          username_attribute: {{ . | quote }}
+          oauth2_username_attribute: {{ . | quote }}
           {{- end }}
           {{- with .username_validation_format }}
-          username_validation_format: {{ . | quote }}
+          oauth2_username_validation_format: {{ . | quote }}
           {{- end }}
           {{- with .active_attribute }}
-          active_attribute: {{ . | quote }}
+          oauth2_active_attribute: {{ . | quote }}
           {{- end }}
           {{- with .active_value }}
-          active_value: {{ . | quote }}
+          oauth2_active_value: {{ . | quote }}
           {{- end }}
           {{- with .extra_fields }}
-          extra_fields: {{ . | toJson }}
+          oauth2_fields: {{ . | toJson }}
           {{- end }}
           {{- with .token_expire_grace_seconds }}
-          token_expire_grace_seconds: {{ . }}
+          oauth2_token_expire_grace_seconds: {{ . }}
           {{- end }}
           {{- with .http_timeout_ms }}
-          http_timeout_ms: {{ . }}
+          oauth2_http_timeout_ms: {{ . }}
           {{- end }}
         {{- end }}
       passdb:

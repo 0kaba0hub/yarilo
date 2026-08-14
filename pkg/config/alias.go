@@ -408,6 +408,16 @@ func oauth2Aliases(listPath string, idx int, e *OAuth2Entry) []aliasedKey {
 		with(strAlias(path+".oauth2_client_id", path+".client_id", &e.ClientID, &e.ClientIDAlias), "oauth2_client_id", "client_id"),
 		with(strAlias(path+".oauth2_client_secret", path+".client_secret", &e.ClientSecret, &e.ClientSecretAlias), "oauth2_client_secret", "client_secret"),
 		with(listAlias(path+".oauth2_issuers", path+".issuers", &e.Issuers, &e.IssuersAlias), "oauth2_issuers", "issuers"),
+		with(strAlias(path+".oauth2_mode", path+".mode", (*string)(&e.Mode), &e.ModeAlias), "oauth2_mode", "mode"),
+		with(strAlias(path+".oauth2_audience", path+".audience", &e.Audience, &e.AudienceAlias), "oauth2_audience", "audience"),
+		with(listAlias(path+".oauth2_scope", path+".scopes", &e.Scopes, &e.ScopesAlias), "oauth2_scope", "scopes"),
+		with(strAlias(path+".oauth2_username_attribute", path+".username_attribute", &e.UsernameAttribute, &e.UsernameAttributeAlias), "oauth2_username_attribute", "username_attribute"),
+		with(strAlias(path+".oauth2_username_validation_format", path+".username_validation_format", &e.UsernameValidationFormat, &e.UsernameValidationFormatAlias), "oauth2_username_validation_format", "username_validation_format"),
+		with(strAlias(path+".oauth2_active_attribute", path+".active_attribute", &e.ActiveAttribute, &e.ActiveAttributeAlias), "oauth2_active_attribute", "active_attribute"),
+		with(strAlias(path+".oauth2_active_value", path+".active_value", &e.ActiveValue, &e.ActiveValueAlias), "oauth2_active_value", "active_value"),
+		with(listAlias(path+".oauth2_fields", path+".extra_fields", &e.ExtraFields, &e.ExtraFieldsAlias), "oauth2_fields", "extra_fields"),
+		with(intAlias(path+".oauth2_token_expire_grace_seconds", path+".token_expire_grace_seconds", &e.TokenExpireGraceSeconds, &e.TokenExpireGraceSecondsAlias), "oauth2_token_expire_grace_seconds", "token_expire_grace_seconds"),
+		with(intAlias(path+".oauth2_http_timeout_ms", path+".http_timeout_ms", &e.HTTPTimeoutMs, &e.HTTPTimeoutMsAlias), "oauth2_http_timeout_ms", "http_timeout_ms"),
 	}
 }
 

@@ -404,3 +404,56 @@ func TestProtocolRenamesPackageTwoB(t *testing.T) {
 		}
 	})
 }
+
+// The oauth2 section follows one rule: every key carries the section prefix.
+// Where the reference has a key the reference spelling is used; where it has
+// none the prefixed name is ours, said so in the struct. Half the section
+// prefixed and half bare was the alternative, and it is the inconsistency the
+// package exists to end — so the rows cover both kinds.
+func TestOAuth2SectionIsPrefixedThroughout(t *testing.T) {
+	tests := []struct {
+		name string
+		leaf string // pre-beta spelling inside the entry
+		read func(*Config) string
+		want string
+		kind string // reference | ours
+	}{
+		{"scopes", "scopes: [\"openid\"]", func(c *Config) string { return firstOf(c.Auth.OAuth2[0].Scopes) }, "openid", "reference"},
+		{"username_attribute", "username_attribute: email", func(c *Config) string { return c.Auth.OAuth2[0].UsernameAttribute }, "email", "reference"},
+		{"active_attribute", "active_attribute: active", func(c *Config) string { return c.Auth.OAuth2[0].ActiveAttribute }, "active", "reference"},
+		{"active_value", "active_value: yes", func(c *Config) string { return c.Auth.OAuth2[0].ActiveValue }, "yes", "reference"},
+		{"extra_fields", "extra_fields: [\"groups\"]", func(c *Config) string { return firstOf(c.Auth.OAuth2[0].ExtraFields) }, "groups", "reference"},
+		{"audience", "audience: yarilo", func(c *Config) string { return c.Auth.OAuth2[0].Audience }, "yarilo", "ours"},
+		{"jwks_url", "jwks_url: https://idp/jwks", func(c *Config) string { return c.Auth.OAuth2[0].JWKSURL }, "https://idp/jwks", "ours"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name+" ("+tc.kind+")", func(t *testing.T) {
+			cfg, err := loadYAML(t, "auth:\n  oauth2:\n    - mode: local_jwt\n      "+tc.leaf+"\n")
+			if err != nil {
+				t.Fatalf("pre-beta spelling: %v", err)
+			}
+			if got := tc.read(cfg); got != tc.want {
+				t.Errorf("through the alias: %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// And the canonical spellings reach the same fields.
+	cfg, err := loadYAML(t, "auth:\n  oauth2:\n    - oauth2_mode: local_jwt\n"+
+		"      oauth2_scope: [\"openid\"]\n      oauth2_audience: yarilo\n      oauth2_jwks_url: https://idp/jwks\n")
+	if err != nil {
+		t.Fatalf("canonical spellings: %v", err)
+	}
+	e := cfg.Auth.OAuth2[0]
+	if firstOf(e.Scopes) != "openid" || e.Audience != "yarilo" || e.JWKSURL != "https://idp/jwks" || string(e.Mode) != "local_jwt" {
+		t.Errorf("canonical entry read as %+v", e)
+	}
+}
+
+func firstOf(v []string) string {
+	if len(v) == 0 {
+		return ""
+	}
+	return v[0]
+}
