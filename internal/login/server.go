@@ -724,6 +724,23 @@ func (s *Server) handleConn(conn net.Conn) {
 			log.Info("login: auth retry", "user", pre.username, "attempt", attempt+1)
 		}
 
+		// From here on the session belongs to the identity the auth service
+		// RESOLVED, not to the string the client typed. They differ for a
+		// master login in the separator form -- the client sends
+		// "target*master" and the service answers user=target -- and using the
+		// raw string downstream routed by it, counted connections against it,
+		// and claimed it to the backend, whose VERIFY compares against the
+		// identity the token was issued for and refused the session (#1306).
+		//
+		// Resolved once, here, so no later step can pick the wrong one. The
+		// claimed string stays in the log lines that are about what the client
+		// sent, and the audit lines that name both identities are unchanged.
+		authUser := resolvedIdentity(authResult, pre.username)
+		if authUser != pre.username {
+			log.Info("login: acting as the resolved identity",
+				"claimed", pre.username, "user", authUser)
+		}
+
 		// Find backend address: fixed addr (standalone) or director LOOKUP.
 		// tag is hoisted so the fast-fail re-route below can re-LOOKUP with it.
 		var backendAddr, tag string
@@ -738,7 +755,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 			var err error
 			lookupStart := time.Now()
-			backendAddr, err = s.directorLookupWithHold(pre.username, tag, log)
+			backendAddr, err = s.directorLookupWithHold(authUser, tag, log)
 			s.observePhase(phaseDirectorLookup, lookupStart)
 			if err != nil {
 				log.Warn("login: director lookup failed", "user", pre.username, "err", err)
@@ -754,7 +771,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			wardenStart := time.Now()
 			ap := s.wardenClient()
 			svc := wardenService(s.opts.Protocol)
-			cerr := ap.Connect(sessID, pre.username, clientIP, svc)
+			cerr := ap.Connect(sessID, authUser, clientIP, svc)
 			s.observePhase(phaseWardenConnect, wardenStart)
 			switch {
 			case errors.Is(cerr, warden.ErrTooManyConns):
@@ -815,7 +832,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		retries := s.transientRetries()
 		for attempt := 0; ; attempt++ {
 			var berr error
-			bs, berr = s.openBackendSession(pre, authResult, tag, backendAddr, clientIP, sessID, log)
+			bs, berr = s.openBackendSession(pre, authResult, authUser, tag, backendAddr, clientIP, sessID, log)
 			if berr == nil {
 				break
 			}
@@ -1056,7 +1073,18 @@ type backendSession struct {
 // #926). A var only so a test can shorten it.
 var backendBringupTimeout = 5 * time.Second
 
-func (s *Server) openBackendSession(pre *preamble, authResult *authclient.AuthResult, tag, addr, clientIP, sessID string, log *slog.Logger) (*backendSession, error) {
+// resolvedIdentity is the identity a session acts as once authentication has
+// succeeded: what the auth service resolved, or the login string when it named
+// nobody -- which keeps a deployment on an older auth service working instead
+// of claiming an empty name to the backend.
+func resolvedIdentity(res *authclient.AuthResult, claimed string) string {
+	if res != nil && res.Username != "" {
+		return res.Username
+	}
+	return claimed
+}
+
+func (s *Server) openBackendSession(pre *preamble, authResult *authclient.AuthResult, authUser, tag, addr, clientIP, sessID string, log *slog.Logger) (*backendSession, error) {
 	// Fast-fail re-route on a connect failure in director mode (#782): report the
 	// backend unreachable and re-LOOKUP.
 	conn, addr, err := s.dialBackendWithReroute(pre.username, tag, addr, log)
@@ -1085,9 +1113,12 @@ func (s *Server) openBackendSession(pre *preamble, authResult *authclient.AuthRe
 	pre2 := loginproto.Preamble{
 		Addr:      clientIP,
 		SessionID: sessID,
-		User:      pre.username,
-		Token:     authResult.Token,
-		Helo:      pre.ehloLine,
+		// The identity the token was issued for: the backend's VERIFY compares
+		// the two, and a claimed name that merely looks like the login string
+		// fails a session that authenticated correctly (#1306).
+		User:  authUser,
+		Token: authResult.Token,
+		Helo:  pre.ehloLine,
 	}
 	if _, werr := io.WriteString(conn, pre2.Format()); werr != nil {
 		return nil, fmt.Errorf("send preamble: %w", werr)
