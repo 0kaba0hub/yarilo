@@ -2,8 +2,10 @@ package login
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,6 +130,116 @@ func startPreambleCapturingBackend(t *testing.T, claimed chan<- string) string {
 					claimed <- line
 				}
 			}(c)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// The third floor of the same defect: the re-route re-LOOKUPs after a failed
+// dial, and a lookup by the raw login string hashes to a different pod than the
+// user's own — so a master session would land on the wrong backend at its first
+// retry. The wire test above cannot see this, because the re-route only runs
+// when a dial fails.
+func TestRerouteLookupUsesTheResolvedIdentity(t *testing.T) {
+	looked := make(chan string, 4)
+	var reports int32
+	dead := deadBackendAddr(t)
+	dir := lookupNameCapturingDirector(t, dead, looked, &reports)
+
+	s := &Server{
+		opts: Options{
+			Protocol:     ProtocolIMAP,
+			AuthAddr:     startOKAuth(t), // resolves every login to alice
+			DirectorAddr: dir,
+			LocalIP:      "127.0.0.1",
+		},
+		sessions: make(map[string][]*liveSession),
+	}
+
+	srv, cli := pipePair(t)
+	go s.handleConn(srv)
+	crd := bufio.NewReader(cli)
+	crd.ReadString('\n')                                        //nolint:errcheck // greeting
+	cli.Write([]byte("a1 LOGIN alice*admin-master secret\r\n")) //nolint:errcheck
+
+	deadline := time.After(5 * time.Second)
+	seen := 0
+	for seen < 2 { // the first lookup and at least one re-lookup
+		select {
+		case name := <-looked:
+			seen++
+			if name != "alice" {
+				t.Fatalf("director lookup %d asked for %q, want the resolved identity", seen, name)
+			}
+		case <-deadline:
+			if seen == 0 {
+				t.Fatal("no director lookup happened")
+			}
+			t.Fatalf("only %d lookup(s) observed; the re-route never re-looked-up", seen)
+		}
+	}
+}
+
+// deadBackendAddr is an address nothing listens on, so every dial fails and the
+// re-route path runs.
+func deadBackendAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() //nolint:errcheck
+	return addr
+}
+
+// lookupNameCapturingDirector answers every LOOKUP with the same (dead) backend
+// and reports the username each one asked about.
+func lookupNameCapturingDirector(t *testing.T, backend string, names chan<- string, reports *int32) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() }) //nolint:errcheck
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close() //nolint:errcheck
+				rd := bufio.NewReader(conn)
+				fmt.Fprintf(conn, "VERSION\tyarilo-director\t1\t0\nDONE\n")
+				for {
+					line, err := rd.ReadString('\n')
+					if err != nil {
+						return
+					}
+					if strings.TrimRight(line, "\n") == "DONE" {
+						break
+					}
+				}
+				for {
+					line, err := rd.ReadString('\n')
+					if err != nil {
+						return
+					}
+					fields := strings.Split(strings.TrimRight(line, "\n"), "\t")
+					switch fields[0] {
+					case "LOOKUP":
+						if len(fields) > 2 {
+							names <- fields[2]
+						}
+						host, port, _ := net.SplitHostPort(backend)
+						fmt.Fprintf(conn, "HOST\t%s\t%s\t%s\n", fields[1], host, port)
+					case "BACKEND-UNREACHABLE":
+						atomic.AddInt32(reports, 1)
+						fmt.Fprintf(conn, "OK\n")
+					}
+				}
+			}(conn)
 		}
 	}()
 	return ln.Addr().String()

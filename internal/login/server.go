@@ -532,7 +532,13 @@ const (
 // established is what a successful login pass hands back to handleConn to
 // proxy and own for the session's lifetime.
 type established struct {
-	bs            *backendSession
+	bs *backendSession
+	// user is the identity this session acts as -- what the auth service
+	// resolved, which for a master login is the target rather than the string
+	// the client typed. Everything keyed by identity after bring-up (the kick
+	// registry, the session watch) reads it from here, so the resolution made
+	// once at authentication cannot be re-derived differently later (#1306).
+	user          string
 	releaseWarden func() // warden heartbeat-cancel + Disconnect; nil when warden is disabled
 }
 
@@ -816,7 +822,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				releaseWarden = func() {
 					hbCancel()
 					<-hbDone
-					if err := ap.Disconnect(sessID, pre.username, clientIP, svc); err != nil {
+					if err := ap.Disconnect(sessID, authUser, clientIP, svc); err != nil {
 						log.Debug("login: warden disconnect", "err", err)
 					}
 				}
@@ -851,7 +857,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.observePhase(phaseBackendDial, backendDialStart)
 
 		committed = true
-		return outcomeDone, &established{bs: bs, releaseWarden: releaseWarden}
+		return outcomeDone, &established{bs: bs, user: authUser, releaseWarden: releaseWarden}
 	}
 
 	// Transient re-login loop (#896): a transient failure keeps the connection
@@ -899,16 +905,19 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	// Register the session for kick support only once it is actually up — a
 	// bring-up that never completed has nothing to kick.
-	sess := &liveSession{id: sessID, user: pre.username, backendConn: backendConn}
+	// Keyed by the identity the session acts as: a kick for the target must
+	// find it, and a master session filed under "target*master" is invisible
+	// to every administrative command (#1306).
+	sess := &liveSession{id: sessID, user: est.user, backendConn: backendConn}
 	s.sessMu.Lock()
-	s.sessions[pre.username] = append(s.sessions[pre.username], sess)
+	s.sessions[est.user] = append(s.sessions[est.user], sess)
 	s.sessMu.Unlock()
 	defer func() {
 		s.sessMu.Lock()
-		list := s.sessions[pre.username]
+		list := s.sessions[est.user]
 		for i, v := range list {
 			if v == sess {
-				s.sessions[pre.username] = append(list[:i], list[i+1:]...)
+				s.sessions[est.user] = append(list[:i], list[i+1:]...)
 				break
 			}
 		}
@@ -920,7 +929,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	wc := s.watch
 	s.watchMu.RUnlock()
 	if wc != nil {
-		wc.sessionOpen(sessID, pre.username, backendIP, s.opts.Protocol.Base())
+		wc.sessionOpen(sessID, est.user, backendIP, s.opts.Protocol.Base())
 		defer wc.sessionClose(sessID)
 	}
 
@@ -1087,7 +1096,11 @@ func resolvedIdentity(res *authclient.AuthResult, claimed string) string {
 func (s *Server) openBackendSession(pre *preamble, authResult *authclient.AuthResult, authUser, tag, addr, clientIP, sessID string, log *slog.Logger) (*backendSession, error) {
 	// Fast-fail re-route on a connect failure in director mode (#782): report the
 	// backend unreachable and re-LOOKUP.
-	conn, addr, err := s.dialBackendWithReroute(pre.username, tag, addr, log)
+	// The re-route re-LOOKUPs on a failed dial, so it needs the resolved
+	// identity for the same reason the first lookup did: the raw login string
+	// hashes to a different pod, and a master session would land on the wrong
+	// one at the first retry (#1306).
+	conn, addr, err := s.dialBackendWithReroute(authUser, tag, addr, log)
 	if err != nil {
 		return nil, fmt.Errorf("dial backend %s: %w", addr, err)
 	}
