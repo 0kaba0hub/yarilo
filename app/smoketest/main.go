@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -125,6 +126,19 @@ type check struct {
 	name string
 	fn   func() error
 	skip string
+}
+
+// unmeasurableError is a check saying, from inside the run, that the
+// deployment cannot answer the question it asks -- as opposed to answering it
+// wrongly. It carries the same kind of reason a registration-time skip does,
+// and is treated identically, so a row that cannot measure never reports as a
+// verified surface.
+type unmeasurableError struct{ reason string }
+
+func (e unmeasurableError) Error() string { return "cannot be measured here: " + e.reason }
+
+func unmeasurable(format string, args ...any) error {
+	return unmeasurableError{reason: fmt.Sprintf(format, args...)}
 }
 
 // summary is the reported gate. Returned rather than only logged so the
@@ -342,7 +356,30 @@ func runChecks(checks []check, requireAll bool, exempt map[string]bool, out io.W
 	// report itself as exempt when nothing is demanded.
 	forgiven := func(area string) bool { return requireAll && exempt[area] }
 	for i, c := range checks {
-		if c.skip != "" {
+		// A check may only discover that it cannot measure anything once it is
+		// talking to the deployment -- a peer that turns out to hold rights,
+		// say. That is the same state as an unconfigured row, so it takes the
+		// same path: a named skip, and a failure under -require-all. Reporting
+		// it as a pass would be the worse outcome of the two, because it reads
+		// as a verified surface.
+		if c.skip == "" {
+			slog.Info("smoke: run", "n", i+1, "total", len(checks), "check", c.name)
+			err := c.fn()
+			var unmeasurable unmeasurableError
+			switch {
+			case err == nil:
+				passed++
+				slog.Info("smoke: OK", "n", i+1, "total", len(checks), "check", c.name)
+				continue
+			case errors.As(err, &unmeasurable):
+				c.skip = unmeasurable.reason
+			default:
+				slog.Error("smoke: FAIL", "n", i+1, "total", len(checks), "check", c.name, "err", err)
+				failures = append(failures, result{c.name, err})
+				continue
+			}
+		}
+		{
 			skipped = append(skipped, c)
 			// An exemption forgives an area the deployment does not run; it
 			// never forgives a check that ran and failed.
@@ -359,14 +396,6 @@ func runChecks(checks []check, requireAll bool, exempt map[string]bool, out io.W
 				"reason", c.skip, "area", c.area, "exempt", forgiven(c.area))
 			continue
 		}
-		slog.Info("smoke: run", "n", i+1, "total", len(checks), "check", c.name)
-		if err := c.fn(); err != nil {
-			slog.Error("smoke: FAIL", "n", i+1, "total", len(checks), "check", c.name, "err", err)
-			failures = append(failures, result{c.name, err})
-			continue
-		}
-		passed++
-		slog.Info("smoke: OK", "n", i+1, "total", len(checks), "check", c.name)
 	}
 
 	// The whole intended gate, not the part that happened to be configured.

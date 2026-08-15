@@ -172,3 +172,45 @@ func TestRegisteredChecksDeclareTheirArea(t *testing.T) {
 		t.Error("no jmap area, so -require-all-except=jmap would be rejected")
 	}
 }
+
+// A check can only discover from inside the run that it cannot measure
+// anything -- the ACL row learns its peer already holds rights only by asking
+// the deployment (#1317). Reporting that as a pass is the worst of the three
+// outcomes: it reads as a verified surface. It takes the skip path instead,
+// including the -require-all demand.
+func TestRunChecksTreatsAnUnmeasurableRowAsASkip(t *testing.T) {
+	set := func() []check {
+		return []check{
+			{area: "imap", name: "acl disclosure", fn: func() error {
+				return unmeasurable("-acl-peer-user %q already holds rights", "u2@example")
+			}},
+		}
+	}
+
+	var out bytes.Buffer
+	got := runChecks(set(), false, nil, &out)
+	if want := (summary{total: 1, passed: 0, failed: 0, skipped: 1}); got != want {
+		t.Errorf("summary = %+v, want %+v", got, want)
+	}
+	// The reason has to reach the report, or the operator sees a skip with no
+	// way to tell which account to change.
+	if !strings.Contains(out.String(), "already holds rights") {
+		t.Errorf("the reason is missing from the report:\n%s", out.String())
+	}
+
+	// Under -require-all it is a demand like any other unconfigured row.
+	out.Reset()
+	got = runChecks(set(), true, nil, &out)
+	if want := (summary{total: 1, passed: 0, failed: 1, skipped: 1}); got != want {
+		t.Errorf("with -require-all: summary = %+v, want %+v", got, want)
+	}
+
+	// And an ordinary error is still a failure, not a skip -- the two must not
+	// have collapsed into one path.
+	out.Reset()
+	got = runChecks([]check{{area: "imap", name: "acl disclosure",
+		fn: func() error { return errors.New("SELECT answered a peer with no rights") }}}, false, nil, &out)
+	if want := (summary{total: 1, passed: 0, failed: 1, skipped: 0}); got != want {
+		t.Errorf("a real failure: summary = %+v, want %+v", got, want)
+	}
+}

@@ -65,11 +65,37 @@ func checkACLDisclosure(ownerUser, ownerPass, peerUser, peerPass, prefix string)
 	}
 	defer func() { peer.close() }()
 
+	if err := aclPeerIsRightless(peer, folder, prefix, peerUser); err != nil {
+		return err
+	}
 	if err := aclNoOracle(peer, folder, prefix); err != nil {
 		return err
 	}
 	if err := aclGrantsAreReachable(owner, &peer, folder, peerUser, dialPeer); err != nil {
 		return err
+	}
+	return nil
+}
+
+// aclPeerIsRightless establishes the premise the rest of this check rests on:
+// the peer holds no rights on the probe mailbox, by any route -- its own entry,
+// an ancestor's, or the namespace root's.
+//
+// Without this the check still answers, and the answer looks like a finding.
+// A peer that inherits read from the namespace root SELECTs the mailbox
+// lawfully, and the row reports "SELECT answered a peer with no rights",
+// naming a hole that is not there (#1317: an evening spent on it). Inherited
+// rights are invisible in the mailbox's own ACL, which is where anyone
+// checks -- so the premise cannot be established by reading configuration, only
+// by asking the deployment.
+//
+// A peer with rights is not a failure of the product. It is this check being
+// pointed at an account it cannot measure anything with, which is why it skips.
+func aclPeerIsRightless(peer *imapClient, folder, prefix, peerUser string) error {
+	if _, err := peer.cmd(fmt.Sprintf("MYRIGHTS %q", folder)); err == nil {
+		return unmeasurable("-acl-peer-user %q already holds rights on %q "+
+			"(its own, an ancestor's, or the %q root's) -- name an account with no grant anywhere in this namespace",
+			peerUser, folder, prefix)
 	}
 	return nil
 }
