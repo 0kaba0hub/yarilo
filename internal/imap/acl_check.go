@@ -151,6 +151,57 @@ func (s *session) requireRightOnParent(h *nsHandle, folder string, right rune) e
 	return aclDenied(right)
 }
 
+// grantCreatorAdmin gives the creator of a mailbox the admin right on it, in a
+// namespace nobody owns.
+//
+// Without it such a mailbox can end up with no administrator at all. A personal
+// or owner-templated namespace always has one -- the owner resolves to
+// FullRights by construction -- but a fixed shared/public namespace is owned by
+// nobody on purpose, so the only source of 'a' is whatever the namespace root
+// happened to grant. When the root grant omits it, the mailbox that was just
+// created cannot be administered by its creator, by an operator, or by anyone,
+// and no ACL command can repair that, because repairing it needs the right that
+// is missing. RFC 4314 §4 does not allow 'a' to become unobtainable (#1320).
+//
+// It adds 'a' ON TOP of what was inherited rather than granting full rights:
+// restrictions expressed by leaving a right out of the root ACL keep holding,
+// and CREATE does not become a way around them. The trade is the plain reading
+// of the create right -- letting someone create a mailbox here means letting
+// them administer what they created.
+//
+// A creator who already holds 'a' by inheritance is left alone, so this writes
+// nothing in the ordinary case.
+func (s *session) grantCreatorAdmin(h *nsHandle, folder string) error {
+	if h.owner != "" || s.userInfo == nil {
+		return nil
+	}
+	effective, err := s.effectiveRights(h, folder)
+	if err != nil {
+		return err
+	}
+	if effective.Has(mailbox.RightAdminister) {
+		return nil
+	}
+	aclUser, _ := s.userInfo.ACLIdentity()
+	if err := mailbox.ValidIdentifier(aclUser); err != nil {
+		return err
+	}
+	me := mailbox.Identifier{Type: mailbox.IDUser, Name: aclUser}
+	return h.acl.Update(folder, func(cur mailbox.ACL) (mailbox.ACL, error) {
+		for i, e := range cur {
+			if e.Negative || e.Identifier != me {
+				continue
+			}
+			cur[i].Rights = e.Rights.Add(mailbox.Rights(string(mailbox.RightAdminister)))
+			return cur, nil
+		}
+		return append(cur, mailbox.Entry{
+			Identifier: me,
+			Rights:     effective.Add(mailbox.Rights(string(mailbox.RightAdminister))),
+		}), nil
+	})
+}
+
 // parentFolder returns folder with its last segment stripped, or
 // "" when folder has no separator. Mirrors lastSepIndex in
 // internal/userstate/acl.
