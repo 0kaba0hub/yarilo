@@ -283,6 +283,14 @@ extraEnv:
       secretKeyRef:
         name: yarilo-mysql
         key: dsn
+  ## The static passdb's shared credential. Kept in a secret rather than here
+  ## because it authenticates as any username -- see the allow_nets note at the
+  ## passdb entry for why that is bounded to the cluster network.
+  - name: YARILO_STATIC_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: yarilo-static-passdb
+        key: password
 
 components:
   director:
@@ -531,6 +539,22 @@ components:
           FROM mailbox
           WHERE active = 1
           ORDER BY username
+      ## Static passdb, last in the chain, so the smoke row for this driver has
+      ## something to check (#1311). It matches EVERY username by design, which
+      ## on an internet-facing deployment would hand every account a second
+      ## valid password -- so it hands out allow_nets with the credential, and
+      ## login refuses the session from anywhere else. The smoke job runs
+      ## in-cluster, which is the only place this account is meant to work.
+      - driver: static
+        static_password: "${YARILO_STATIC_PASSWORD}"
+        default_pass_scheme: PLAIN
+        fields:
+          ## microk8s pod CIDR: the smoke job dials the service pod-to-pod,
+          ## so the source is always a pod IP. Nodes/LB (10.50.80.x) are not
+          ## in it deliberately -- nothing that reaches this account runs there.
+          allow_nets: "10.1.0.0/16"
+          userdb_home: "/var/mail/vhosts/d00001.test/static"
+          userdb_mail: "maildir:~/Maildir:INDEX=~/index"
 
     token:
       backend: redis
