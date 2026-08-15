@@ -30,6 +30,11 @@ spec:
             secretKeyRef:
               name: yarilo-director-api-token
               key: token
+        - name: YARILO_STATIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: yarilo-static-passdb
+              key: password
         command:
         - yarilo-smoketest
         args:
@@ -58,6 +63,12 @@ spec:
         - -delivery-proto=lmtp
         - -passwd-file-user=u1@d00001.test
         - -passwd-file-pass=Yarilo!test1
+        # The static passdb matches every username, so this names an account
+        # that exists nowhere else; the password reaches the job the same way
+        # it reaches the server, from the secret, and works only from inside
+        # the cluster network (allow_nets).
+        - -static-user=static@d00001.test
+        - -static-pass=$(YARILO_STATIC_PASSWORD)
         - -quota-user=u1@d00001.test
         - -quota-pass=Yarilo!test1
         - -acl-user=u1@d00001.test
