@@ -6,8 +6,8 @@ github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f h1:h/57H2GGT5mZ5
 github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f/go.mod h1:OrcngXZxc5yyDuG4NezpzTmY19Ln8JoDKoQqzHd4Tao=
 github.com/0kaba0hub/go-sieve v0.0.0-20260713145935-39e12c5d4b1f h1:u6b3fcT8S8plmbzgK01nUHWqaX2hiMei7sgfWY3biPI=
 github.com/0kaba0hub/go-sieve v0.0.0-20260713145935-39e12c5d4b1f/go.mod h1:osl9Lk7E2uvGHKyrcuTgQ3AQmQcJAd0dR2PDPNmI7ew=
-github.com/0kaba0hub/go-smtp v0.0.0-20260726161302-7be37afd6829 h1:7NdEDhCIBrKds1dylfzaFDD6FLMjdcmwO8wlMxhhc3k=
-github.com/0kaba0hub/go-smtp v0.0.0-20260726161302-7be37afd6829/go.mod h1:ZtRRkbTyp2XTHCA+BmyTFTrj8xY4I+b4McvHxCU2gsQ=
+github.com/0kaba0hub/go-smtp v0.0.0-20260814073645-91cc4e0044d6 h1:HyzxoyzusjYP4m6BBn6o3VvATF+AVlOBUc+VXucxbTw=
+github.com/0kaba0hub/go-smtp v0.0.0-20260814073645-91cc4e0044d6/go.mod h1:ZtRRkbTyp2XTHCA+BmyTFTrj8xY4I+b4McvHxCU2gsQ=
 github.com/0kaba0hub/go-xapian v0.2.0 h1:JB78AjmnNeyEOnzB0rXtYH+kK5mA13d30MVFpmzZlT0=
 github.com/0kaba0hub/go-xapian v0.2.0/go.mod h1:CGAxZyJsdWsdOjY0oQPxWwFqGQLlKCFDhUb7BBijMEc=
 github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5 h1:IEjq88XO4PuBDcvmjQJcQGg+w+UaafSy8G5Kcb5tBhI=
@@ -302,8 +302,8 @@ golang.org/x/tools v0.44.0/go.mod h1:KA0AfVErSdxRZIsOVipbv3rQhVXTnlU6UhKxHd1seDI
 golang.org/x/tools v0.48.0 h1:3+hClM1aLL5mjMKm5ovokw9epgRXPuu2tILgismM6RE=
 golang.org/x/tools v0.48.0/go.mod h1:08xX0orndb/F7jJxGDicx061tyd5pcMto75YMAXr6lk=
 golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
-google.golang.org/protobuf v1.36.11 h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE=
-google.golang.org/protobuf v1.36.11/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
+google.golang.org/protobuf v1.36.12 h1:pJOKDDOyeXErUroCihFAd5LQuwXBSpVnKGrj5o/fwxc=
+google.golang.org/protobuf v1.36.12/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
