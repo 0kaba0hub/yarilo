@@ -8,8 +8,19 @@ name: Fork pin check — yarilo
 # commits in `replace` (#1327 reported go-smtp v0.24.0 -> v0.25.0 while the
 # real gap was three weeks of fork commits).
 #
-# This asks the other question: is each pinned commit still the head of the
-# branch it came from?
+# This asks the other questions, in the order they can go wrong:
+#
+#   1. is each pinned commit still the head of the branch it came from?
+#   2. is that branch still on top of its upstream mirror?
+#   3. did the fork's own sync run last succeed?
+#
+# The last two exist because the first is not enough. A fork whose sync stops
+# working keeps its branch head exactly where it was, so a pin check alone
+# reports SAME and everything looks current -- which is how the go-imap sync
+# went red for a day without anyone noticing: it could not even file its own
+# issue, because Issues were disabled on all four forks. A channel nobody can
+# reach is the same as no channel, so the question is asked from here, where
+# issues do work.
 
 on:
   schedule:
@@ -49,13 +60,35 @@ jobs:
               echo "::warning::${repo}: no ${BRANCH} branch, or it could not be read"
               continue
             fi
-            if [ "${head:0:12}" = "$pinned" ]; then
+            if [ "${head:0:12}" != "$pinned" ]; then
+              gap=$(gh api "repos/${repo}/compare/${pinned}...${head:0:12}" --jq '.ahead_by' 2>/dev/null || echo "?")
+              date=$(gh api "repos/${repo}/branches/${BRANCH}" --jq '.commit.commit.committer.date' 2>/dev/null || echo "?")
+              echo "- \`${repo}\`: pinned \`${pinned}\`, ${BRANCH} head \`${head:0:12}\` (${gap} commit(s) ahead, last ${date})" >> behind.md
+            else
               echo "::notice::${repo} is pinned at the head of ${BRANCH} (${pinned})"
-              continue
             fi
-            gap=$(gh api "repos/${repo}/compare/${pinned}...${head:0:12}" --jq '.ahead_by' 2>/dev/null || echo "?")
-            date=$(gh api "repos/${repo}/branches/${BRANCH}" --jq '.commit.commit.committer.date' 2>/dev/null || echo "?")
-            echo "- \`${repo}\`: pinned \`${pinned}\`, ${BRANCH} head \`${head:0:12}\` (${gap} commit(s) ahead, last ${date})" >> behind.md
+
+            # The mirror is whichever branch the fork tracks upstream on: v2
+            # for go-imap, master for the rest. Asked by name rather than
+            # assumed, so a fork that renames it is reported, not skipped.
+            for mirror in v2 master; do
+              if gh api "repos/${repo}/branches/${mirror}" --jq '.name' >/dev/null 2>&1; then
+                bh=$(gh api "repos/${repo}/compare/${BRANCH}...${mirror}" --jq '.ahead_by' 2>/dev/null || echo 0)
+                if [ "${bh:-0}" != "0" ]; then
+                  echo "- \`${repo}\`: \`${BRANCH}\` is ${bh} commit(s) behind \`${mirror}\` -- the nightly rebase is not landing" >> behind.md
+                fi
+                break
+              fi
+            done
+
+            # And whether the fork's own sync still runs. A failing one leaves
+            # every commit exactly where it was, which every check above reads
+            # as healthy.
+            last=$(gh api "repos/${repo}/actions/runs?per_page=1&status=completed" --jq '.workflow_runs[0]|"\(.conclusion)\t\(.name)\t\(.html_url)"' 2>/dev/null || true)
+            case "$last" in
+              success*|"") ;;
+              *) echo "- \`${repo}\`: last completed workflow is $(echo "$last" | cut -f1) -- $(echo "$last" | cut -f2) ($(echo "$last" | cut -f3))" >> behind.md ;;
+            esac
           done
           if [ -s behind.md ]; then
             echo "stale=true" >> "$GITHUB_OUTPUT"
