@@ -173,10 +173,18 @@ jobs:
 
       - name: Determine release version
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           APP_VERSION=$(awk '/^appVersion:/{gsub(/"/, ""); print $2}' helm/Chart.yaml)
           RELEASE_TAG="v${APP_VERSION}"
-          if git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | grep -q "${RELEASE_TAG}"; then
+          # The release, not the tag, decides whether there is work left. The
+          # tag is pushed one step before the release is created, so a failure
+          # between the two used to leave a state the pipeline could never
+          # reach again: the tag existed, so every re-run answered "already
+          # released" and skipped the step that had failed, reporting success
+          # over a missing release (#1331).
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             IS_RELEASE=false
           else
             IS_RELEASE=true
@@ -243,8 +251,21 @@ jobs:
       - name: Push git tag
         if: steps.version.outputs.is_release == 'true'
         run: |
-          git tag "${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
+          # Tolerates a tag left behind by an earlier attempt: on a re-run the
+          # tag is already there and pointing at this same commit, and failing
+          # here would strand the release again.
+          TAG="${{ steps.version.outputs.tag }}"
+          if EXISTING=$(git ls-remote --exit-code --tags origin "refs/tags/${TAG}" 2>/dev/null); then
+            EXISTING_SHA=$(echo "$EXISTING" | cut -f1)
+            if [ "${EXISTING_SHA}" != "${GITHUB_SHA}" ]; then
+              echo "::error::${TAG} already points at ${EXISTING_SHA}, not ${GITHUB_SHA} -- refusing to move a published tag"
+              exit 1
+            fi
+            echo "::notice::${TAG} already exists at this commit; continuing to the release"
+          else
+            git tag "${TAG}"
+            git push origin "${TAG}"
+          fi
 
       - name: Create GitHub Release
         if: steps.version.outputs.is_release == 'true'
