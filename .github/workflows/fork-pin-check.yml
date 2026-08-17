@@ -1,0 +1,115 @@
+name: Fork pin check — yarilo
+
+# Four dependencies are replaced by our own forks, each carrying yarilo patches
+# on top of a daily-synced upstream mirror. The forks advance by themselves;
+# the `replace` lines in go.mod do not. So a fork can be weeks ahead of what we
+# build against, with nothing anywhere saying so -- the deps-check workflow
+# cannot see it, because it reads the upstream versions in `require`, not the
+# commits in `replace` (#1327 reported go-smtp v0.24.0 -> v0.25.0 while the
+# real gap was three weeks of fork commits).
+#
+# This asks the other question: is each pinned commit still the head of the
+# branch it came from?
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"  # every Monday at 09:00 UTC, beside deps-check
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  check:
+    name: Compare each replace against its fork branch head
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Compare pins with branch heads
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: yarilo-patches
+        run: |
+          set -euo pipefail
+          # Every replace pointing at one of our forks, whatever the module
+          # path or major-version suffix.
+          grep -E '^replace .* => github\.com/0kaba0hub/' go.mod | while read -r _ _ _ fork version; do
+            repo="${fork#github.com/}"
+            repo="${repo%/v[0-9]}"
+            # A pseudo-version ends in -<12 hex>; that is the commit we build.
+            pinned="${version##*-}"
+            head=$(gh api "repos/${repo}/branches/${BRANCH}" --jq '.commit.sha' 2>/dev/null || true)
+            if [ -z "$head" ]; then
+              echo "::warning::${repo}: no ${BRANCH} branch, or it could not be read"
+              continue
+            fi
+            if [ "${head:0:12}" = "$pinned" ]; then
+              echo "::notice::${repo} is pinned at the head of ${BRANCH} (${pinned})"
+              continue
+            fi
+            gap=$(gh api "repos/${repo}/compare/${pinned}...${head:0:12}" --jq '.ahead_by' 2>/dev/null || echo "?")
+            date=$(gh api "repos/${repo}/branches/${BRANCH}" --jq '.commit.commit.committer.date' 2>/dev/null || echo "?")
+            echo "- \`${repo}\`: pinned \`${pinned}\`, ${BRANCH} head \`${head:0:12}\` (${gap} commit(s) ahead, last ${date})" >> behind.md
+          done
+          if [ -s behind.md ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "list<<EOF"
+              cat behind.md
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create issue if a pin is behind
+        if: steps.check.outputs.stale == 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const list = `${{ steps.check.outputs.list }}`;
+            const title = 'Fork pins are behind their yarilo-patches branches';
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'dependencies'
+            });
+            const open = existing.data.find(i => i.title === title);
+            const body = [
+              'A `replace` in go.mod points at a commit that is no longer the head of its',
+              '`yarilo-patches` branch, so the build is using an older fork than the one that',
+              'exists. The fork syncs upstream nightly and rebases our patches onto it; nothing',
+              'moves the pin here.',
+              '',
+              list,
+              '',
+              'To update one, take the branch head and move the `replace` line:',
+              '',
+              '```sh',
+              'go mod edit -replace github.com/<upstream>=github.com/0kaba0hub/<fork>@<sha>',
+              'go mod tidy && go build ./... && go test ./...',
+              '```',
+              '',
+              'The `require` line stays as it is: it names the upstream version the fork is',
+              'based on, and moving it without moving the pin claims a version the build does',
+              'not use.',
+            ].join('\n');
+            if (open) {
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: open.number, body,
+              });
+              core.info(`Refreshed #${open.number}`);
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title, labels: ['dependencies'], body,
+            });
