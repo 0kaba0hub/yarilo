@@ -210,8 +210,14 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 		return nil, fmt.Errorf("locks/client: connect: %w", err)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
-		_ = slot.conn.SetDeadline(deadline)
-		defer func() { _ = slot.conn.SetDeadline(time.Time{}) }()
+		// The connection is captured, not re-read at return: a failed
+		// reconnectSlot below clears slot.conn, and a deferred read of the
+		// field would then dereference nil -- which is a panic on the path
+		// that runs when the lock service goes away mid-connection, i.e.
+		// exactly when it must not (#1336).
+		conn := slot.conn
+		_ = conn.SetDeadline(deadline)
+		defer func() { _ = conn.SetDeadline(time.Time{}) }()
 	}
 	if err := writeFields(slot.conn, cmd...); err != nil {
 		if isTransport(err) {
