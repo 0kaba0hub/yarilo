@@ -237,8 +237,12 @@ func TestEmailSetHonoursIfInState(t *testing.T) {
 	}
 
 	// The matching state still works, or the check would be a way of refusing
-	// everything.
-	resp := emailSetCall(t, s, fmt.Sprintf(`{"accountId":%q,"ifInState":"0","update":{%q:{"keywords":{}}}}`, testUser, id))
+	// everything. It is read from the server rather than written as a literal:
+	// a test that hard-codes the state passes only while the encoding stands
+	// still, which is the opposite of what a versioned format is for.
+	current := emailStateOf(t, s)
+	resp := emailSetCall(t, s,
+		fmt.Sprintf(`{"accountId":%q,"ifInState":%q,"update":{%q:{"keywords":{}}}}`, testUser, current, id))
 	if _, ok := resp.Updated[id]; !ok {
 		t.Errorf("a matching ifInState was refused: %+v", resp.NotUpdated[id])
 	}
@@ -404,4 +408,25 @@ func TestEmailSetRefusesAPropertyGivenTwice(t *testing.T) {
 	if flags, _ := storedFlags(t, home); !equalStrings(flags, []string{`\Seen`}) {
 		t.Errorf("the store changed on a refused update: %v", flags)
 	}
+}
+
+// emailStateOf asks the server for the Email state the way a client would.
+func emailStateOf(t *testing.T, s *Server) string {
+	t.Helper()
+	body := fmt.Sprintf(`{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],
+		"methodCalls":[["Email/get",{"accountId":%q,"ids":[]},"c0"]]}`, testUser)
+	w := postAPIRaw(t, s, body)
+	var resp struct {
+		MethodResponses [][]json.RawMessage `json:"methodResponses"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var got struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(resp.MethodResponses[0][1], &got); err != nil {
+		t.Fatalf("decode Email/get: %v -- %s", err, w.Body)
+	}
+	return got.State
 }

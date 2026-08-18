@@ -1,8 +1,6 @@
 package jmap
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -181,29 +179,4 @@ func roleOf(name string, roles map[string]imaplib.MailboxAttr) *string {
 func contains(set map[string]struct{}, name string) bool {
 	_, ok := set[name]
 	return ok
-}
-
-// mailboxState digests the whole mailbox set. It is what Mailbox/get returns as
-// "state" and Mailbox/query as "queryState": a value that changes whenever any
-// mailbox the client can see changes, and stays put otherwise. It is not a
-// change log — canCalculateChanges is false until Mailbox/changes lands, so a
-// client refetches rather than diffing.
-func mailboxState(list []jmapcore.Mailbox) string {
-	h := sha256.New()
-	for _, mb := range list {
-		fmt.Fprintf(h, "%s\x00%s\x00%d\x00%d\x00%t\x00", mb.ID, mb.Name,
-			mb.TotalEmails, mb.UnreadEmails, mb.IsSubscribed)
-		if mb.Role != nil {
-			h.Write([]byte(*mb.Role)) //nolint:errcheck // hash writes cannot fail
-		}
-		h.Write([]byte{0}) //nolint:errcheck
-		if mb.ParentID != nil {
-			h.Write([]byte(*mb.ParentID)) //nolint:errcheck
-		}
-		h.Write([]byte{0}) //nolint:errcheck
-	}
-	// Deliberately not FormatObjectID: this is a digest of the set, not an
-	// object id. Routing it through the identity formatter would tie a state
-	// string to an identity format it has nothing to do with.
-	return hex.EncodeToString(h.Sum(nil)[:8])
 }

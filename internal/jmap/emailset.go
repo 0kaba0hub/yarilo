@@ -41,11 +41,14 @@ func (s *Server) emailSet(_ context.Context, h *userHandle, accountID string, ar
 	if merr := checkAccount(req.AccountID, accountID); merr != nil {
 		return nil, merr
 	}
-	// The state is still the placeholder Email/get reports, so the only honest
-	// thing ifInState can do is refuse a value that does not match it. Once the
-	// composite state lands this becomes a real comparison without the callers
-	// changing.
-	const state = "0"
+	// The state Email/get reports, so a client can compare what it holds
+	// against what the account is, and a write against a stale view is refused
+	// rather than applied over a change the client has not seen.
+	state, serr := s.emailState(h)
+	if serr != nil {
+		slog.Warn("jmap: Email/set state failed", "account", accountID, "err", serr)
+		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+	}
 	if req.IfInState != nil && *req.IfInState != state {
 		return nil, &jmapcore.MethodError{
 			Type:        jmapcore.ErrStateMismatch,
@@ -184,6 +187,16 @@ func (s *Server) emailSet(_ context.Context, h *userHandle, accountID string, ar
 			// A null value means "updated, with no server-set properties the
 			// client did not already know" (§5.3).
 			resp.Updated[id] = nil
+		}
+	}
+	// newState is read after the writes rather than assumed to have moved: a
+	// call whose every object failed changed nothing, and reporting a new state
+	// for it would tell the client to discard a cache that is still correct.
+	if len(resp.Updated) > 0 {
+		if after, err := s.emailState(h); err == nil {
+			resp.NewState = after
+		} else {
+			slog.Warn("jmap: Email/set could not read the state after writing", "account", accountID, "err", err)
 		}
 	}
 	return resp, nil
