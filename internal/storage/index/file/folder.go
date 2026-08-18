@@ -146,6 +146,10 @@ func (u *userIndex) stampLineage(fs *folderState) error {
 			headerOnly := lg.f != nil && lg.size <= int64(mailindex.LogHeaderSize)
 			stale := lg.lineage() != fs.lineage.Lineage
 			lg.close()
+			// No floor stamp here, deliberately: this replaces a log that is a
+			// header and nothing else, so no expunge record is being dropped.
+			// Raising the floor would cost every reader a full resync for a
+			// truncate that lost nothing.
 			if headerOnly && stale {
 				if err := truncateLogLineage(fs.indexPath, fs.file.Header.IndexID, fs.lineage.Lineage); err != nil {
 					return fmt.Errorf("fileindex/stamp: reissue empty log: %w", err)
@@ -846,6 +850,13 @@ func (fs *folderState) applyLogTail(lg *logReader) error {
 			// current base and reset the log.
 			slog.Warn("fileindex: discarding log with mismatched IndexID, re-flushing base",
 				"folder", fs.folder)
+			// Conservative: the log belonged to a different mailbox at this
+			// path, so its expunges were never ours -- but a reader cannot tell
+			// that from the outside, and raising the floor costs a resync while
+			// leaving it costs a phantom message.
+			if floorErr := fs.stampExpungeFloorLocked(); floorErr != nil {
+				return fmt.Errorf("fileindex/reload: stamp floor after indexid mismatch: %w", floorErr)
+			}
 			if flushErr := fs.flush(false); flushErr != nil {
 				return fmt.Errorf("fileindex/reload: flush after indexid mismatch: %w", flushErr)
 			}
@@ -1665,6 +1676,9 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 		if err := fs.persistKeywordRegistry(); err != nil {
 			return err
 		}
+		if err := fs.stampExpungeFloorLocked(); err != nil {
+			return err
+		}
 		if err := fs.flush(true); err != nil {
 			return err
 		}
@@ -1732,6 +1746,9 @@ func (u *userIndex) SetAltTier(folderID uint64, filenames []string, altTier bool
 // into the base index.
 func (u *userIndex) OptimizeIndex(folderID uint64) error {
 	return u.withFolder(folderID, func(fs *folderState) error {
+		if err := fs.stampExpungeFloorLocked(); err != nil {
+			return err
+		}
 		if err := fs.flush(true); err != nil {
 			return err
 		}
@@ -1744,6 +1761,22 @@ func (u *userIndex) OptimizeIndex(folderID uint64) error {
 		fs.logSize = 0
 		return nil
 	})
+}
+
+// ExpungeFloor reports the modseq below which this folder can no longer answer
+// "what was expunged since". Zero means nothing has been folded away yet, so
+// the log still holds the whole history.
+//
+// A caller asking about a point below the floor must degrade -- a fresh listing
+// for JMAP, an empty VANISHED (EARLIER) for QRESYNC -- rather than read the
+// empty answer as "nothing was deleted" (#1216).
+func (u *userIndex) ExpungeFloor(folderID uint64) (uint64, error) {
+	var floor uint64
+	err := u.withFolder(folderID, func(fs *folderState) error {
+		floor = fs.expungeFloorLocked()
+		return nil
+	})
+	return floor, err
 }
 
 // JournalSizes reports the on-disk size of the folder's base index and of its
@@ -2696,4 +2729,60 @@ func unionStrings(a, b []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// stampExpungeFloorLocked records how far back this folder's expunge history
+// reaches, and must be called before any path that drops the log.
+//
+// Expunge records live only in the transaction log. Folding the log into the
+// base and truncating it takes them with it, and Vanished(since) then returns
+// nothing for the window it can no longer see -- which is indistinguishable
+// from "nothing was expunged". A reader diffing states would tell a client it
+// is up to date while listing messages that are gone.
+//
+// So the fold writes down the modseq it folded at. A caller asking about a
+// point before the floor is told the history is unavailable, and refetches,
+// instead of being handed a confident empty answer.
+//
+// The floor is deliberately conservative: a `since` between the last expunge
+// and the fold point is refused too, although nothing was actually removed in
+// that window. That direction is safe -- it costs one extra full resync and
+// can never produce a phantom message. Do not "optimise" it into a precise
+// last-expunge marker without solving what that marker means for a log that no
+// longer exists.
+func (fs *folderState) stampExpungeFloorLocked() error {
+	modseq, err := fs.highestModSeq()
+	if err != nil {
+		return err
+	}
+	ext := findExt(fs.file.Extensions, extNameExpungeFloor)
+	if ext == nil {
+		fs.file.Extensions = append(fs.file.Extensions, mailindex.Extension{
+			Name:        extNameExpungeFloor,
+			HdrSize:     expungeFloorSize,
+			HdrData:     encodeExpungeFloor(modseq),
+			RecordSize:  0,
+			RecordAlign: 8,
+			ResetID:     fs.file.Header.UIDValidity,
+		})
+		return fs.syncHeaderSizeLocked()
+	}
+	if decodeExpungeFloor(ext.HdrData) >= modseq {
+		// Never lower it: a floor that moves backwards would promise history
+		// the log no longer has.
+		return nil
+	}
+	ext.HdrData = encodeExpungeFloor(modseq)
+	ext.HdrSize = expungeFloorSize
+	return fs.syncHeaderSizeLocked()
+}
+
+// expungeFloorLocked reads the folder's floor. Zero means nothing has ever been
+// folded away, so the log is the whole history.
+func (fs *folderState) expungeFloorLocked() uint64 {
+	ext := findExt(fs.file.Extensions, extNameExpungeFloor)
+	if ext == nil {
+		return 0
+	}
+	return decodeExpungeFloor(ext.HdrData)
 }

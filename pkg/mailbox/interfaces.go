@@ -356,6 +356,11 @@ type UserIndex interface {
 	// greater than sinceModSeq. Drives QRESYNC (RFC 7162) SELECT and
 	// UID FETCH (CHANGEDSINCE N VANISHED) responses.
 	Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, error)
+	// ExpungeFloor reports the modseq below which Vanished can no longer
+	// answer, because compaction folded the log that held those records. Zero
+	// means nothing has been folded away. A caller below the floor must
+	// degrade rather than read an empty Vanished as "nothing was deleted".
+	ExpungeFloor(folderID uint64) (uint64, error)
 	Keywords(folderID uint64) ([]string, error)
 	// RenameFolder renames oldName to newName in the index.
 	// Called by IMAP RENAME immediately after UserMailbox.Rename succeeds.
