@@ -108,6 +108,10 @@ func (m *mockIndex) Vanished(_ uint64, _ uint64) ([]uint32, error) {
 	return nil, nil
 }
 
+func (m *mockIndex) VanishedGUIDs(_ uint64, _ uint64) ([][16]byte, bool, error) {
+	return nil, true, nil
+}
+
 func (m *mockIndex) ExpungeFloor(_ uint64) (uint64, error) {
 	return 0, nil
 }

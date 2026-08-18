@@ -58,10 +58,26 @@ func mailboxState(list []jmapcore.Mailbox) string {
 	desc := jmapcore.Description{Kind: jmapcore.KindMailbox}
 	for _, mb := range list {
 		desc.Entries = append(desc.Entries, jmapcore.StateEntry{
-			Key: mailboxKeyOf(mb.ID), Fields: []uint64{mailboxDigest(mb)},
+			Key: mailboxKeyOf(mb.ID), Fields: mailboxFields(mb),
 		})
 	}
 	return desc.String()
+}
+
+// mailboxFields carries the digest and, when the id is a GUID, the rest of it.
+//
+// The second half is there so a DELETED mailbox can still be named: it is gone
+// from the account by the time the diff runs, so its id cannot be looked up
+// anywhere, and a destroyed list that cannot name what it destroyed is no use
+// to a client. A container mailbox has no GUID -- its id is its path -- and
+// carries the digest alone; Mailbox/changes refuses rather than inventing an id
+// for one of those.
+func mailboxFields(mb jmapcore.Mailbox) []uint64 {
+	fields := []uint64{mailboxDigest(mb)}
+	if raw, err := hex.DecodeString(mb.ID); err == nil && len(raw) == 16 {
+		fields = append(fields, binary.BigEndian.Uint64(raw[8:]))
+	}
+	return fields
 }
 
 // mailboxDigest folds one mailbox's visible properties into 8 bytes.
@@ -103,4 +119,86 @@ func mailboxKeyOf(id string) [8]byte {
 	sum := sha256.Sum256([]byte(id))
 	copy(k[:], sum[:8])
 	return k
+}
+
+// folderMark is one folder as the state describes it, kept together with the
+// handle so a diff does not have to open it a second time.
+type folderMark struct {
+	key    [8]byte
+	name   string
+	folder *mailbox.Folder
+}
+
+type folderMarks []folderMark
+
+func (fm folderMarks) description() jmapcore.Description {
+	desc := jmapcore.Description{Kind: jmapcore.KindEmail}
+	for _, f := range fm {
+		desc.Entries = append(desc.Entries, jmapcore.StateEntry{
+			Key: f.key, Fields: emailStateFields(f.folder),
+		})
+	}
+	return desc
+}
+
+// folderMarks opens every selectable folder once and reads what the Email state
+// is made of.
+func (s *Server) folderMarks(h *userHandle) (folderMarks, error) {
+	entries, err := h.box.ListFolders()
+	if err != nil {
+		return nil, fmt.Errorf("jmap: list folders: %w", err)
+	}
+	out := make(folderMarks, 0, len(entries))
+	for _, e := range entries {
+		if !e.Selectable {
+			continue
+		}
+		f, err := h.idx.OpenFolder(e.Name, 0)
+		if err != nil {
+			return nil, fmt.Errorf("jmap: open folder %q: %w", e.Name, err)
+		}
+		out = append(out, folderMark{key: stateKey(f.GUID), name: e.Name, folder: f})
+	}
+	return out, nil
+}
+
+// changedIDs splits a folder's messages the way JMAP asks for them.
+type changedIDs struct{ created, updated []string }
+
+// folderMessageIDs reads one folder and sorts its messages into created and
+// updated relative to a previous marker.
+//
+// The split rests on nextUID: a UID at or above the one the client last saw did
+// not exist then, so the message is new; a lower one whose modseq has moved is
+// an update. Without that field both would have to be reported as updates, and
+// a client would refetch every changed message as though it had never seen it.
+func (s *Server) folderMessageIDs(h *userHandle, f folderMark, sinceModSeq uint64, sinceNextUID uint32) (changedIDs, error) {
+	metas, err := mailbox.ReadMessages(h.idx, f.folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		return changedIDs{}, fmt.Errorf("jmap: read folder %q: %w", f.name, err)
+	}
+	var out changedIDs
+	for _, m := range metas {
+		switch {
+		case m.UID >= sinceNextUID:
+			out.created = append(out.created, emailID(m))
+		case m.ModSeq > sinceModSeq:
+			out.updated = append(out.updated, emailID(m))
+		}
+	}
+	return out, nil
+}
+
+// destroyedMailboxID rebuilds the id of a mailbox that is gone, from the two
+// halves the description kept. ok is false for a container, whose id is its
+// path and cannot be reconstructed -- the caller refuses the call rather than
+// reporting an id it made up.
+func destroyedMailboxID(key [8]byte, fields []uint64) (string, bool) {
+	if len(fields) < 2 {
+		return "", false
+	}
+	raw := make([]byte, 16)
+	copy(raw, key[:])
+	binary.BigEndian.PutUint64(raw[8:], fields[1])
+	return hex.EncodeToString(raw), true
 }

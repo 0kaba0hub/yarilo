@@ -356,6 +356,12 @@ type UserIndex interface {
 	// greater than sinceModSeq. Drives QRESYNC (RFC 7162) SELECT and
 	// UID FETCH (CHANGEDSINCE N VANISHED) responses.
 	Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, error)
+	// VanishedGUIDs answers the same question as Vanished by message identity:
+	// a protocol that addresses messages by GUID cannot report a UID, and the
+	// message is gone, so its GUID can be read from nowhere else afterwards.
+	// complete is false when a record in range cannot be named, and the caller
+	// must degrade rather than report a shorter list as the whole truth.
+	VanishedGUIDs(folderID uint64, sinceModSeq uint64) (guids [][16]byte, complete bool, err error)
 	// ExpungeFloor reports the modseq below which Vanished can no longer
 	// answer, because compaction folded the log that held those records. Zero
 	// means nothing has been folded away. A caller below the floor must
