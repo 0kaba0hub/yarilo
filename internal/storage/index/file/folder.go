@@ -1441,7 +1441,14 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 		expPayload := make([]byte, 28)
 		le := binary.LittleEndian
 		le.PutUint32(expPayload[0:], uid)
-		copy(expPayload[4:20], fs.hdr.MailboxGUID[:])
+		// The MESSAGE's GUID, not the mailbox's. The field is the expunged
+		// message's identity: it is the only place that identity survives,
+		// because the record it came from is being removed. Writing the mailbox
+		// GUID here gave every expunge in a folder the same value, which
+		// QRESYNC never noticed -- it matches by UID -- and which a protocol
+		// addressing messages by id cannot use at all (#1216).
+		msgGUID := decodeGUIDRec(rec.Ext[extNameGUID])
+		copy(expPayload[4:20], msgGUID[:])
 		le.PutUint64(expPayload[20:], modseq)
 		return fs.appendMutLog(
 			encLogRec(mailindex.TxTypeExpungeGUID, mailindex.TxExpungeProt, expPayload),
@@ -1763,6 +1770,33 @@ func (u *userIndex) OptimizeIndex(folderID uint64) error {
 	})
 }
 
+// VanishedGUIDs is Vanished by message identity rather than by UID: the ids a
+// GUID-addressed protocol has to report as destroyed.
+//
+// complete is false when a record in range cannot be named. Expunges written
+// before the field carried the message GUID hold the MAILBOX's instead, and
+// those are indistinguishable from a real id except by that equality -- so they
+// are dropped and the caller is told the answer is partial, rather than handed
+// an id that names a mailbox and no message.
+func (u *userIndex) VanishedGUIDs(folderID uint64, sinceModSeq uint64) (guids [][16]byte, complete bool, err error) {
+	complete = true
+	err = u.withFolder(folderID, func(fs *folderState) error {
+		found, scanErr := scanExpungedGUIDsSince(fs.indexPath, sinceModSeq)
+		if scanErr != nil {
+			return scanErr
+		}
+		for _, g := range found {
+			if g == fs.hdr.MailboxGUID || g == ([16]byte{}) {
+				complete = false
+				continue
+			}
+			guids = append(guids, g)
+		}
+		return nil
+	})
+	return guids, complete, err
+}
+
 // ExpungeFloor reports the modseq below which this folder can no longer answer
 // "what was expunged since". Zero means nothing has been folded away yet, so
 // the log still holds the whole history.
@@ -1959,6 +1993,60 @@ func scanExpungesSince(indexPath string, sinceModSeq uint64) ([]uint32, error) {
 		if modseq > sinceModSeq {
 			out = append(out, uid)
 		}
+	}
+	return out, nil
+}
+
+// scanExpungedGUIDsSince is scanExpungesSince reading the other half of the
+// same record. The expunge carries the message GUID beside its UID, which is
+// what a protocol identifying messages by GUID needs: the message is gone, so
+// its identity cannot be looked up anywhere else afterwards (RFC 8621 destroyed
+// ids, #1216).
+func scanExpungedGUIDsSince(indexPath string, sinceModSeq uint64) ([][16]byte, error) {
+	logPath := indexPath + ".log"
+	f, err := os.Open(logPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("fileindex/log scan: open: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+	if _, err := mailindex.DecodeLogHeader(f); err != nil {
+		return nil, nil //nolint:nilerr
+	}
+	var out [][16]byte
+	hdrBuf := make([]byte, 8)
+	for {
+		if _, err := io.ReadFull(f, hdrBuf); err != nil {
+			break
+		}
+		txHdr, err := mailindex.DecodeTxHeader(hdrBuf)
+		if err != nil {
+			break
+		}
+		payloadLen := int(txHdr.Size) - 8
+		if payloadLen < 0 {
+			break
+		}
+		payload := make([]byte, payloadLen)
+		if _, err := io.ReadFull(f, payload); err != nil {
+			break
+		}
+		if txHdr.Type.Kind() != mailindex.TxTypeExpungeGUID|mailindex.TxType(mailindex.TxExpungeProt) {
+			continue
+		}
+		if len(payload) < 28 {
+			// The 20-byte form carries no modseq, so it cannot be placed in
+			// time; skipping it is what the UID scan does with the same record.
+			continue
+		}
+		if binary.LittleEndian.Uint64(payload[20:]) <= sinceModSeq {
+			continue
+		}
+		var guid [16]byte
+		copy(guid[:], payload[4:20])
+		out = append(out, guid)
 	}
 	return out, nil
 }
