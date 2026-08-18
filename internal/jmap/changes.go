@@ -240,3 +240,28 @@ func fieldsOf(e jmapcore.StateEntry) (uidValidity, modseq, nextUID uint64) {
 	}
 	return uidValidity, modseq, nextUID
 }
+
+// emailQueryChanges implements Email/queryChanges (RFC 8620 §5.6) as a standing
+// refusal, which is a decision rather than a gap.
+//
+// A query result depends on its filter and its sort, so saying which ids
+// entered or left a window needs the previous result set. This server does not
+// keep one -- that is per-client state on a mailbox that several clients and
+// two protocols share -- so the honest answer is that changes cannot be
+// calculated, which §5.6 provides for and every client handles by running the
+// query again.
+//
+// It is implemented rather than left absent on purpose. An unimplemented method
+// answers unknownMethod, which tells a client the server is broken or the
+// capability was mis-advertised; cannotCalculateChanges tells it exactly what to
+// do next, and costs one query instead of a failed sync.
+func (s *Server) emailQueryChanges(_ context.Context, _ *userHandle, accountID string, args json.RawMessage) (any, *jmapcore.MethodError) {
+	var req jmapcore.ChangesRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return nil, &jmapcore.MethodError{Type: jmapcore.ErrInvalidArguments, Description: err.Error()}
+	}
+	if merr := checkAccount(req.AccountID, accountID); merr != nil {
+		return nil, merr
+	}
+	return nil, cannotCalculate("this server does not track query results; run the query again")
+}
