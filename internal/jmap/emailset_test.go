@@ -278,3 +278,130 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// raceBackend hands out an index that performs one concurrent write between the
+// lookup and the JMAP write, which is the window the patch form has to survive.
+// Without it the race is unreproducible in a single-session test, and the
+// defect it guards against would only ever show up in production.
+type raceBackend struct {
+	mailbox.IndexBackend
+	info    *mailbox.UserInfo
+	once    bool
+	inject  func(mailbox.UserIndex)
+	tracked *raceIndex
+}
+
+type raceIndex struct {
+	mailbox.UserIndex
+	parent *raceBackend
+}
+
+func (b *raceBackend) OpenUser(info *mailbox.UserInfo) mailbox.UserIndex {
+	idx := &raceIndex{UserIndex: b.IndexBackend.OpenUser(info), parent: b}
+	b.tracked = idx
+	return idx
+}
+
+func (i *raceIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]mailbox.FlagsResult, error) {
+	if !i.parent.once {
+		i.parent.once = true
+		i.parent.inject(i.UserIndex)
+	}
+	return i.UserIndex.UpdateFlagsMulti(folderID, updates)
+}
+
+// The lost-update the store closed for IMAP (#1282), asked of JMAP: another
+// session adds a keyword between this call's lookup and its write. A patch is
+// the client saying "add $seen", not "the set is now exactly what I last saw",
+// so the concurrent keyword must survive -- and it only does if the patch
+// reaches the store as a delta the store folds under its own lock.
+func TestEmailSetPatchDoesNotEraseAConcurrentKeyword(t *testing.T) {
+	tests := []struct {
+		name         string
+		patch        string
+		wantFlags    []string
+		wantKeywords []string
+	}{
+		{
+			// The most common operation there is, and the one that used to be
+			// an absolute write against a stale read.
+			name:         "adding a keyword keeps one added meanwhile",
+			patch:        `{"keywords/$answered":true}`,
+			wantFlags:    []string{`\Answered`, `\Flagged`, `\Seen`},
+			wantKeywords: nil,
+		},
+		{
+			name:         "removing a keyword keeps one added meanwhile",
+			patch:        `{"keywords/$seen":null}`,
+			wantFlags:    []string{`\Flagged`},
+			wantKeywords: nil,
+		},
+		{
+			// The whole-object form is the client saying "the set is now
+			// this", so losing the concurrent keyword is what it asked for.
+			// The row is here so the difference between the two forms is
+			// asserted rather than assumed.
+			name:         "a whole-object replacement is still a replacement",
+			patch:        `{"keywords":{"$draft":true}}`,
+			wantFlags:    []string{`\Draft`},
+			wantKeywords: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, id, home := storedServerWithMessageAt(t, setTestMessage, 0)
+			info := &mailbox.UserInfo{Username: testUser, Home: home, Separator: "/"}
+			// The concurrent writer: a second index handle over the same files,
+			// adding \Flagged the way another session's STORE would.
+			rb := &raceBackend{IndexBackend: file.New(), info: info}
+			rb.inject = func(mailbox.UserIndex) {
+				other := file.New().OpenUser(info)
+				defer other.Close() //nolint:errcheck
+				f, err := other.OpenFolder("INBOX", 0)
+				if err != nil {
+					t.Fatalf("concurrent open: %v", err)
+				}
+				if _, err := other.UpdateFlagsMulti(f.ID, map[uint32]mailbox.FlagsUpdate{
+					1: {Mode: mailbox.FlagsAdd, Flags: []string{`\Flagged`}},
+				}); err != nil {
+					t.Fatalf("concurrent store: %v", err)
+				}
+			}
+			s.opts.Storage.Index = rb
+
+			resp := emailSetCall(t, s, fmt.Sprintf(`{"accountId":%q,"update":{%q:%s}}`, testUser, id, tc.patch))
+			if len(resp.NotUpdated) != 0 {
+				t.Fatalf("update refused: %+v", resp.NotUpdated[id])
+			}
+
+			flags, keywords := storedFlags(t, home)
+			if !equalStrings(flags, tc.wantFlags) {
+				t.Errorf("stored flags = %v, want %v -- a concurrent write was overwritten", flags, tc.wantFlags)
+			}
+			if !equalStrings(keywords, tc.wantKeywords) {
+				t.Errorf("stored keywords = %v, want %v", keywords, tc.wantKeywords)
+			}
+		})
+	}
+}
+
+// Giving a property directly and by patch in one update says two different
+// things about the same set, and RFC 8620 §5.3 refuses it rather than picking
+// an order.
+func TestEmailSetRefusesAPropertyGivenTwice(t *testing.T) {
+	s, id, home := storedServerWithMessageAt(t, setTestMessage, 0)
+	resp := emailSetCall(t, s,
+		fmt.Sprintf(`{"accountId":%q,"update":{%q:{"keywords":{"$draft":true},"keywords/$seen":true}}}`, testUser, id))
+
+	serr := resp.NotUpdated[id]
+	if serr == nil {
+		t.Fatalf("an update giving keywords twice was accepted: %+v", resp)
+	}
+	if serr.Type != jmapcore.SetErrInvalidPatch {
+		t.Errorf("SetError type = %q, want %q", serr.Type, jmapcore.SetErrInvalidPatch)
+	}
+	if flags, _ := storedFlags(t, home); !equalStrings(flags, []string{`\Seen`}) {
+		t.Errorf("the store changed on a refused update: %v", flags)
+	}
+}

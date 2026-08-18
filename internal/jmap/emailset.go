@@ -81,12 +81,31 @@ func (s *Server) emailSet(_ context.Context, h *userHandle, accountID string, ar
 		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
 	}
 
-	// Grouped by folder: the store applies a batch under one lock, so a client
+	// Grouped by folder, and by what the update means: a replacement and the
+	// two halves of a delta are three different calls to the store, because
+	// one FlagsUpdate carries one mode. Each is still a batch, so a client
 	// marking a thread read pays one round of locking rather than one per
 	// message.
-	byFolder := map[uint64]map[uint32]mailbox.FlagsUpdate{}
-	folderOf := map[uint64]string{}
-	idOfUID := map[uint64]map[uint32]string{}
+	type folderWork struct {
+		folder  string
+		set     map[uint32]mailbox.FlagsUpdate
+		add     map[uint32]mailbox.FlagsUpdate
+		remove  map[uint32]mailbox.FlagsUpdate
+		idOfUID map[uint32]string
+	}
+	work := map[uint64]*folderWork{}
+	workFor := func(ref messageRef) *folderWork {
+		w, ok := work[ref.folderID]
+		if !ok {
+			w = &folderWork{
+				folder: ref.folder,
+				set:    map[uint32]mailbox.FlagsUpdate{}, add: map[uint32]mailbox.FlagsUpdate{},
+				remove: map[uint32]mailbox.FlagsUpdate{}, idOfUID: map[uint32]string{},
+			}
+			work[ref.folderID] = w
+		}
+		return w
+	}
 
 	for id, patch := range req.Update {
 		ref, ok := found[id]
@@ -94,40 +113,71 @@ func (s *Server) emailSet(_ context.Context, h *userHandle, accountID string, ar
 			resp.NotUpdated[id] = &jmapcore.SetError{Type: jmapcore.SetErrNotFound}
 			continue
 		}
-		keywords, serr := patchedKeywords(keywordsOf(ref.meta), patch)
+		plan, serr := patchedKeywords(patch)
 		if serr != nil {
 			resp.NotUpdated[id] = serr
 			continue
 		}
-		flags, custom := splitKeywords(keywords)
-		if byFolder[ref.folderID] == nil {
-			byFolder[ref.folderID] = map[uint32]mailbox.FlagsUpdate{}
-			idOfUID[ref.folderID] = map[uint32]string{}
-			folderOf[ref.folderID] = ref.folder
-		}
-		byFolder[ref.folderID][ref.meta.UID] = mailbox.FlagsUpdate{
-			Mode: mailbox.FlagsSet, Flags: flags, Keywords: custom,
-		}
-		idOfUID[ref.folderID][ref.meta.UID] = id
-	}
-
-	for folderID, updates := range byFolder {
-		results, err := h.idx.UpdateFlagsMulti(folderID, updates)
-		if err != nil {
-			// The folder failed as a whole, so every id in it is reported as
-			// failed. Leaving them out of both maps would read as success.
-			slog.Warn("jmap: Email/set write failed", "folder", folderOf[folderID], "err", err)
-			for _, id := range idOfUID[folderID] {
-				resp.NotUpdated[id] = &jmapcore.SetError{
-					Type: jmapcore.SetErrForbidden, Description: fmt.Sprintf("could not write flags: %v", err),
-				}
-			}
+		w := workFor(ref)
+		w.idOfUID[ref.meta.UID] = id
+		if plan.replace != nil {
+			flags, custom := splitKeywords(plan.replace)
+			w.set[ref.meta.UID] = mailbox.FlagsUpdate{Mode: mailbox.FlagsSet, Flags: flags, Keywords: custom}
 			continue
 		}
-		for uid, id := range idOfUID[folderID] {
-			if _, ok := results[uid]; !ok {
-				// The store skips a UID it no longer has; between the lookup
-				// and the write the message was expunged.
+		if len(plan.add) > 0 {
+			flags, custom := splitKeywords(plan.add)
+			w.add[ref.meta.UID] = mailbox.FlagsUpdate{Mode: mailbox.FlagsAdd, Flags: flags, Keywords: custom}
+		}
+		if len(plan.remove) > 0 {
+			flags, custom := splitKeywords(plan.remove)
+			w.remove[ref.meta.UID] = mailbox.FlagsUpdate{Mode: mailbox.FlagsRemove, Flags: flags, Keywords: custom}
+		}
+		if len(plan.add) == 0 && len(plan.remove) == 0 {
+			// An update naming nothing is not an error; it changes nothing and
+			// is reported as done, which is what the client asked for.
+			resp.Updated[id] = nil
+			delete(w.idOfUID, ref.meta.UID)
+		}
+	}
+
+	for folderID, w := range work {
+		failed := map[string]*jmapcore.SetError{}
+		applied := map[uint32]bool{}
+		// A mixed patch is two calls. They are not one transaction, and that is
+		// the price of relative writes: another session can observe the added
+		// keyword before the removed one is gone. Nothing is lost either way,
+		// which is the property a replacement could not offer.
+		for _, batch := range []map[uint32]mailbox.FlagsUpdate{w.set, w.add, w.remove} {
+			if len(batch) == 0 {
+				continue
+			}
+			results, err := h.idx.UpdateFlagsMulti(folderID, batch)
+			if err != nil {
+				slog.Warn("jmap: Email/set write failed", "folder", w.folder, "err", err)
+				for uid := range batch {
+					failed[w.idOfUID[uid]] = &jmapcore.SetError{
+						Type: jmapcore.SetErrForbidden, Description: fmt.Sprintf("could not write flags: %v", err),
+					}
+				}
+				continue
+			}
+			for uid := range batch {
+				if _, ok := results[uid]; !ok {
+					// The store skips a UID it no longer has: between the
+					// lookup and the write the message was expunged.
+					failed[w.idOfUID[uid]] = &jmapcore.SetError{Type: jmapcore.SetErrNotFound}
+					continue
+				}
+				applied[uid] = true
+			}
+		}
+		for uid, id := range w.idOfUID {
+			if serr, bad := failed[id]; bad {
+				resp.NotUpdated[id] = serr
+				continue
+			}
+			if !applied[uid] {
 				resp.NotUpdated[id] = &jmapcore.SetError{Type: jmapcore.SetErrNotFound}
 				continue
 			}
@@ -139,61 +189,74 @@ func (s *Server) emailSet(_ context.Context, h *userHandle, accountID string, ar
 	return resp, nil
 }
 
-// patchedKeywords resolves one update object into the keyword set the message
-// should end up with. Both forms of §5.3 patching are accepted: a whole
-// "keywords" object replaces the set, and "keywords/<name>" entries add or
-// remove one at a time.
+// keywordPlan is what one update object asks the store to do. The distinction
+// is not cosmetic: a whole "keywords" object is the client saying "this is the
+// set now", which is a replacement; a "keywords/<name>" patch is the client
+// saying "add this one", which is a delta and must stay one.
 //
-// Any other property is refused rather than ignored. Silently accepting
-// "mailboxIds" would answer a move with success and leave the message where it
-// was -- the client would believe it had moved.
-func patchedKeywords(current map[string]bool, patch json.RawMessage) (map[string]bool, *jmapcore.SetError) {
+// Resolving a patch into a full set against a snapshot read outside the lock
+// re-opens the lost-update the store closed for IMAP (#1282): between the
+// lookup and the write another session can add a keyword, and a replacement
+// computed from the older snapshot erases it. A delta cannot, because the store
+// folds it against the record under its own lock.
+type keywordPlan struct {
+	// replace is non-nil for the whole-object form and is the complete set.
+	replace map[string]bool
+	// add and remove are the patch form, and are relative.
+	add, remove map[string]bool
+}
+
+// patchedKeywords reads one update object into a plan.
+//
+// Any property other than keywords is refused rather than ignored. Silently
+// accepting "mailboxIds" would answer a move with success and leave the message
+// where it was -- the client would believe it had moved.
+func patchedKeywords(patch json.RawMessage) (keywordPlan, *jmapcore.SetError) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(patch, &fields); err != nil {
-		return nil, &jmapcore.SetError{Type: jmapcore.SetErrInvalidPatch, Description: err.Error()}
+		return keywordPlan{}, &jmapcore.SetError{Type: jmapcore.SetErrInvalidPatch, Description: err.Error()}
 	}
 
-	out := make(map[string]bool, len(current))
-	for k := range current {
-		out[k] = true
-	}
-
+	plan := keywordPlan{add: map[string]bool{}, remove: map[string]bool{}}
 	var unsupported []string
+	sawPatchForm := false
+
 	for name, raw := range fields {
 		switch {
 		case name == "keywords":
 			replacement := map[string]bool{}
 			if err := json.Unmarshal(raw, &replacement); err != nil {
-				return nil, &jmapcore.SetError{
+				return keywordPlan{}, &jmapcore.SetError{
 					Type: jmapcore.SetErrInvalidPatch, Properties: []string{"keywords"}, Description: err.Error(),
 				}
 			}
-			out = map[string]bool{}
+			plan.replace = map[string]bool{}
 			for k, v := range replacement {
 				if v {
-					out[strings.ToLower(k)] = true
+					plan.replace[strings.ToLower(k)] = true
 				}
 			}
 		case strings.HasPrefix(name, "keywords/"):
+			sawPatchForm = true
 			kw := strings.ToLower(strings.TrimPrefix(name, "keywords/"))
 			if kw == "" {
-				return nil, &jmapcore.SetError{
+				return keywordPlan{}, &jmapcore.SetError{
 					Type: jmapcore.SetErrInvalidPatch, Properties: []string{name},
 					Description: "a keywords patch must name a keyword",
 				}
 			}
-			// A patch is true to add, or null/false to remove; §5.3 gives null
-			// the meaning "remove this property".
+			// True adds; null or false removes -- §5.3 gives null the meaning
+			// "remove this property".
 			var set *bool
 			if err := json.Unmarshal(raw, &set); err != nil {
-				return nil, &jmapcore.SetError{
+				return keywordPlan{}, &jmapcore.SetError{
 					Type: jmapcore.SetErrInvalidPatch, Properties: []string{name}, Description: err.Error(),
 				}
 			}
 			if set != nil && *set {
-				out[kw] = true
+				plan.add[kw] = true
 			} else {
-				delete(out, kw)
+				plan.remove[kw] = true
 			}
 		default:
 			unsupported = append(unsupported, name)
@@ -201,13 +264,22 @@ func patchedKeywords(current map[string]bool, patch json.RawMessage) (map[string
 	}
 	if len(unsupported) > 0 {
 		sort.Strings(unsupported)
-		return nil, &jmapcore.SetError{
+		return keywordPlan{}, &jmapcore.SetError{
 			Type:        jmapcore.SetErrNotImplemented,
 			Properties:  unsupported,
 			Description: "only keywords can be updated; mailboxIds (move) and the rest are not implemented",
 		}
 	}
-	return out, nil
+	// RFC 8620 §5.3 forbids giving a property directly and by patch in one
+	// update: the two say different things about the same set and there is no
+	// order that makes both true.
+	if plan.replace != nil && sawPatchForm {
+		return keywordPlan{}, &jmapcore.SetError{
+			Type: jmapcore.SetErrInvalidPatch, Properties: []string{"keywords"},
+			Description: "keywords was given both directly and as a patch",
+		}
+	}
+	return plan, nil
 }
 
 // splitKeywords maps a JMAP keyword set onto what the store takes: IMAP system
