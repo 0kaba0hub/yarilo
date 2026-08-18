@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/yarilomail/yarilo/pkg/jmapcore"
 )
 
 // changesCall posts one Foo/changes and returns either the response or the
@@ -229,5 +231,151 @@ func TestEmailChangesRefusesBelowTheExpungeFloor(t *testing.T) {
 	if errType != "cannotCalculateChanges" {
 		t.Fatalf("a state below the floor answered %q with %v -- an empty destroyed list is read as 'nothing was deleted'",
 			errType, payload)
+	}
+}
+
+// mailboxStateOf asks the server for the Mailbox state the way a client would.
+func mailboxStateOf(t *testing.T, s *Server) string {
+	t.Helper()
+	body := fmt.Sprintf(`{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],
+		"methodCalls":[["Mailbox/get",{"accountId":%q,"ids":[]},"c0"]]}`, testUser)
+	w := postAPIRaw(t, s, body)
+	var resp struct {
+		MethodResponses [][]json.RawMessage `json:"methodResponses"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var got struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(resp.MethodResponses[0][1], &got); err != nil {
+		t.Fatalf("decode Mailbox/get: %v -- %s", err, w.Body)
+	}
+	return got.State
+}
+
+// mailboxIDOf returns the client-facing id of one folder.
+func mailboxIDOf(t *testing.T, s *Server, name string) string {
+	t.Helper()
+	h := openHandleForTest(t, s)
+	list, err := s.mailboxList(h)
+	if err != nil {
+		t.Fatalf("mailbox list: %v", err)
+	}
+	for _, mb := range list {
+		if mb.Name == name {
+			return mb.ID
+		}
+	}
+	t.Fatalf("mailbox %q not found in %v", name, list)
+	return ""
+}
+
+// A deleted mailbox has to be NAMED in destroyed. A client that merely stops
+// seeing an entry never learns the mailbox is gone and keeps it in its list for
+// ever -- the same failure as a message discovered missing by absence, one
+// level up. Without this row the destroyed branch of the diff could be lost in
+// a refactor and nothing would fail.
+func TestMailboxChangesReportsCreatedUpdatedAndDestroyed(t *testing.T) {
+	s, _, _ := storedServerWithMessageAt(t, setTestMessage, 0)
+
+	// created
+	since := mailboxStateOf(t, s)
+	h := openHandleForTest(t, s)
+	if err := h.box.Create("Sales"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := h.idx.OpenFolder("Sales", 0); err != nil {
+		t.Fatalf("open new folder: %v", err)
+	}
+	payload, errType := changesCall(t, s, "Mailbox/changes",
+		fmt.Sprintf(`{"accountId":%q,"sinceState":%q}`, testUser, since))
+	if errType != "" {
+		t.Fatalf("Mailbox/changes refused after a create: %s", errType)
+	}
+	created := changedIDsOf(t, payload, "created")
+	salesID := mailboxIDOf(t, s, "Sales")
+	if len(created) != 1 || created[0] != salesID {
+		t.Fatalf("created = %v, want exactly [%s]", created, salesID)
+	}
+
+	// updated: a rename changes the properties, not the identity
+	since = mailboxStateOf(t, s)
+	h = openHandleForTest(t, s)
+	if err := h.box.Rename("Sales", "Deals"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if err := h.idx.RenameFolder("Sales", "Deals"); err != nil {
+		t.Fatalf("rename index: %v", err)
+	}
+	payload, errType = changesCall(t, s, "Mailbox/changes",
+		fmt.Sprintf(`{"accountId":%q,"sinceState":%q}`, testUser, since))
+	if errType != "" {
+		t.Fatalf("Mailbox/changes refused after a rename: %s", errType)
+	}
+	if updated := changedIDsOf(t, payload, "updated"); len(updated) != 1 || updated[0] != salesID {
+		t.Errorf("updated = %v, want exactly [%s] -- a rename keeps the id and changes the properties",
+			updated, salesID)
+	}
+	if got := changedIDsOf(t, payload, "destroyed"); len(got) != 0 {
+		t.Errorf("a rename was reported as a deletion: %v", got)
+	}
+
+	// destroyed
+	since = mailboxStateOf(t, s)
+	h = openHandleForTest(t, s)
+	if err := h.idx.DeleteFolder("Deals"); err != nil {
+		t.Fatalf("delete index: %v", err)
+	}
+	if err := h.box.Delete("Deals"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	payload, errType = changesCall(t, s, "Mailbox/changes",
+		fmt.Sprintf(`{"accountId":%q,"sinceState":%q}`, testUser, since))
+	if errType != "" {
+		t.Fatalf("Mailbox/changes refused after a delete: %s", errType)
+	}
+	destroyed := changedIDsOf(t, payload, "destroyed")
+	if len(destroyed) != 1 || destroyed[0] != salesID {
+		t.Errorf("destroyed = %v, want exactly [%s] -- the client is never told the mailbox went",
+			destroyed, salesID)
+	}
+}
+
+// A container mailbox has no GUID of its own -- its id is its path -- so a
+// description cannot rebuild it, and its deletion must refuse the call rather
+// than report an id the server made up.
+//
+// Driven through a hand-built sinceState rather than through the store: this
+// backend never lists a container as an entry of its own, so no sequence of
+// creates and deletes reaches the branch. The state is a string a client sends,
+// so sending the shape the branch is written for is the real path, not a
+// shortcut around it.
+func TestMailboxChangesRefusesAnUnnameableDeletion(t *testing.T) {
+	s, _, _ := storedServerWithMessageAt(t, setTestMessage, 0)
+	h := openHandleForTest(t, s)
+	list, err := s.mailboxList(h)
+	if err != nil {
+		t.Fatalf("mailbox list: %v", err)
+	}
+
+	// Everything the account has now, plus one entry carrying a digest and no
+	// id bytes -- what a container contributes, and what is left over as
+	// "deleted" because nothing in the account matches it.
+	desc := jmapcore.Description{Kind: jmapcore.KindMailbox}
+	for _, mb := range list {
+		desc.Entries = append(desc.Entries, jmapcore.StateEntry{
+			Key: mailboxKeyOf(mb.ID), Fields: mailboxFields(mb),
+		})
+	}
+	desc.Entries = append(desc.Entries, jmapcore.StateEntry{
+		Key: [8]byte{0xC0, 0x17, 0xA1, 0x11, 0xE7, 0x00, 0x00, 0x01}, Fields: []uint64{42},
+	})
+
+	_, errType := changesCall(t, s, "Mailbox/changes",
+		fmt.Sprintf(`{"accountId":%q,"sinceState":%q}`, testUser, desc.String()))
+	if errType != "cannotCalculateChanges" {
+		t.Errorf("a deletion the server cannot name answered %q; it must refuse rather than invent an id", errType)
 	}
 }
