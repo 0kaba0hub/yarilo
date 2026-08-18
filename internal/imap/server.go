@@ -1197,7 +1197,9 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 			slog.Warn("imap: acl inheritance not materialised", "folder", name, "err", err)
 		}
 		if err := s.grantCreatorAdmin(h, rel); err != nil {
-			slog.Warn("imap: creator admin right not granted", "folder", name, "err", err)
+			if rbErr := s.rollBackUnadministered(h, rel, name, err); rbErr != nil {
+				return rbErr
+			}
 		}
 	}
 	// CREATE-SPECIAL-USE (RFC 6154 §3): record the requested use attr for
