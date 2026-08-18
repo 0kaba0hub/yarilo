@@ -241,6 +241,21 @@ func fieldsOf(e jmapcore.StateEntry) (uidValidity, modseq, nextUID uint64) {
 	return uidValidity, modseq, nextUID
 }
 
+// mailboxQueryChanges is the same standing refusal for Mailbox/queryChanges,
+// and for the same reason: a client that reached Mailbox/query will reach for
+// this next, and an absent method answers unknownMethod, which reads as "this
+// server is broken" rather than "run the query again".
+func (s *Server) mailboxQueryChanges(_ context.Context, _ *userHandle, accountID string, args json.RawMessage) (any, *jmapcore.MethodError) {
+	var req jmapcore.ChangesRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return nil, &jmapcore.MethodError{Type: jmapcore.ErrInvalidArguments, Description: err.Error()}
+	}
+	if merr := checkAccount(req.AccountID, accountID); merr != nil {
+		return nil, merr
+	}
+	return nil, cannotCalculate("this server does not track query results; run the query again")
+}
+
 // emailQueryChanges implements Email/queryChanges (RFC 8620 §5.6) as a standing
 // refusal, which is a decision rather than a gap.
 //

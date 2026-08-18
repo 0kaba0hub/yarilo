@@ -72,7 +72,7 @@ func TestTheSyncSurfaceIsReachable(t *testing.T) {
 
 	want := []string{
 		"Core/echo",
-		"Mailbox/get", "Mailbox/query", "Mailbox/changes",
+		"Mailbox/get", "Mailbox/query", "Mailbox/changes", "Mailbox/queryChanges",
 		"Email/get", "Email/query", "Email/changes", "Email/set", "Email/queryChanges",
 		"Thread/get", "SearchSnippet/get",
 	}
@@ -92,11 +92,17 @@ func TestTheSyncSurfaceIsReachable(t *testing.T) {
 // nothing at all. The distinction matters: unknownMethod says the server is
 // broken or the capability was mis-advertised, while cannotCalculateChanges
 // says "run the query again", which is the one thing that works.
-func TestEmailQueryChangesRefusesInsteadOfBeingAbsent(t *testing.T) {
-	s, _, _ := storedServerWithMessageAt(t, setTestMessage, 0)
-	_, errType := changesCall(t, s, "Email/queryChanges",
-		`{"accountId":"`+testUser+`","sinceState":"1-ZQ"}`)
-	if errType != "cannotCalculateChanges" {
-		t.Errorf("Email/queryChanges answered %q, want cannotCalculateChanges", errType)
+func TestQueryChangesRefusesInsteadOfBeingAbsent(t *testing.T) {
+	// Both, because the argument is the same for both: a client that reached
+	// Foo/query reaches for Foo/queryChanges next, whichever type it is.
+	for _, method := range []string{"Email/queryChanges", "Mailbox/queryChanges"} {
+		t.Run(method, func(t *testing.T) {
+			s, _, _ := storedServerWithMessageAt(t, setTestMessage, 0)
+			_, errType := changesCall(t, s, method,
+				`{"accountId":"`+testUser+`","sinceState":"1-ZQ"}`)
+			if errType != "cannotCalculateChanges" {
+				t.Errorf("%s answered %q, want cannotCalculateChanges", method, errType)
+			}
+		})
 	}
 }
