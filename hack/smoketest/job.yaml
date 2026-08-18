@@ -46,6 +46,13 @@ spec:
         # LoadBalancer, lmtp-login only on its ClusterIP -- which is why one
         # -host could not reach all three and that row used to skip.
         - -host=10.50.80.29
+        # In-cluster, deliberately: the static passdb hands out its credential
+        # with allow_nets bound to the pod CIDR, and a dial through the
+        # LoadBalancer arrives from the node address instead -- the row then
+        # fails AUTHENTICATIONFAILED with a password that is perfectly good.
+        # Widening allow_nets would have hidden that; naming the service keeps
+        # the credential as narrow as it was meant to be.
+        - -imap-host=yarilo-imap-login
         - -lmtp-login-host=yarilo-lmtp-login
         - -imap-port=993
         - -insecure=true
