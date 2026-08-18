@@ -1,6 +1,9 @@
 package imap
 
 import (
+	"fmt"
+	"log/slog"
+
 	imaplib "github.com/emersion/go-imap/v2"
 
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -200,6 +203,61 @@ func (s *session) grantCreatorAdmin(h *nsHandle, folder string) error {
 			Rights:     effective.Add(mailbox.Rights(string(mailbox.RightAdminister))),
 		}), nil
 	})
+}
+
+// rollBackUnadministered undoes a CREATE whose creator ended up with no admin
+// right, and reports the CREATE as failed.
+//
+// The two steps after CREATE fail into different states, which is why only this
+// one is undone. A failed MaterialiseOnCreate leaves a mailbox governed by the
+// namespace root, exactly as before that feature existed. A failed grant can
+// leave a mailbox nobody can administer -- and it is sticky: the next CREATE of
+// the same name fails with "already exists", so nothing self-heals, and
+// repairing it needs the very right that is missing (#1334).
+//
+// The window is not theoretical. CREATE is a local mkdir; the ACL write goes
+// through yarilo-locks -- a separate deployment, over the network, with a
+// 30-second acquisition timeout. A rolling upgrade of that deployment is tens
+// of seconds during which the two can disagree.
+//
+// The decision rests on LIVE effective rights, not on what was written -- but
+// it is grantCreatorAdmin that reads them, and this runs only when that read
+// said there is no 'a' or could not be made at all. A mailbox the namespace
+// root administers by inheritance therefore never reaches here: the grant
+// returns early and nothing is undone.
+//
+// There is deliberately no second read to confirm. Reads take the same lock the
+// write does, so in the failure this exists for -- the lock service being
+// unreachable -- a confirming read cannot succeed either. Requiring one would
+// mean the rollback never fires exactly when it is needed, and treating an
+// unreadable ACL store as "probably fine" is how the mailbox is left
+// unadministered.
+func (s *session) rollBackUnadministered(h *nsHandle, folder, wireName string, cause error) error {
+	aclUser, _ := s.userInfo.ACLIdentity()
+	if err := h.box.Delete(folder); err != nil {
+		// The mailbox exists, nobody can administer it, and the undo failed
+		// too. Nothing here can fix that, so it is said once, loudly, with the
+		// command that does -- run by someone who still holds 'a' above it.
+		slog.Error("imap: mailbox left with no administrator; delete it or grant the right",
+			"folder", wireName, "identifier", aclUser, "grant_err", cause, "delete_err", err,
+			"repair", fmt.Sprintf("SETACL %q user=%s a", wireName, aclUser))
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Text: "mailbox created but could not be granted an administrator, and could not be removed: " + cause.Error(),
+		}
+	}
+	if err := h.idx.DeleteFolder(folder); err != nil {
+		slog.Warn("imap: index state left behind by a rolled-back CREATE", "folder", wireName, "err", err)
+	}
+	slog.Warn("imap: CREATE rolled back, the creator could not be granted the admin right",
+		"folder", wireName, "identifier", aclUser, "err", cause)
+	// Reported as failed, not as OK with a warning nobody reads: the client
+	// must see that the mailbox is not there, so that retrying is the obvious
+	// next move once the ACL store answers again.
+	return &imaplib.Error{
+		Type: imaplib.StatusResponseTypeNo,
+		Text: "could not grant an administrator on the new mailbox; it was removed, try again",
+	}
 }
 
 // parentFolder returns folder with its last segment stripped, or
