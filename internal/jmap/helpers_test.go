@@ -18,7 +18,7 @@ import (
 
 // storedServerWithMessage delivers one raw message into INBOX and returns the
 // server plus that message's JMAP id, so a test can ask for it by id.
-func storedServerWithMessage(t *testing.T, raw string, ceiling uint32) (*Server, string) {
+func storedServerWithMessage(t testing.TB, raw string, ceiling uint32) (*Server, string) {
 	t.Helper()
 	s, id, _ := storedServerWithMessageAt(t, raw, ceiling)
 	return s, id
@@ -26,7 +26,7 @@ func storedServerWithMessage(t *testing.T, raw string, ceiling uint32) (*Server,
 
 // storedServerWithMessageAt also returns the user's home, so a test can take
 // the message away and prove a code path never reads it.
-func storedServerWithMessageAt(t *testing.T, raw string, ceiling uint32) (*Server, string, string) {
+func storedServerWithMessageAt(t testing.TB, raw string, ceiling uint32) (*Server, string, string) {
 	t.Helper()
 	home := t.TempDir()
 	info := &mailbox.UserInfo{Username: testUser, Home: home, Separator: "/"}

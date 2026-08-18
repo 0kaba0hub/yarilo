@@ -26,7 +26,7 @@ func testLimits() jmapcore.Limits {
 	}
 }
 
-func mustCIDR(t *testing.T, s string) *net.IPNet {
+func mustCIDR(t testing.TB, s string) *net.IPNet {
 	t.Helper()
 	_, n, err := net.ParseCIDR(s)
 	if err != nil {
