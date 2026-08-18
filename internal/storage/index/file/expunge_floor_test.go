@@ -42,6 +42,7 @@ func seedFolderWithExpunge(t *testing.T) (*userIndex, uint64, string) {
 func TestEveryFoldRaisesTheExpungeFloor(t *testing.T) {
 	tests := []struct {
 		name string
+		seed func(t *testing.T) (*userIndex, uint64)
 		fold func(t *testing.T, u *userIndex, folderID uint64)
 	}{
 		{
@@ -49,6 +50,32 @@ func TestEveryFoldRaisesTheExpungeFloor(t *testing.T) {
 			fold: func(t *testing.T, u *userIndex, folderID uint64) {
 				if err := u.OptimizeIndex(folderID); err != nil {
 					t.Fatalf("OptimizeIndex: %v", err)
+				}
+			},
+		},
+		{
+			// The path nobody calls by name, and therefore the one most likely
+			// to lose its stamp in a later refactor: rotation happens on its
+			// own, so a fold without a floor would ship unnoticed.
+			name: "automatic compaction",
+			seed: func(t *testing.T) (*userIndex, uint64) {
+				// Seeded without rotation, then reopened with thresholds a
+				// single write crosses: the floor starts at zero and the fold
+				// is triggered by an ordinary append, the way it happens in a
+				// deployment.
+				_, _, dir := seedFolderWithExpunge(t)
+				home := testHome(dir, testUser)
+				u := New(WithLogCompaction(1, 2, 0)).
+					OpenUser(&mailbox.UserInfo{Username: testUser, Home: home}).(*userHandle).ui
+				f, err := u.OpenFolder("INBOX", 1, "")
+				if err != nil {
+					t.Fatalf("reopen: %v", err)
+				}
+				return u, f.ID
+			},
+			fold: func(t *testing.T, u *userIndex, folderID uint64) {
+				if err := u.AppendMessage(folderID, &mailbox.MessageMeta{UID: 3, Filename: "m.eml", Size: 10}); err != nil {
+					t.Fatalf("AppendMessage: %v", err)
 				}
 			},
 		},
@@ -66,7 +93,13 @@ func TestEveryFoldRaisesTheExpungeFloor(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			u, folderID, _ := seedFolderWithExpunge(t)
+			var u *userIndex
+			var folderID uint64
+			if tc.seed != nil {
+				u, folderID = tc.seed(t)
+			} else {
+				u, folderID, _ = seedFolderWithExpunge(t)
+			}
 
 			before, err := u.ExpungeFloor(folderID)
 			if err != nil {

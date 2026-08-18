@@ -551,6 +551,8 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 	}
 	// Before the flush, because the floor has to be in the base this flush
 	// writes: the truncate below takes the expunge records with it.
+	// Before the flush, because the floor has to be in the base this flush
+	// writes: the truncate below takes the expunge records with it.
 	if err := fs.stampExpungeFloorLocked(); err != nil {
 		slog.Warn("fileindex: could not stamp the expunge floor; not compacting", "folder", fs.folder, "err", err)
 		return
