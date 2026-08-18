@@ -13,9 +13,12 @@ import (
 // Extension names match the canonical wire spec. These are the
 // exact strings the on-disk EXT_INTRO record carries.
 const (
-	extNameDboxHdr      = "dbox-hdr"
-	extNameModSeq       = "modseq"
-	extNameKeywords     = "keywords"
+	extNameDboxHdr  = "dbox-hdr"
+	extNameModSeq   = "modseq"
+	extNameKeywords = "keywords"
+	// extNameExpungeFloor records how far back the folder's expunge history
+	// reaches. See stampExpungeFloorLocked.
+	extNameExpungeFloor = "expunge-floor"
 	extNameInternalDate = "idate"
 	extNameHdrVsize     = "hdr-vsize"
 	extNameVsize        = "vsize"
@@ -198,6 +201,16 @@ const (
 // pre-rewrite yarilo limit). Growing the bitmask to multi-uint32
 // is straightforward — just bump keywordsRecSize and add more
 // bits — but is deferred until we hit the limit in production.
+// expungeFloorSize is the header: one uint64, the folder's HighestModSeq at
+// the moment its log was folded away.
+//
+// A header-only extension on purpose. A build that predates it decodes the
+// entry generically, keeps it across a rewrite, and reads records unchanged
+// because the record layout does not move -- verified on disk, which is why
+// this needs no two-release sequence the way the journalled keyword records
+// did (#1281).
+const expungeFloorSize = 8
+
 const (
 	keywordsRecSize      = 4
 	keywordsMaxBits      = 32
@@ -498,4 +511,23 @@ func decodeCacheRec(b []byte) uint32 {
 		return 0
 	}
 	return binary.LittleEndian.Uint32(b)
+}
+
+// encodeExpungeFloor / decodeExpungeFloor are the 8-byte header of the
+// expunge-floor extension.
+func encodeExpungeFloor(modseq uint64) []byte {
+	out := make([]byte, expungeFloorSize)
+	binary.LittleEndian.PutUint64(out, modseq)
+	return out
+}
+
+// decodeExpungeFloor reads the floor. A missing or short header reads as 0,
+// which means "no history has been folded away" -- the honest answer for an
+// index written before this extension existed, because such an index has
+// whatever its log still holds and nothing was silently dropped by us.
+func decodeExpungeFloor(b []byte) uint64 {
+	if len(b) < expungeFloorSize {
+		return 0
+	}
+	return binary.LittleEndian.Uint64(b)
 }

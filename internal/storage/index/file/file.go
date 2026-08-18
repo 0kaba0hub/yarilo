@@ -339,6 +339,9 @@ func (h *userHandle) NextModSeq(folderID uint64) (uint64, error) {
 func (h *userHandle) Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, error) {
 	return h.ui.Vanished(folderID, sinceModSeq)
 }
+func (h *userHandle) ExpungeFloor(folderID uint64) (uint64, error) {
+	return h.ui.ExpungeFloor(folderID)
+}
 func (h *userHandle) Keywords(folderID uint64) ([]string, error) {
 	return h.ui.Keywords(folderID)
 }
@@ -544,6 +547,12 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 	if fs.logFileReplaced() {
 		slog.Warn("fileindex: skipping compaction, .log replaced since reload", "folder", fs.folder)
 		fs.closeFDs()
+		return
+	}
+	// Before the flush, because the floor has to be in the base this flush
+	// writes: the truncate below takes the expunge records with it.
+	if err := fs.stampExpungeFloorLocked(); err != nil {
+		slog.Warn("fileindex: could not stamp the expunge floor; not compacting", "folder", fs.folder, "err", err)
 		return
 	}
 	if err := fs.flush(false); err != nil {

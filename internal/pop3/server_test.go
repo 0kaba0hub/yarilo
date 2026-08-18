@@ -107,6 +107,10 @@ func (m *mockIndex) NextModSeq(_ uint64) (uint64, error)            { return 1, 
 func (m *mockIndex) Vanished(_ uint64, _ uint64) ([]uint32, error) {
 	return nil, nil
 }
+
+func (m *mockIndex) ExpungeFloor(_ uint64) (uint64, error) {
+	return 0, nil
+}
 func (m *mockIndex) Keywords(_ uint64) ([]string, error) { return nil, nil }
 func (m *mockIndex) RenameFolder(_, _ string) error      { return nil }
 func (m *mockIndex) DeleteFolder(_ string) error         { return nil }
