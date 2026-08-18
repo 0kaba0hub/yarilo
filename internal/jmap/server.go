@@ -57,6 +57,10 @@ type Options struct {
 type Server struct {
 	opts Options
 	mux  *http.ServeMux
+	// states caches the per-folder markers the Email state is built from.
+	// Shared across requests on purpose: the handle is not, which is why the
+	// walk was paid in full on every poll (#1343).
+	states *stateCache
 }
 
 // New builds the server and registers its routes.
@@ -71,7 +75,7 @@ func New(opts Options) *Server {
 	if opts.Storage != nil {
 		opts.Storage.MailboxByDriver = mailbox.MemoizeByDriver(opts.Storage.MailboxByDriver)
 	}
-	s := &Server{opts: opts, mux: http.NewServeMux()}
+	s := &Server{opts: opts, mux: http.NewServeMux(), states: newStateCache()}
 	s.mux.HandleFunc("GET "+jmapcore.SessionPath, s.guard(s.handleSession))
 	s.mux.HandleFunc("POST "+apiPath, s.guard(s.handleAPI))
 	s.mux.HandleFunc("GET "+downloadPrefix, s.guard(s.handleDownload))

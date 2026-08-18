@@ -161,6 +161,14 @@ type SeqRange struct {
 	From, To uint32 // inclusive; To==0 means '*'
 }
 
+// FolderStamp is what a cheap validity check compares. Both files are included
+// because a write moves the log and a fold moves both; the SIZE is what makes
+// it sound where mtime granularity is coarse, as it is on NFS.
+type FolderStamp struct {
+	BaseSize, LogSize int64
+	BaseMod, LogMod   time.Time
+}
+
 // FlagsUpdate carries the new flag and keyword sets for one message in a
 // batch UpdateFlagsMulti call.
 type FlagsUpdate struct {
@@ -362,6 +370,12 @@ type UserIndex interface {
 	// complete is false when a record in range cannot be named, and the caller
 	// must degrade rather than report a shorter list as the whole truth.
 	VanishedGUIDs(folderID uint64, sinceModSeq uint64) (guids [][16]byte, complete bool, err error)
+	// FolderStamp describes the folder's files without opening it: the sizes
+	// and modification times of the base index and its log. It is a proof of
+	// unchangedness for a cached read, never a substitute for reading -- the
+	// log is what moves modseq between folds, so the base alone would answer
+	// with a stale marker.
+	FolderStamp(folder string) (FolderStamp, error)
 	// ExpungeFloor reports the modseq below which Vanished can no longer
 	// answer, because compaction folded the log that held those records. Zero
 	// means nothing has been folded away. A caller below the floor must

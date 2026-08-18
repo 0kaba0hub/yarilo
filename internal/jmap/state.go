@@ -40,13 +40,29 @@ func (s *Server) emailState(h *userHandle) (string, error) {
 		if !e.Selectable {
 			continue
 		}
+		// Two stats instead of a base read and a log replay, when nothing has
+		// moved since the marker was built. A mismatch -- or a stamp that
+		// cannot be taken -- falls through to the open.
+		stamp, stampErr := h.idx.FolderStamp(e.Name)
+		if stampErr == nil {
+			if mark, ok := s.states.get(h.info.Username, e.Name, stamp); ok {
+				desc.Entries = append(desc.Entries, jmapcore.StateEntry{Key: mark.key, Fields: mark.fields})
+				continue
+			}
+		}
 		f, err := h.idx.OpenFolder(e.Name, 0)
 		if err != nil {
 			return "", fmt.Errorf("jmap: open folder %q: %w", e.Name, err)
 		}
-		desc.Entries = append(desc.Entries, jmapcore.StateEntry{
-			Key: stateKey(f.GUID), Fields: emailStateFields(f),
-		})
+		mark := cachedMark{stamp: stamp, key: stateKey(f.GUID), fields: emailStateFields(f)}
+		if stampErr == nil {
+			// Stamped AFTER the read would be wrong: a write landing between
+			// the two would be covered by a stamp that predates it. Taken
+			// before, the worst case is an entry that looks stale and is
+			// recomputed.
+			s.states.put(h.info.Username, e.Name, mark)
+		}
+		desc.Entries = append(desc.Entries, jmapcore.StateEntry{Key: mark.key, Fields: mark.fields})
 	}
 	return desc.String(), nil
 }

@@ -1797,6 +1797,24 @@ func (u *userIndex) VanishedGUIDs(folderID uint64, sinceModSeq uint64) (guids []
 	return guids, complete, err
 }
 
+// FolderStamp stats the folder's two files without opening it, which is the
+// point: a caller holding a cached marker pays two stats instead of a base read
+// and a log replay.
+//
+// A missing file reports as size -1, the same convention JournalSizes uses, so
+// "not there" and "empty" stay different states.
+func (u *userIndex) FolderStamp(folder string) (mailbox.FolderStamp, error) {
+	indexPath := indexPathFor(u.indexDir(folder))
+	stamp := mailbox.FolderStamp{BaseSize: -1, LogSize: -1}
+	if st, err := os.Stat(indexPath); err == nil {
+		stamp.BaseSize, stamp.BaseMod = st.Size(), st.ModTime()
+	}
+	if st, err := os.Stat(indexPath + ".log"); err == nil {
+		stamp.LogSize, stamp.LogMod = st.Size(), st.ModTime()
+	}
+	return stamp, nil
+}
+
 // ExpungeFloor reports the modseq below which this folder can no longer answer
 // "what was expunged since". Zero means nothing has been folded away yet, so
 // the log still holds the whole history.

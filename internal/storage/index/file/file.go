@@ -342,6 +342,9 @@ func (h *userHandle) Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, er
 func (h *userHandle) VanishedGUIDs(folderID uint64, sinceModSeq uint64) ([][16]byte, bool, error) {
 	return h.ui.VanishedGUIDs(folderID, sinceModSeq)
 }
+func (h *userHandle) FolderStamp(folder string) (mailbox.FolderStamp, error) {
+	return h.ui.FolderStamp(folder)
+}
 func (h *userHandle) ExpungeFloor(folderID uint64) (uint64, error) {
 	return h.ui.ExpungeFloor(folderID)
 }

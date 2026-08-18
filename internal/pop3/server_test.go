@@ -112,6 +112,10 @@ func (m *mockIndex) VanishedGUIDs(_ uint64, _ uint64) ([][16]byte, bool, error) 
 	return nil, true, nil
 }
 
+func (m *mockIndex) FolderStamp(_ string) (mailbox.FolderStamp, error) {
+	return mailbox.FolderStamp{}, nil
+}
+
 func (m *mockIndex) ExpungeFloor(_ uint64) (uint64, error) {
 	return 0, nil
 }
