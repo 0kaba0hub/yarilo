@@ -77,6 +77,27 @@ func TestStateCacheDoesNotCrossAccounts(t *testing.T) {
 	}
 }
 
+// The shrink direction, asserted where it is observable at all.
+//
+// A fold changes no field of the marker -- uidvalidity, modseq and nextUID are
+// all fold-invariant -- so a stale entry and a freshly computed one produce the
+// identical state string. Comparing states therefore cannot tell them apart,
+// and an integration test that does so passes even on a cache that only
+// invalidates on growth. The difference is observable only as hit against
+// miss, which is what this row asks.
+func TestStateCacheInvalidatesOnAShrunkLog(t *testing.T) {
+	c := newStateCache()
+	beforeFold := mailbox.FolderStamp{BaseSize: 4096, LogSize: 6600}
+	c.put(testUser, "INBOX", cachedMark{stamp: beforeFold, key: [8]byte{7}, fields: []uint64{1, 2, 3}})
+
+	// What the same folder looks like after a fold: the base was rewritten and
+	// the log is a header again.
+	afterFold := mailbox.FolderStamp{BaseSize: 4096, LogSize: 40}
+	if _, ok := c.get(testUser, "INBOX", afterFold); ok {
+		t.Error("a marker from before the fold was served after it; the cache is watching only growth")
+	}
+}
+
 // The log shrinks when a fold truncates it, and a cache that only noticed
 // growth would keep serving a marker from before the fold. Both directions
 // invalidate, which is why the proof is the pair (size, mtime) of both files

@@ -11,7 +11,7 @@ import (
 // what the state has to walk on every Email/get and Email/set.
 func serverWithFolders(tb testing.TB, n int) (*Server, *userHandle) {
 	tb.Helper()
-	s, _, _ := storedServerWithMessageAt(&testing.T{}, setTestMessage, 0)
+	s, _, _ := storedServerWithMessageAt(tb, setTestMessage, 0)
 	h, err := s.opts.Storage.open(testUser)
 	if err != nil {
 		tb.Fatalf("open user: %v", err)
@@ -32,7 +32,6 @@ func serverWithFolders(tb testing.TB, n int) (*Server, *userHandle) {
 		}
 	}
 	h.close()
-	tb.Cleanup(func() {})
 	fresh, err := s.opts.Storage.open(testUser)
 	if err != nil {
 		tb.Fatalf("reopen: %v", err)
