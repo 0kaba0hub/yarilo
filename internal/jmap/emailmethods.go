@@ -62,9 +62,14 @@ func (s *Server) emailGet(_ context.Context, h *userHandle, accountID string, ar
 	// the client asked for and no others (RFC 8620 §5.1). Returning the whole
 	// object states every field as fact, including the ones this request never
 	// computed.
+	state, err := s.emailState(h)
+	if err != nil {
+		slog.Warn("jmap: Email/get state failed", "account", accountID, "err", err)
+		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+	}
 	resp := jmapcore.GetResponse[any]{
 		AccountID: accountID,
-		State:     "0", // Email state tracking arrives with Email/changes.
+		State:     state,
 		List:      []any{},
 		NotFound:  []string{},
 	}

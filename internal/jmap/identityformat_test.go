@@ -1,8 +1,10 @@
 package jmap
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/yarilomail/yarilo/pkg/jmapcore"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -31,12 +33,20 @@ func TestObjectIDsUseTheSharedFormatter(t *testing.T) {
 	}
 }
 
-// The state string is a digest of the mailbox set, not an object id, so it must
-// NOT be routed through the identity formatter — the two answer different
-// questions and tying them together would couple a cache key to an id format.
+// The state string describes the mailbox set; it is not an object id, and must
+// not be routed through the identity formatter -- the two answer different
+// questions, and tying them together would couple a client's cache key to an id
+// format. It carries its own version instead, which is what lets a later
+// consumer refuse a layout it does not know rather than misread it.
 func TestMailboxStateIsNotAnObjectID(t *testing.T) {
 	state := mailboxState(nil)
-	if len(state) != 16 {
-		t.Errorf("state is %d chars; an object id would be 32", len(state))
+	if len(state) == 32 {
+		t.Errorf("state %q has an object id's shape", state)
+	}
+	if !strings.HasPrefix(state, "1-") {
+		t.Errorf("state %q carries no format version", state)
+	}
+	if _, err := jmapcore.ParseDescription(state, jmapcore.KindMailbox); err != nil {
+		t.Errorf("the state we emit does not parse as one of ours: %v", err)
 	}
 }
