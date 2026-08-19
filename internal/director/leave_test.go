@@ -37,6 +37,30 @@ func TestMembership_GracefulLeave_EvictsImmediately(t *testing.T) {
 		return ringConnCount(srvA) >= 2 && ringConnCount(srvB) >= 2 && ringConnCount(srvC) >= 2
 	})
 
+	// The ring position decides between the two candidate causes, so it is
+	// taken while the topology still contains the leaver -- before Leave(),
+	// not after. It would in fact survive the leave, because an originator
+	// never applies its own REMOVE and srvB keeps the full list; but resting a
+	// diagnostic on that would make it depend on a detail of the thing being
+	// diagnosed.
+	//
+	// The leaver sends DIRECTOR-REMOVE around the ring and QUIT to everyone,
+	// and QUIT is deliberately not a death signal -- so the LEFT neighbour
+	// learns of the departure only from the forwarded envelope, and falls back
+	// to probes, which take seconds, if that envelope is lost. Failures always
+	// on the left mean the envelope is being lost; failures on either side mean
+	// it is something else (#1352).
+	roleOf := func(s *Server) string {
+		if right, ok := srvB.membership.rightNeighborOf(s.membership.self); ok && right.equal(srvB.membership.self) {
+			return "left neighbour of the leaver (learns only via the forwarded REMOVE)"
+		}
+		if right, ok := srvB.membership.rightNeighborOf(srvB.membership.self); ok && right.equal(s.membership.self) {
+			return "right neighbour of the leaver (receives REMOVE directly)"
+		}
+		return "neither neighbour"
+	}
+	roles := map[*Server]string{srvA: roleOf(srvA), srvC: roleOf(srvC)}
+
 	leaver := srvB.membership.self
 	srvB.membership.Leave()
 
@@ -58,13 +82,13 @@ func TestMembership_GracefulLeave_EvictsImmediately(t *testing.T) {
 		dropped, took := waitForDrop(s, leaver, patience)
 		switch {
 		case !dropped:
-			t.Fatalf("member %s never dropped the gracefully-left %s within %s: %v -- "+
+			t.Fatalf("member %s (%s) never dropped the gracefully-left %s within %s: %v -- "+
 				"this is propagation, not a slow machine",
-				s.membership.self, leaver, patience, s.membership.Members())
+				s.membership.self, roles[s], leaver, patience, s.membership.Members())
 		case took > budget:
-			t.Fatalf("member %s dropped the gracefully-left %s only after %s (budget %s) -- "+
+			t.Fatalf("member %s (%s) dropped the gracefully-left %s only after %s (budget %s) -- "+
 				"it propagates, but not within the window this test asserts",
-				s.membership.self, leaver, took.Round(time.Millisecond), budget)
+				s.membership.self, roles[s], leaver, took.Round(time.Millisecond), budget)
 		}
 	}
 }
