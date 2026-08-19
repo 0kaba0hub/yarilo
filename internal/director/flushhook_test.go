@@ -52,7 +52,10 @@ func TestFlushHook_RunsOnConfirmedMove(t *testing.T) {
 	script := writeHookScript(t, out)
 	grace := 10 * time.Millisecond
 	s := NewWithOptions(Options{
-		FlushProgram:         script,
+		FlushProgram: script,
+		// See the note in idlekill_test.go: these assert that the hook runs,
+		// not how fast a shell script starts on a loaded machine (#1352).
+		FlushProgramTimeout:  2 * time.Minute,
 		UserKillConfirmGrace: grace,
 		UserKillTimeout:      10 * time.Second,
 	})
@@ -92,7 +95,10 @@ func TestFlushHook_SkippedWithoutOldHost(t *testing.T) {
 	script := writeHookScript(t, out)
 	grace := 10 * time.Millisecond
 	s := NewWithOptions(Options{
-		FlushProgram:         script,
+		FlushProgram: script,
+		// See the note in idlekill_test.go: these assert that the hook runs,
+		// not how fast a shell script starts on a loaded machine (#1352).
+		FlushProgramTimeout:  2 * time.Minute,
 		UserKillConfirmGrace: grace,
 		UserKillTimeout:      10 * time.Second,
 	})
@@ -104,5 +110,30 @@ func TestFlushHook_SkippedWithoutOldHost(t *testing.T) {
 
 	if b := waitForFile(t, out); b != "" {
 		t.Fatalf("a move with no old host must not run the hook, got %q", b)
+	}
+}
+
+// The bound is the operator's, and the default is what applies when they say
+// nothing. Without the first row a zero value would mean "no timeout at all"
+// after some future refactor, and a hung hook would leak a process per move;
+// without the second the knob could be ignored and every test above would
+// still pass, because they only need it to be generous (#1352).
+func TestFlushProgramTimeoutResolution(t *testing.T) {
+	tests := []struct {
+		name string
+		set  time.Duration
+		want time.Duration
+	}{
+		{"unset falls back to the default", 0, defaultFlushProgramTimeout},
+		{"negative falls back too", -time.Second, defaultFlushProgramTimeout},
+		{"an operator's value is used", 45 * time.Second, 45 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewWithOptions(Options{FlushProgramTimeout: tc.set})
+			if got := s.flushProgramTimeout(); got != tc.want {
+				t.Errorf("timeout = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }

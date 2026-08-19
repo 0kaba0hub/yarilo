@@ -61,6 +61,12 @@ func TestFlushHook_RunsForIdleUserMove(t *testing.T) {
 		FlushProgram:         script,
 		UserKillConfirmGrace: grace,
 		UserKillTimeout:      30 * time.Second, // long: a timeout-driven exit would NOT run the hook
+		// Generous on purpose: these tests assert that the hook RUNS, not
+		// how fast a shell script starts. With the production default of ten
+		// seconds they failed on a loaded machine -- the script was killed and
+		// the best-effort path logged it, exactly as designed -- so the test
+		// was stricter than the contract it checks (#1352).
+		FlushProgramTimeout: 2 * time.Minute,
 	})
 
 	user := "idle@d.test"

@@ -174,6 +174,9 @@ type Options struct {
 	// FlushProgram is an optional per-user cleanup hook run after a confirmed
 	// move; empty = disabled.
 	FlushProgram string
+	// FlushProgramTimeout bounds one flush hook run. Zero selects
+	// defaultFlushProgramTimeout.
+	FlushProgramTimeout time.Duration
 	// UserKillTimeout is the hard fallthrough for the confirmed kick;
 	// UserKillConfirmGrace is the stable-zero window before confirming.
 	// 0 = defaults (15s, 1s).

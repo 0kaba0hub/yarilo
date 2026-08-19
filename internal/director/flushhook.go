@@ -11,7 +11,15 @@ import (
 // flushHookTimeout bounds one flush-hook run (#848). The reference uses a 10s connect
 // timeout for its flush socket; we bound the whole external program the same way so a
 // wedged hook can never accumulate goroutines/processes without limit.
-const flushHookTimeout = 10 * time.Second
+const defaultFlushProgramTimeout = 10 * time.Second
+
+// flushProgramTimeout is the operator's bound, or the default when unset.
+func (s *Server) flushProgramTimeout() time.Duration {
+	if s.opts.FlushProgramTimeout > 0 {
+		return s.opts.FlushProgramTimeout
+	}
+	return defaultFlushProgramTimeout
+}
 
 // runFlushHook invokes the configured per-user flush program asynchronously once a
 // relocation has been confirmed ring-wide (#848). It is strictly best-effort: the
@@ -31,7 +39,7 @@ func (s *Server) runFlushHook(hash uint32, fc flushCtx) {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), flushHookTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), s.flushProgramTimeout())
 		defer cancel()
 		cmd := exec.CommandContext(ctx, prog, "FLUSH", fc.user,
 			strconv.FormatUint(uint64(hash), 10), fc.oldBackend, fc.newBackend)
