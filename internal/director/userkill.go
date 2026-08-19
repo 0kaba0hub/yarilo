@@ -124,7 +124,11 @@ func (s *Server) applyKilling(hash uint32, ttl time.Duration) {
 // deleted by somebody else.
 //
 // So the hook runs here too, on one condition: THIS member must already have
-// seen the sessions go. That keeps the contract the hook is written to -- it
+// seen the sessions go.
+//
+// This path exists for the mixed ring and becomes unreachable once no member
+// predating #1359 can be in it -- at which point it should be removed rather
+// than left as a second place the hook can fire from. That keeps the contract the hook is written to -- it
 // runs after the old sessions are gone, observed locally -- while an
 // announcement arriving over a still-live session (a peer's fallthrough) drops
 // the context without running anything, exactly as before.
@@ -228,7 +232,11 @@ func (s *Server) StartKillSweep(ctx context.Context) {
 	}()
 }
 
-type confirmedKill struct {
+// killOutcome is one record the sweep finished with, either way it ended:
+// confirmed or timed out. Both need the same three facts, which is why they
+// share a type rather than the confirmed one being reused for a list of
+// timeouts.
+type killOutcome struct {
 	hash  uint32
 	flush *flushCtx // #848: per-user hook context, non-nil only on originator moves
 	// originated carries killState.originated out of the lock, because who may
@@ -238,17 +246,17 @@ type confirmedKill struct {
 
 func (s *Server) sweepKills(grace time.Duration) {
 	now := time.Now()
-	var timedOut []confirmedKill
-	var confirmed []confirmedKill
+	var timedOut []killOutcome
+	var confirmed []killOutcome
 
 	s.killMu.Lock()
 	for hash, st := range s.killing {
 		switch {
 		case now.After(st.deadline):
-			timedOut = append(timedOut, confirmedKill{hash: hash, originated: st.originated})
+			timedOut = append(timedOut, killOutcome{hash: hash, originated: st.originated})
 			delete(s.killing, hash)
 		case !st.zeroSince.IsZero() && now.Sub(st.zeroSince) >= grace:
-			confirmed = append(confirmed, confirmedKill{hash: hash, flush: st.flush, originated: st.originated})
+			confirmed = append(confirmed, killOutcome{hash: hash, flush: st.flush, originated: st.originated})
 			delete(s.killing, hash)
 		}
 	}
