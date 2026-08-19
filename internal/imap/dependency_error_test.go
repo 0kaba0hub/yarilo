@@ -3,6 +3,7 @@ package imap
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -103,5 +104,45 @@ func TestACLUnavailableUsesTheTemporaryCode(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(imapErr.Text), "try again") {
 		t.Errorf("the temporary answer %q does not tell the client to retry", imapErr.Text)
+	}
+}
+
+// The seam, not the call site. STORE was classified at one call and the failure
+// came from another in the same handler, so a lock-service restart still
+// reached clients as SERVERBUG (#1339). Every command now passes through
+// timedSession on its way back, so the classification cannot be one site
+// behind -- and a command added later cannot miss it, because the interface
+// assertion in that file stops the build until it is forwarded.
+func TestEverySessionMethodClassifiesThroughTheSeam(t *testing.T) {
+	body, err := os.ReadFile("timed_session.go")
+	if err != nil {
+		t.Fatalf("read seam: %v", err)
+	}
+	src := string(body)
+
+	// Every forwarded call either classifies, or is one of the three named
+	// exceptions that answer no client request of their own.
+	exempt := map[string]bool{"SessionID": true, "Close": true, "AuthenticateMechanisms": true}
+	var unclassified []string
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "return t.s.") && !strings.HasPrefix(trimmed, "v, err := t.s.") {
+			continue
+		}
+		call := strings.TrimPrefix(strings.TrimPrefix(trimmed, "return "), "v, err := ")
+		name := call[len("t.s."):]
+		if i := strings.Index(name, "("); i > 0 {
+			name = name[:i]
+		}
+		if exempt[name] {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "return t.s.") {
+			unclassified = append(unclassified, name)
+		}
+	}
+	if len(unclassified) > 0 {
+		t.Errorf("these commands return the store's error unclassified, so the library turns it into SERVERBUG:\n  %s",
+			strings.Join(unclassified, "\n  "))
 	}
 }

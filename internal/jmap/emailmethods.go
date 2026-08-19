@@ -54,8 +54,7 @@ func (s *Server) emailGet(_ context.Context, h *userHandle, accountID string, ar
 	}
 	found, err := s.findMessages(h, want)
 	if err != nil {
-		slog.Warn("jmap: Email/get lookup failed", "account", accountID, "err", err)
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		return nil, storeFailure("Email/get lookup failed", accountID, err)
 	}
 
 	// Projected, not the object itself: a response must carry the properties
@@ -64,8 +63,7 @@ func (s *Server) emailGet(_ context.Context, h *userHandle, accountID string, ar
 	// computed.
 	state, err := s.emailState(h)
 	if err != nil {
-		slog.Warn("jmap: Email/get state failed", "account", accountID, "err", err)
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		return nil, storeFailure("Email/get state failed", accountID, err)
 	}
 	resp := jmapcore.GetResponse[any]{
 		AccountID: accountID,

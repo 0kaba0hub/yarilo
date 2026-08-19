@@ -8,13 +8,21 @@ import (
 	"github.com/emersion/go-sasl"
 )
 
-// timedSession times every command a client issues, at the one seam every
-// command passes through.
+// timedSession is the one seam every command passes through on its way back to
+// the client, and it does two things there: times the command, and classifies
+// the error.
+//
+// Classifying here rather than at each call site is what makes it complete. Per
+// site, the answer is always one site behind -- STORE was classified and the
+// failure arrived from a different call in the same handler, so a lock-service
+// restart still reached clients as SERVERBUG (#1339). Here every command is
+// covered, and a command added later cannot miss it: the interface assertion
+// below stops the build until it is forwarded.
 //
 // It does not embed the session on purpose. Embedding would inherit any method
-// this file forgets, and the miss would be invisible: the command would work
-// and simply never be measured. Written out, a forgotten method fails the
-// interface assertion below and the build stops.
+// this file forgets, and the miss would be invisible: the command would work,
+// never be measured, and never be classified. Written out, a forgotten method
+// fails the assertion and the build stops.
 type timedSession struct{ s *session }
 
 var _ imapserver.SessionIMAP4rev2 = (*timedSession)(nil)
@@ -38,155 +46,168 @@ func (t *timedSession) AuthenticateMechanisms() []string { return t.s.Authentica
 
 func (t *timedSession) GetACL(folder string) (*imaplib.GetACLData, error) {
 	defer t.observe("GetACL", time.Now())
-	return t.s.GetACL(folder)
+	v, err := t.s.GetACL(folder)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) MyRights(folder string) (*imaplib.MyRightsData, error) {
 	defer t.observe("MyRights", time.Now())
-	return t.s.MyRights(folder)
+	v, err := t.s.MyRights(folder)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) ListRights(folder string, identifier imaplib.RightsIdentifier) (*imaplib.ListRightsData, error) {
 	defer t.observe("ListRights", time.Now())
-	return t.s.ListRights(folder, identifier)
+	v, err := t.s.ListRights(folder, identifier)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) SetACL(folder string, identifier imaplib.RightsIdentifier, modification imaplib.RightModification, rights imaplib.RightSet) error {
 	defer t.observe("SetACL", time.Now())
-	return t.s.SetACL(folder, identifier, modification, rights)
+	return dependencyError(t.s.SetACL(folder, identifier, modification, rights))
 }
 
 func (t *timedSession) DeleteACL(folder string, identifier imaplib.RightsIdentifier) error {
 	defer t.observe("DeleteACL", time.Now())
-	return t.s.DeleteACL(folder, identifier)
+	return dependencyError(t.s.DeleteACL(folder, identifier))
 }
 
 func (t *timedSession) GetQuotaRoot(mailbox string) (*imaplib.QuotaRootData, error) {
 	defer t.observe("GetQuotaRoot", time.Now())
-	return t.s.GetQuotaRoot(mailbox)
+	v, err := t.s.GetQuotaRoot(mailbox)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) GetQuota(root string) (*imaplib.QuotaData, error) {
 	defer t.observe("GetQuota", time.Now())
-	return t.s.GetQuota(root)
+	v, err := t.s.GetQuota(root)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) Login(username, password string) error {
 	defer t.observe("Login", time.Now())
-	return t.s.Login(username, password)
+	return dependencyError(t.s.Login(username, password))
 }
 
 func (t *timedSession) Authenticate(mech string) (sasl.Server, error) {
 	defer t.observe("Authenticate", time.Now())
-	return t.s.Authenticate(mech)
+	v, err := t.s.Authenticate(mech)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) Select(name string, opts *imaplib.SelectOptions) (*imaplib.SelectData, error) {
 	defer t.observe("Select", time.Now())
-	return t.s.Select(name, opts)
+	v, err := t.s.Select(name, opts)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) Unselect() error {
 	defer t.observe("Unselect", time.Now())
-	return t.s.Unselect()
+	return dependencyError(t.s.Unselect())
 }
 
 func (t *timedSession) Create(name string, opts *imaplib.CreateOptions) error {
 	defer t.observe("Create", time.Now())
-	return t.s.Create(name, opts)
+	return dependencyError(t.s.Create(name, opts))
 }
 
 func (t *timedSession) Delete(name string) error {
 	defer t.observe("Delete", time.Now())
-	return t.s.Delete(name)
+	return dependencyError(t.s.Delete(name))
 }
 
 func (t *timedSession) Rename(oldName, newName string, opts *imaplib.RenameOptions) error {
 	defer t.observe("Rename", time.Now())
-	return t.s.Rename(oldName, newName, opts)
+	return dependencyError(t.s.Rename(oldName, newName, opts))
 }
 
 func (t *timedSession) Subscribe(name string) error {
 	defer t.observe("Subscribe", time.Now())
-	return t.s.Subscribe(name)
+	return dependencyError(t.s.Subscribe(name))
 }
 
 func (t *timedSession) Unsubscribe(name string) error {
 	defer t.observe("Unsubscribe", time.Now())
-	return t.s.Unsubscribe(name)
+	return dependencyError(t.s.Unsubscribe(name))
 }
 
 func (t *timedSession) List(w *imapserver.ListWriter, ref string, patterns []string, opts *imaplib.ListOptions) error {
 	defer t.observe("List", time.Now())
-	return t.s.List(w, ref, patterns, opts)
+	return dependencyError(t.s.List(w, ref, patterns, opts))
 }
 
 func (t *timedSession) Status(name string, opts *imaplib.StatusOptions) (*imaplib.StatusData, error) {
 	defer t.observe("Status", time.Now())
-	return t.s.Status(name, opts)
+	v, err := t.s.Status(name, opts)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) Append(name string, r imaplib.LiteralReader, opts *imaplib.AppendOptions) (*imaplib.AppendData, error) {
 	defer t.observe("Append", time.Now())
-	return t.s.Append(name, r, opts)
+	v, err := t.s.Append(name, r, opts)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) Notify(w *imapserver.UpdateWriter, options *imaplib.NotifyOptions) error {
 	defer t.observe("Notify", time.Now())
-	return t.s.Notify(w, options)
+	return dependencyError(t.s.Notify(w, options))
 }
 
 func (t *timedSession) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	defer t.observe("Poll", time.Now())
-	return t.s.Poll(w, allowExpunge)
+	return dependencyError(t.s.Poll(w, allowExpunge))
 }
 
 func (t *timedSession) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	defer t.observe("Idle", time.Now())
-	return t.s.Idle(w, stop)
+	return dependencyError(t.s.Idle(w, stop))
 }
 
 func (t *timedSession) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) error {
 	defer t.observe("Expunge", time.Now())
-	return t.s.Expunge(w, uids)
+	return dependencyError(t.s.Expunge(w, uids))
 }
 
 func (t *timedSession) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriteria, opts *imaplib.SearchOptions) (*imaplib.SearchData, error) {
 	defer t.observe("Search", time.Now())
-	return t.s.Search(kind, criteria, opts)
+	v, err := t.s.Search(kind, criteria, opts)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *imaplib.FetchOptions) error {
 	defer t.observe("Fetch", time.Now())
-	return t.s.Fetch(w, numSet, opts)
+	return dependencyError(t.s.Fetch(w, numSet, opts))
 }
 
 func (t *timedSession) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeFlags *imaplib.StoreFlags, opts *imaplib.StoreOptions) error {
 	defer t.observe("Store", time.Now())
-	return t.s.Store(w, numSet, storeFlags, opts)
+	return dependencyError(t.s.Store(w, numSet, storeFlags, opts))
 }
 
 func (t *timedSession) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, error) {
 	defer t.observe("Copy", time.Now())
-	return t.s.Copy(numSet, dest)
+	v, err := t.s.Copy(numSet, dest)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) Namespace() (*imaplib.NamespaceData, error) {
 	defer t.observe("Namespace", time.Now())
-	return t.s.Namespace()
+	v, err := t.s.Namespace()
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) GetMetadata(folder string, entries []string, opts *imaplib.GetMetadataOptions) (*imaplib.GetMetadataData, error) {
 	defer t.observe("GetMetadata", time.Now())
-	return t.s.GetMetadata(folder, entries, opts)
+	v, err := t.s.GetMetadata(folder, entries, opts)
+	return v, dependencyError(err)
 }
 
 func (t *timedSession) SetMetadata(folder string, entries map[string]*[]byte) error {
 	defer t.observe("SetMetadata", time.Now())
-	return t.s.SetMetadata(folder, entries)
+	return dependencyError(t.s.SetMetadata(folder, entries))
 }
 
 func (t *timedSession) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest string) error {
 	defer t.observe("Move", time.Now())
-	return t.s.Move(w, numSet, dest)
+	return dependencyError(t.s.Move(w, numSet, dest))
 }

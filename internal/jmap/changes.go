@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -34,8 +35,7 @@ func (s *Server) emailChanges(_ context.Context, h *userHandle, accountID string
 
 	folders, err := s.folderMarks(h)
 	if err != nil {
-		slog.Warn("jmap: Email/changes state failed", "account", accountID, "err", err)
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		return nil, storeFailure("Email/changes state failed", accountID, err)
 	}
 	newState := folders.description().String()
 
@@ -58,7 +58,7 @@ func (s *Server) emailChanges(_ context.Context, h *userHandle, accountID string
 			// A folder the client has never seen: everything in it is new.
 			ids, err := s.folderMessageIDs(h, f, 0, 0)
 			if err != nil {
-				return nil, serverFail("Email/changes read", accountID, err)
+				return nil, storeFailure("Email/changes read", accountID, err)
 			}
 			resp.Created = append(resp.Created, ids.created...)
 			continue
@@ -80,21 +80,21 @@ func (s *Server) emailChanges(_ context.Context, h *userHandle, accountID string
 		// label.
 		floor, err := h.idx.ExpungeFloor(f.folder.ID)
 		if err != nil {
-			return nil, serverFail("Email/changes floor", accountID, err)
+			return nil, storeFailure("Email/changes floor", accountID, err)
 		}
 		if floor > prevModSeq {
 			return nil, cannotCalculate("the expunge history for this account no longer reaches that state")
 		}
 		ids, err := s.folderMessageIDs(h, f, prevModSeq, uint32(prevNextUID))
 		if err != nil {
-			return nil, serverFail("Email/changes read", accountID, err)
+			return nil, storeFailure("Email/changes read", accountID, err)
 		}
 		resp.Created = append(resp.Created, ids.created...)
 		resp.Updated = append(resp.Updated, ids.updated...)
 
 		guids, complete, err := h.idx.VanishedGUIDs(f.folder.ID, prevModSeq)
 		if err != nil {
-			return nil, serverFail("Email/changes vanished", accountID, err)
+			return nil, storeFailure("Email/changes vanished", accountID, err)
 		}
 		if !complete {
 			// Some expunge in range cannot be named -- a record written before
@@ -140,8 +140,7 @@ func (s *Server) mailboxChanges(_ context.Context, h *userHandle, accountID stri
 	}
 	list, err := s.mailboxList(h)
 	if err != nil {
-		slog.Warn("jmap: Mailbox/changes failed", "account", accountID, "err", err)
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		return nil, storeFailure("Mailbox/changes failed", accountID, err)
 	}
 
 	resp := &jmapcore.ChangesResponse{
@@ -210,7 +209,22 @@ func cannotCalculate(why string) *jmapcore.MethodError {
 	return &jmapcore.MethodError{Type: jmapcore.ErrCannotCalculateChanges, Description: why}
 }
 
-func serverFail(what, accountID string, err error) *jmapcore.MethodError {
+// storeFailure is where a Go error becomes a method error, and therefore the
+// only place that can classify it. jmapcore cannot: it must stay free of yarilo
+// imports, so a wrapper around the dispatch would only ever see a MethodError
+// that has already thrown the cause away.
+//
+// A dependency being restarted is temporary and the client should retry;
+// serverFail says "something went wrong here", which a client treats as final
+// and reports to its user (#1339).
+func storeFailure(what, accountID string, err error) *jmapcore.MethodError {
+	if errors.Is(err, locks.ErrUnavailable) {
+		slog.Warn("jmap: "+what+" unavailable", "account", accountID, "err", err)
+		return &jmapcore.MethodError{
+			Type:        jmapcore.ErrServerUnavailable,
+			Description: "the mail store is temporarily unavailable, try again",
+		}
+	}
 	slog.Warn("jmap: "+what+" failed", "account", accountID, "err", err)
 	return &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
 }

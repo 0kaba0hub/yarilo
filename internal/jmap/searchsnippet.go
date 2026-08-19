@@ -44,8 +44,7 @@ func (s *Server) searchSnippet(_ context.Context, h *userHandle, accountID strin
 	}
 	found, err := s.findMessages(h, want)
 	if err != nil {
-		slog.Warn("jmap: SearchSnippet/get lookup failed", "account", accountID, "err", err)
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		return nil, storeFailure("SearchSnippet/get lookup failed", accountID, err)
 	}
 
 	marker := newSnippetMarker(s, req.Filter)

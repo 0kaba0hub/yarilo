@@ -60,8 +60,7 @@ func (s *Server) emailQuery(ctx context.Context, h *userHandle, accountID string
 
 	scope, err := s.queryScope(h, req.Filter)
 	if err != nil {
-		slog.Warn("jmap: Email/query scope failed", "account", accountID, "err", err)
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		return nil, storeFailure("Email/query scope failed", accountID, err)
 	}
 
 	if merr := s.checkQueryFolders(scope, req.Filter); merr != nil {
