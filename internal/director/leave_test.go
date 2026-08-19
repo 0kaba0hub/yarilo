@@ -54,17 +54,36 @@ func TestMembership_GracefulLeave_EvictsImmediately(t *testing.T) {
 	//     propagate, which would show up in a rolling restart of the director.
 	const budget = 2 * time.Second
 	const patience = 10 * time.Second
+	// The ring position is captured BEFORE the leave, while the topology still
+	// contains the leaver: afterwards it is gone and the roles cannot be
+	// reconstructed. It is what separates the two candidate causes -- the
+	// leaver sends DIRECTOR-REMOVE around the ring but QUIT to everyone, and
+	// QUIT is deliberately not a death signal, so the LEFT neighbour learns of
+	// the departure only from the forwarded envelope. If failures are always
+	// the left neighbour, the envelope is being lost and this is propagation;
+	// if they fall on either side, it is not (#1352).
+	roleOf := func(s *Server) string {
+		if right, ok := srvB.membership.rightNeighborOf(s.membership.self); ok && right.equal(leaver) {
+			return "left neighbour of the leaver (learns only via the forwarded REMOVE)"
+		}
+		if right, ok := srvB.membership.rightNeighborOf(leaver); ok && right.equal(s.membership.self) {
+			return "right neighbour of the leaver (receives REMOVE directly)"
+		}
+		return "neither neighbour"
+	}
+	roles := map[*Server]string{srvA: roleOf(srvA), srvC: roleOf(srvC)}
+
 	for _, s := range []*Server{srvA, srvC} {
 		dropped, took := waitForDrop(s, leaver, patience)
 		switch {
 		case !dropped:
-			t.Fatalf("member %s never dropped the gracefully-left %s within %s: %v -- "+
+			t.Fatalf("member %s (%s) never dropped the gracefully-left %s within %s: %v -- "+
 				"this is propagation, not a slow machine",
-				s.membership.self, leaver, patience, s.membership.Members())
+				s.membership.self, roles[s], leaver, patience, s.membership.Members())
 		case took > budget:
-			t.Fatalf("member %s dropped the gracefully-left %s only after %s (budget %s) -- "+
+			t.Fatalf("member %s (%s) dropped the gracefully-left %s only after %s (budget %s) -- "+
 				"it propagates, but not within the window this test asserts",
-				s.membership.self, leaver, took.Round(time.Millisecond), budget)
+				s.membership.self, roles[s], leaver, took.Round(time.Millisecond), budget)
 		}
 	}
 }
