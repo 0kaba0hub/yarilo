@@ -446,6 +446,11 @@ components:
     ## the move runs it; mass/reactive paths (backend-down, --force flush) do not.
     ## The program runs in the director pod's context. Empty = disabled (default).
     flush_program: ""
+    ## Seconds one flush_program run may take before it is killed. The hook is
+    ## best-effort, so an overrun leaves nothing behind but a WARN on the
+    ## server -- which is why the bound belongs to whoever wrote the script.
+    ## Raise it for a hook that legitimately takes longer than ten seconds.
+    flush_program_timeout: 10
 
     ## Static backend list loaded at startup.
     ## Each entry must match a backend service in the backend namespace.

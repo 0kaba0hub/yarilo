@@ -1477,6 +1477,12 @@ type DirectorServiceConfig struct {
 	// self-initiated semantics); mass/reactive paths (backend-down, --force flush) do
 	// NOT trigger it. Empty = disabled (default). The reference's director_flush_socket.
 	FlushProgram string `koanf:"flush_program"`
+	// FlushProgramTimeoutSeconds bounds one flush_program run. The hook is
+	// best-effort, so a run that exceeds it is killed and only logged -- which
+	// is exactly why the bound has to be an operator's to set: a legitimate
+	// 15-second script would otherwise be killed for ever, leaving nothing
+	// behind but a WARN on the server (#1352). Zero selects the default.
+	FlushProgramTimeoutSeconds int `koanf:"flush_program_timeout"`
 	// LMTPListen enables the director's embedded LMTP proxy (per-recipient
 	// fan-out via ring routing) on this address, e.g. ":10024". Empty =
 	// disabled. This deliberately does NOT reuse the shared services.lmtp
