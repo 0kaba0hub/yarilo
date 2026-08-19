@@ -1323,7 +1323,10 @@ func buildDict(dicts map[string]config.DictConfig, name string) (dict.Dict, erro
 // Locker must be closed by Server.Close.
 func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 	lc := cfg.LocksClient
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// The deadline covers the startup wait as well as one dial: a 10s context
+	// would cancel a 30s wait and report a timeout instead of the service
+	// still being absent.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second+lc.StartupWait())
 	defer cancel()
 	switch lc.Mode {
 	case "":
@@ -1332,7 +1335,7 @@ func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 		if lc.Socket == "" {
 			return nil, fmt.Errorf("locks_client.socket is required for embedded mode")
 		}
-		return locks.NewClient(ctx, locks.DialUnix(lc.Socket))
+		return locks.NewClientWaiting(ctx, locks.DialUnix(lc.Socket), lc.StartupWait())
 	case "remote":
 		if len(lc.Endpoints) == 0 {
 			return nil, fmt.Errorf("locks_client.endpoints must list at least one host:port for remote mode")
@@ -1342,11 +1345,11 @@ func buildLocksClient(cfg *config.Config) (locks.Locker, error) {
 			if err != nil {
 				return nil, fmt.Errorf("locks_client mtls: %w", err)
 			}
-			return locks.NewClient(ctx, locks.DialTLS(lc.Endpoints[0], tlsCfg))
+			return locks.NewClientWaiting(ctx, locks.DialTLS(lc.Endpoints[0], tlsCfg), lc.StartupWait())
 		}
 		// Single-endpoint connect for now; failover across Endpoints is a
 		// follow-up (custom Dialer iterating the list until first success).
-		return locks.NewClient(ctx, locks.DialTCP(lc.Endpoints[0]))
+		return locks.NewClientWaiting(ctx, locks.DialTCP(lc.Endpoints[0]), lc.StartupWait())
 	default:
 		return nil, fmt.Errorf("locks_client: unknown mode %q (want remote | embedded | \"\")", lc.Mode)
 	}
