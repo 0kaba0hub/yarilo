@@ -193,7 +193,7 @@ func (s *session) requireAdminOn(h *nsHandle, folder string) error {
 	}
 	effective, err := s.effectiveRights(h, folder)
 	if err != nil {
-		return aclUnavailable("acl", folder, err)
+		return aclUnavailable(folder, err)
 	}
 	if effective.Has(mailbox.RightAdminister) {
 		return nil
@@ -230,7 +230,7 @@ func (s *session) GetACL(folder string) (*imaplib.GetACLData, error) {
 	}
 	stored, err := h.acl.Get(rel)
 	if err != nil {
-		return nil, aclUnavailable("acl", folder, err)
+		return nil, aclUnavailable(folder, err)
 	}
 	// The owner comes from h.owner, the principal who owns this namespace
 	// instance, not h.userInfo.Username. For a shared handle the latter is the
@@ -256,7 +256,7 @@ func (s *session) GetACL(folder string) (*imaplib.GetACLData, error) {
 		// the two agree. isOwner short-circuits it without I/O.
 		ownerRights, err := h.acl.EffectiveFor(rel, ownerName, nil, true, byte(h.spec.Separator))
 		if err != nil {
-			return nil, aclUnavailable("acl", folder, err)
+			return nil, aclUnavailable(folder, err)
 		}
 		entries = append([]imaplib.ACLEntry{{
 			Identifier: imaplib.RightsIdentifier(ownerName),
@@ -298,7 +298,7 @@ func (s *session) MyRights(folder string) (*imaplib.MyRightsData, error) {
 	aclUser, aclGroups := s.userInfo.ACLIdentity()
 	rights, err := h.acl.EffectiveFor(rel, aclUser, aclGroups, s.isOwner(h), byte(h.spec.Separator))
 	if err != nil {
-		return nil, aclUnavailable("acl", folder, err)
+		return nil, aclUnavailable(folder, err)
 	}
 	return &imaplib.MyRightsData{
 		Mailbox: folder,
@@ -333,7 +333,7 @@ func (s *session) ListRights(folder string, identifier imaplib.RightsIdentifier)
 	// Probe reachability: a nil error (file present or not) confirms the
 	// mailbox is reachable in this namespace.
 	if _, err := h.acl.Get(rel); err != nil {
-		return nil, aclUnavailable("acl", folder, err)
+		return nil, aclUnavailable(folder, err)
 	}
 	optional := make([]imaplib.RightSet, 0, len(listRightsOptional))
 	for _, r := range listRightsOptional {
