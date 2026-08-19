@@ -3,6 +3,7 @@ package imap
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	imaplib "github.com/emersion/go-imap/v2"
@@ -93,5 +94,14 @@ func TestACLUnavailableUsesTheTemporaryCode(t *testing.T) {
 	}
 	if other.Code == imaplib.ResponseCodeUnavailable {
 		t.Error("a malformed ACL file was reported as a temporary outage")
+	}
+	// And the text must agree with the code: a permanent code beside "try
+	// again" tells the client two different things, and a client believes the
+	// code.
+	if strings.Contains(strings.ToLower(other.Text), "try again") {
+		t.Errorf("code %q is paired with text %q", other.Code, other.Text)
+	}
+	if !strings.Contains(strings.ToLower(imapErr.Text), "try again") {
+		t.Errorf("the temporary answer %q does not tell the client to retry", imapErr.Text)
 	}
 }

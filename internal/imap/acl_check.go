@@ -379,26 +379,22 @@ func storeFlagRights(flags []imaplib.Flag) []rune {
 // already has the folder and the session beside it.
 func aclUnavailable(folder string, err error) error {
 	slog.Warn("imap: acl state unavailable", "folder", folder, "err", err)
+	if errors.Is(err, locks.ErrUnavailable) {
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeUnavailable,
+			Text: "Mailbox permissions are temporarily unavailable, try again",
+		}
+	}
+	// Not an outage: an unreadable or malformed ACL is a defect on this server,
+	// and the answer has to say so consistently. Pairing SERVERBUG with "try
+	// again" told the client two different things -- the code saying never, the
+	// text saying soon -- and a client believes the code.
 	return &imaplib.Error{
 		Type: imaplib.StatusResponseTypeNo,
-		Code: unavailableOr(err, imaplib.ResponseCodeServerBug),
-		Text: "Mailbox permissions are temporarily unavailable, try again",
+		Code: imaplib.ResponseCodeServerBug,
+		Text: "Mailbox permissions could not be read",
 	}
-}
-
-// unavailableOr classifies a failure for the client: UNAVAILABLE when a
-// dependency is merely absent, otherwise the caller's fallback.
-//
-// The distinction is not cosmetic. SERVERBUG means "this server is broken, the
-// request will never work", and a client that receives it stops retrying and
-// shows the user something they cannot act on; UNAVAILABLE (RFC 5530) means
-// "temporarily, try again", which is what a redeployed lock service actually
-// is -- the same request succeeds seconds later (#1339).
-func unavailableOr(err error, fallback imaplib.ResponseCode) imaplib.ResponseCode {
-	if errors.Is(err, locks.ErrUnavailable) {
-		return imaplib.ResponseCodeUnavailable
-	}
-	return fallback
 }
 
 // dependencyError re-classifies a storage error on its way to the client.

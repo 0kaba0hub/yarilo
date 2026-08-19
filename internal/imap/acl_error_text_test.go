@@ -52,9 +52,12 @@ func TestACLFailureTextCarriesNoInternals(t *testing.T) {
 			t.Errorf("the client is told %q, which contains internal detail %q", text, leak)
 		}
 	}
-	// And it still has to say something a user can act on, rather than being
-	// emptied out to pass this test.
-	if !strings.Contains(strings.ToLower(text), "try again") {
-		t.Errorf("the refusal %q does not tell the client what to do", text)
+	// And it still has to say what failed, rather than being emptied out to
+	// pass this test. Not "try again": this scenario is an unreadable file,
+	// which is a defect on this server, and the code says so -- whether the
+	// wording invites a retry is asserted where the classification is
+	// (TestACLUnavailableUsesTheTemporaryCode).
+	if !strings.Contains(strings.ToLower(text), "permission") {
+		t.Errorf("the refusal %q does not say what failed", text)
 	}
 }
