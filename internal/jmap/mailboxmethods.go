@@ -102,8 +102,7 @@ func (s *Server) mailboxGet(_ context.Context, h *userHandle, accountID string, 
 	}
 	all, err := s.mailboxList(h)
 	if err != nil {
-		slog.Warn("jmap: Mailbox/get failed", "account", accountID, "err", err)
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		return nil, storeFailure("Mailbox/get failed", accountID, err)
 	}
 	props := propsOfGet(req)
 	resp := jmapcore.GetResponse[any]{
@@ -151,8 +150,7 @@ func (s *Server) mailboxQuery(_ context.Context, h *userHandle, accountID string
 	}
 	all, err := s.mailboxList(h)
 	if err != nil {
-		slog.Warn("jmap: Mailbox/query failed", "account", accountID, "err", err)
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		return nil, storeFailure("Mailbox/query failed", accountID, err)
 	}
 
 	matched := make([]jmapcore.Mailbox, 0, len(all))

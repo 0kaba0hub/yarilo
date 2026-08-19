@@ -202,7 +202,7 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 	case <-c.closed:
 		return nil, ErrClosed
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, waitFailure(ctx.Err())
 	case slot = <-c.idle:
 	}
 	defer func() { c.idle <- slot }()
@@ -242,6 +242,24 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 		return nil, fmt.Errorf("locks/client: read: %w: %w", ErrUnavailable, err)
 	}
 	return fields, nil
+}
+
+// waitFailure marks a deadline that elapsed while waiting on the lock service
+// as unavailability, so a protocol above can say "try again" rather than "this
+// server is broken".
+//
+// Only a DEADLINE, never a cancellation. A cancelled context is the caller
+// giving up -- a client that disconnected, a request abandoned -- and calling
+// that a service outage would report our own callers' departures as failures of
+// yarilo-locks. The deadlines that reach here are internal ones (the lock
+// acquisition budget), which is exactly the case the mark is for: a Service
+// with no endpoints blackholes rather than refusing, so the failure arrives as
+// a timeout with nothing else to recognise it by.
+func waitFailure(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	return err
 }
 
 func isTransport(err error) bool {
@@ -556,7 +574,7 @@ func Acquire(ctx context.Context, l Locker, resource, owner string, ttl time.Dur
 		wait := backoff - jitter + time.Duration(time.Now().UnixNano()%int64(2*jitter+1))
 		select {
 		case <-ctx.Done():
-			return Lock{}, ctx.Err()
+			return Lock{}, waitFailure(ctx.Err())
 		case <-time.After(wait):
 		}
 		if backoff < maxBackoff {

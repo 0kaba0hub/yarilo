@@ -83,8 +83,7 @@ func (s *Server) emailSet(_ context.Context, h *userHandle, accountID string, ar
 	}
 	found, err := s.findMessages(h, want)
 	if err != nil {
-		slog.Warn("jmap: Email/set lookup failed", "account", accountID, "err", err)
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		return nil, storeFailure("Email/set lookup failed", accountID, err)
 	}
 
 	// Grouped by folder, and by what the update means: a replacement and the
@@ -162,14 +161,10 @@ func (s *Server) emailSet(_ context.Context, h *userHandle, accountID string, ar
 			if err != nil {
 				slog.Warn("jmap: Email/set write failed", "folder", w.folder, "err", err)
 				if errors.Is(err, locks.ErrUnavailable) {
-					// A dependency being restarted is not the client lacking
-					// permission: "forbidden" invites it to retry as someone
-					// else, and it would fail the same way. Method-level,
-					// because it is the store and not this object (#1339).
-					return nil, &jmapcore.MethodError{
-						Type:        jmapcore.ErrServerUnavailable,
-						Description: "the mail store is temporarily unavailable, try again",
-					}
+					// Method-level, not a per-object SetError: what failed is
+					// the store, not the right to touch this object. Routed
+					// through the same classifier as every other site.
+					return nil, storeFailure("Email/set write", accountID, err)
 				}
 				for uid := range batch {
 					failed[w.idOfUID[uid]] = &jmapcore.SetError{
