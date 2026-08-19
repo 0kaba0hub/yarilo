@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/file"
@@ -940,6 +941,32 @@ type LocksClientConfig struct {
 	Mode      string   `koanf:"mode"`      // remote | embedded | ""
 	Endpoints []string `koanf:"endpoints"` // remote: ["yarilo-locks.svc:9104", ...]
 	Socket    string   `koanf:"socket"`    // embedded: /run/yarilo/locks.sock
+	// StartupWaitSeconds is how long a component keeps retrying the first
+	// connection before giving up. Pod start order is not guaranteed and the
+	// lock service is a separate deployment, so "not up yet" is ordinary;
+	// exiting on it costs a restart and, worse, spends the RESTARTS counter
+	// every rollout is judged by (#1350).
+	//
+	// Bounded rather than infinite: a genuinely wrong endpoint must still fail
+	// loudly instead of retrying for ever behind a healthy-looking pod. Zero
+	// selects the default; negative disables waiting.
+	StartupWaitSeconds int `koanf:"locks_client_startup_wait"`
+}
+
+// DefaultLocksStartupWait is the window a component waits for the lock service
+// on the first connection.
+const DefaultLocksStartupWait = 30 * time.Second
+
+// StartupWait resolves the configured window.
+func (c LocksClientConfig) StartupWait() time.Duration {
+	switch {
+	case c.StartupWaitSeconds == 0:
+		return DefaultLocksStartupWait
+	case c.StartupWaitSeconds < 0:
+		return 0
+	default:
+		return time.Duration(c.StartupWaitSeconds) * time.Second
+	}
 }
 
 // FTSConfig configures full-text search: the engine selection, the

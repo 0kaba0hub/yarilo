@@ -887,6 +887,11 @@ data:
       mode: remote
       endpoints:
         - {{ printf "%s-locks.%s.svc.cluster.local:9104" (include "yarilo.fullname" .) .Release.Namespace | quote }}
+      ## How long a component waits for yarilo-locks on its first connection
+      ## before giving up. Pod start order is not guaranteed, so "not up yet" is
+      ## ordinary; exiting on it costs a restart. Bounded, so a wrong endpoint
+      ## still fails loudly. Negative disables waiting.
+      locks_client_startup_wait: {{ .Values.components.locks.client.startup_wait | default 30 | int64 }}
     {{- end }}
 
     director_service:

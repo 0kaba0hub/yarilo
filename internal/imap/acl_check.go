@@ -58,10 +58,7 @@ func (s *session) requireRight(h *nsHandle, folder string, right rune) error {
 	}
 	effective, err := s.effectiveRights(h, folder)
 	if err != nil {
-		return &imaplib.Error{
-			Type: imaplib.StatusResponseTypeNo,
-			Text: "ACL read failed: " + err.Error(),
-		}
+		return aclUnavailable("acl", folder, err)
 	}
 	if effective.Has(right) {
 		return nil
@@ -78,7 +75,7 @@ func (s *session) requireMetadataAccess(h *nsHandle, folder string) error {
 	}
 	effective, err := s.effectiveRights(h, folder)
 	if err != nil {
-		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
+		return aclUnavailable("acl", folder, err)
 	}
 	access := effective.Has(mailbox.RightRead) || effective.Has(mailbox.RightWriteSeen) ||
 		effective.Has(mailbox.RightWrite) || effective.Has(mailbox.RightInsert) ||
@@ -114,10 +111,7 @@ func (s *session) requireAllRights(h *nsHandle, folder string, rights []rune) er
 	}
 	effective, err := s.effectiveRights(h, folder)
 	if err != nil {
-		return &imaplib.Error{
-			Type: imaplib.StatusResponseTypeNo,
-			Text: "ACL read failed: " + err.Error(),
-		}
+		return aclUnavailable("acl", folder, err)
 	}
 	for _, r := range rights {
 		if !effective.Has(r) {
@@ -139,10 +133,7 @@ func (s *session) requireRightOnParent(h *nsHandle, folder string, right rune) e
 	parent := parentFolder(folder, byte(h.spec.Separator))
 	effective, err := s.effectiveRights(h, parent)
 	if err != nil {
-		return &imaplib.Error{
-			Type: imaplib.StatusResponseTypeNo,
-			Text: "ACL read failed: " + err.Error(),
-		}
+		return aclUnavailable("acl", folder, err)
 	}
 	if effective.Has(right) {
 		return nil
@@ -374,4 +365,20 @@ func storeFlagRights(flags []imaplib.Flag) []rune {
 		out = append(out, mailbox.RightWrite)
 	}
 	return out
+}
+
+// aclUnavailable is the answer to a client when the ACL state cannot be read.
+//
+// The error carries our plumbing: package paths, the lock key -- which contains
+// the account name -- and the transport detail underneath. None of it means
+// anything to a mail client, and a client is not the place to publish the shape
+// of our internals (#1341). The text a client sees is therefore stable and
+// says what to do; the cause goes to the log, where it is useful and where it
+// already has the folder and the session beside it.
+func aclUnavailable(op, folder string, err error) error {
+	slog.Warn("imap: acl state unavailable", "op", op, "folder", folder, "err", err)
+	return &imaplib.Error{
+		Type: imaplib.StatusResponseTypeNo,
+		Text: "Mailbox permissions are temporarily unavailable, try again",
+	}
 }
