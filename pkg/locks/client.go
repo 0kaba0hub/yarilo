@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"runtime"
 	"strconv"
@@ -207,7 +208,7 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 	defer func() { c.idle <- slot }()
 
 	if err := c.ensureConnected(ctx, slot); err != nil {
-		return nil, fmt.Errorf("locks/client: connect: %w", err)
+		return nil, fmt.Errorf("locks/client: connect: %w: %w", ErrUnavailable, err)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		// The connection is captured, not re-read at return: a failed
@@ -227,7 +228,7 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 				}
 			}
 		}
-		return nil, fmt.Errorf("locks/client: write: %w", err)
+		return nil, fmt.Errorf("locks/client: write: %w: %w", ErrUnavailable, err)
 	}
 	fields, err := slot.reader.readFields()
 	if err != nil {
@@ -238,7 +239,7 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 				}
 			}
 		}
-		return nil, fmt.Errorf("locks/client: read: %w", err)
+		return nil, fmt.Errorf("locks/client: read: %w: %w", ErrUnavailable, err)
 	}
 	return fields, nil
 }
@@ -649,4 +650,45 @@ func WithLock(ctx context.Context, l Locker, resource, owner string, ttl, renewE
 	default:
 	}
 	return fnErr
+}
+
+// NewClientWaiting is NewClient with a bounded wait for the service to come up.
+//
+// A component starting before yarilo-locks gets "connection refused", which is
+// not the same failure as a wrong endpoint: pod start order is not guaranteed
+// and the lock service is a separate deployment, so "not up yet" is the
+// ordinary case. Exiting on it costs a restart, and spends the RESTARTS counter
+// every rollout window is judged by -- a counter is only useful while it reads
+// zero (#1350).
+//
+// Bounded rather than infinite, deliberately: a genuinely misconfigured
+// endpoint has to keep failing loudly rather than retry for ever inside a pod
+// that looks healthy. wait <= 0 makes this exactly NewClient.
+func NewClientWaiting(ctx context.Context, dial Dialer, wait time.Duration, opts ...ClientOption) (*Client, error) {
+	c, err := NewClient(ctx, dial, opts...)
+	if err == nil || wait <= 0 {
+		return c, err
+	}
+	deadline := time.Now().Add(wait)
+	// Said once, at the start of waiting: a line per attempt would bury the
+	// startup log of every pod that comes up a second early.
+	slog.Warn("locks: service not reachable yet, waiting", "wait", wait, "err", err)
+	for delay := 100 * time.Millisecond; ; {
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("locks/client: not reachable after %s: %w", wait, err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+		if delay < 2*time.Second {
+			delay *= 2
+		}
+		c, err = NewClient(ctx, dial, opts...)
+		if err == nil {
+			slog.Info("locks: service reachable, continuing startup")
+			return c, nil
+		}
+	}
 }

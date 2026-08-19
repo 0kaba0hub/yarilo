@@ -1,11 +1,13 @@
 package imap
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 
 	imaplib "github.com/emersion/go-imap/v2"
 
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -58,10 +60,7 @@ func (s *session) requireRight(h *nsHandle, folder string, right rune) error {
 	}
 	effective, err := s.effectiveRights(h, folder)
 	if err != nil {
-		return &imaplib.Error{
-			Type: imaplib.StatusResponseTypeNo,
-			Text: "ACL read failed: " + err.Error(),
-		}
+		return aclUnavailable(folder, err)
 	}
 	if effective.Has(right) {
 		return nil
@@ -78,7 +77,7 @@ func (s *session) requireMetadataAccess(h *nsHandle, folder string) error {
 	}
 	effective, err := s.effectiveRights(h, folder)
 	if err != nil {
-		return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Text: "ACL read failed: " + err.Error()}
+		return aclUnavailable(folder, err)
 	}
 	access := effective.Has(mailbox.RightRead) || effective.Has(mailbox.RightWriteSeen) ||
 		effective.Has(mailbox.RightWrite) || effective.Has(mailbox.RightInsert) ||
@@ -114,10 +113,7 @@ func (s *session) requireAllRights(h *nsHandle, folder string, rights []rune) er
 	}
 	effective, err := s.effectiveRights(h, folder)
 	if err != nil {
-		return &imaplib.Error{
-			Type: imaplib.StatusResponseTypeNo,
-			Text: "ACL read failed: " + err.Error(),
-		}
+		return aclUnavailable(folder, err)
 	}
 	for _, r := range rights {
 		if !effective.Has(r) {
@@ -139,10 +135,7 @@ func (s *session) requireRightOnParent(h *nsHandle, folder string, right rune) e
 	parent := parentFolder(folder, byte(h.spec.Separator))
 	effective, err := s.effectiveRights(h, parent)
 	if err != nil {
-		return &imaplib.Error{
-			Type: imaplib.StatusResponseTypeNo,
-			Text: "ACL read failed: " + err.Error(),
-		}
+		return aclUnavailable(folder, err)
 	}
 	if effective.Has(right) {
 		return nil
@@ -374,4 +367,50 @@ func storeFlagRights(flags []imaplib.Flag) []rune {
 		out = append(out, mailbox.RightWrite)
 	}
 	return out
+}
+
+// aclUnavailable is the answer to a client when the ACL state cannot be read.
+//
+// The error carries our plumbing: package paths, the lock key -- which contains
+// the account name -- and the transport detail underneath. None of it means
+// anything to a mail client, and a client is not the place to publish the shape
+// of our internals (#1341). The text a client sees is therefore stable and
+// says what to do; the cause goes to the log, where it is useful and where it
+// already has the folder and the session beside it.
+func aclUnavailable(folder string, err error) error {
+	slog.Warn("imap: acl state unavailable", "folder", folder, "err", err)
+	if errors.Is(err, locks.ErrUnavailable) {
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeUnavailable,
+			Text: "Mailbox permissions are temporarily unavailable, try again",
+		}
+	}
+	// Not an outage: an unreadable or malformed ACL is a defect on this server,
+	// and the answer has to say so consistently. Pairing SERVERBUG with "try
+	// again" told the client two different things -- the code saying never, the
+	// text saying soon -- and a client believes the code.
+	return &imaplib.Error{
+		Type: imaplib.StatusResponseTypeNo,
+		Code: imaplib.ResponseCodeServerBug,
+		Text: "Mailbox permissions could not be read",
+	}
+}
+
+// dependencyError re-classifies a storage error on its way to the client.
+//
+// Anything that is not an *imap.Error is turned into NO [SERVERBUG] by the
+// library, so a lock service being restarted reached clients as "this server is
+// broken" -- and the operator went looking for a crash that never happened.
+// Errors that are not a dependency outage are returned untouched, so nothing
+// else is reclassified by accident.
+func dependencyError(err error) error {
+	if err == nil || !errors.Is(err, locks.ErrUnavailable) {
+		return err
+	}
+	return &imaplib.Error{
+		Type: imaplib.StatusResponseTypeNo,
+		Code: imaplib.ResponseCodeUnavailable,
+		Text: "Temporarily unavailable, try again",
+	}
 }

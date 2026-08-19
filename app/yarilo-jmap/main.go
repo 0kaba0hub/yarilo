@@ -260,7 +260,10 @@ func userResolver(masterAddr string, resolver *mailbox.Resolver, authTLS *tls.Co
 
 func buildLocker(cfg *config.Config, intTLS *tls.Config) (locks.Locker, error) {
 	lc := cfg.LocksClient
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// The deadline has to cover the startup wait as well as one dial: a 10s
+	// context would cancel the wait at 10s and report a timeout instead of the
+	// service still being absent.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second+lc.StartupWait())
 	defer cancel()
 	switch lc.Mode {
 	case "":
@@ -269,15 +272,15 @@ func buildLocker(cfg *config.Config, intTLS *tls.Config) (locks.Locker, error) {
 		if lc.Socket == "" {
 			return nil, fmt.Errorf("locks_client.socket required for embedded mode")
 		}
-		return locks.NewClient(ctx, locks.DialUnix(lc.Socket))
+		return locks.NewClientWaiting(ctx, locks.DialUnix(lc.Socket), lc.StartupWait())
 	case "remote":
 		if len(lc.Endpoints) == 0 {
 			return nil, fmt.Errorf("locks_client.endpoints must have at least one entry for remote mode")
 		}
 		if intTLS != nil {
-			return locks.NewClient(ctx, locks.DialTLS(lc.Endpoints[0], intTLS))
+			return locks.NewClientWaiting(ctx, locks.DialTLS(lc.Endpoints[0], intTLS), lc.StartupWait())
 		}
-		return locks.NewClient(ctx, locks.DialTCP(lc.Endpoints[0]))
+		return locks.NewClientWaiting(ctx, locks.DialTCP(lc.Endpoints[0]), lc.StartupWait())
 	default:
 		return nil, fmt.Errorf("locks_client: unknown mode %q", lc.Mode)
 	}

@@ -1051,6 +1051,16 @@ components:
       key_prefix: "yarilo:locks:"
       channel_prefix: "yarilo:events:"
 
+    ## client — the side every other component uses to reach yarilo-locks.
+    client:
+      ## Seconds a component waits for the lock service on its first connection
+      ## before giving up. Pod start order is not guaranteed and locks is its
+      ## own deployment, so "not up yet" is ordinary and exiting on it costs a
+      ## restart -- which also spends the RESTARTS counter a rollout is judged
+      ## by (#1350). Bounded on purpose: a wrong endpoint must still fail
+      ## loudly. Negative disables waiting.
+      startup_wait: 30
+
     ## startupProbe waits for Redis (remote mode) to accept a TCP connection before
     ## this pod takes traffic, replacing the wait-redis init container (#903). Safe
     ## because the process comes up regardless of Redis — redis.NewClient is lazy

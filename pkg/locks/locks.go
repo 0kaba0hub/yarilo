@@ -127,6 +127,13 @@ var (
 
 	// ErrProtocol indicates a malformed wire-protocol frame.
 	ErrProtocol = errors.New("locks: protocol violation")
+
+	// ErrUnavailable marks a failure to reach the lock service, as opposed to
+	// a refusal by it. The distinction is what lets a protocol answer "try
+	// again in a moment" instead of "this server is broken": a redeployed lock
+	// service is temporary, and a client told otherwise stops retrying a
+	// request that would work seconds later (#1339).
+	ErrUnavailable = errors.New("locks: service unavailable")
 )
 
 // Backend is the server-side state interface. MemoryBackend (in-memory map)
