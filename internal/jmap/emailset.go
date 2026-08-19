@@ -3,10 +3,13 @@ package jmap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
+
+	"github.com/yarilomail/yarilo/pkg/locks"
 
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -158,6 +161,16 @@ func (s *Server) emailSet(_ context.Context, h *userHandle, accountID string, ar
 			results, err := h.idx.UpdateFlagsMulti(folderID, batch)
 			if err != nil {
 				slog.Warn("jmap: Email/set write failed", "folder", w.folder, "err", err)
+				if errors.Is(err, locks.ErrUnavailable) {
+					// A dependency being restarted is not the client lacking
+					// permission: "forbidden" invites it to retry as someone
+					// else, and it would fail the same way. Method-level,
+					// because it is the store and not this object (#1339).
+					return nil, &jmapcore.MethodError{
+						Type:        jmapcore.ErrServerUnavailable,
+						Description: "the mail store is temporarily unavailable, try again",
+					}
+				}
 				for uid := range batch {
 					failed[w.idOfUID[uid]] = &jmapcore.SetError{
 						Type: jmapcore.SetErrForbidden, Description: fmt.Sprintf("could not write flags: %v", err),

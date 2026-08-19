@@ -3222,7 +3222,10 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 		var err error
 		results, err = idx.UpdateFlagsMulti(s.folder.ID, batchUpdates)
 		if err != nil {
-			return err
+			// Classified before it leaves: an unwrapped error becomes
+			// NO [SERVERBUG] in the library, which tells the client this
+			// server is broken when the lock service is merely restarting.
+			return dependencyError(err)
 		}
 		// Under a delta the resulting set is only known after the write, so the
 		// untagged FETCH reports what the index holds rather than what this

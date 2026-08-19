@@ -208,7 +208,7 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 	defer func() { c.idle <- slot }()
 
 	if err := c.ensureConnected(ctx, slot); err != nil {
-		return nil, fmt.Errorf("locks/client: connect: %w", err)
+		return nil, fmt.Errorf("locks/client: connect: %w: %w", ErrUnavailable, err)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		// The connection is captured, not re-read at return: a failed
@@ -228,7 +228,7 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 				}
 			}
 		}
-		return nil, fmt.Errorf("locks/client: write: %w", err)
+		return nil, fmt.Errorf("locks/client: write: %w: %w", ErrUnavailable, err)
 	}
 	fields, err := slot.reader.readFields()
 	if err != nil {
@@ -239,7 +239,7 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 				}
 			}
 		}
-		return nil, fmt.Errorf("locks/client: read: %w", err)
+		return nil, fmt.Errorf("locks/client: read: %w: %w", ErrUnavailable, err)
 	}
 	return fields, nil
 }

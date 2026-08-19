@@ -1,11 +1,13 @@
 package imap
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 
 	imaplib "github.com/emersion/go-imap/v2"
 
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -379,6 +381,40 @@ func aclUnavailable(folder string, err error) error {
 	slog.Warn("imap: acl state unavailable", "folder", folder, "err", err)
 	return &imaplib.Error{
 		Type: imaplib.StatusResponseTypeNo,
+		Code: unavailableOr(err, imaplib.ResponseCodeServerBug),
 		Text: "Mailbox permissions are temporarily unavailable, try again",
+	}
+}
+
+// unavailableOr classifies a failure for the client: UNAVAILABLE when a
+// dependency is merely absent, otherwise the caller's fallback.
+//
+// The distinction is not cosmetic. SERVERBUG means "this server is broken, the
+// request will never work", and a client that receives it stops retrying and
+// shows the user something they cannot act on; UNAVAILABLE (RFC 5530) means
+// "temporarily, try again", which is what a redeployed lock service actually
+// is -- the same request succeeds seconds later (#1339).
+func unavailableOr(err error, fallback imaplib.ResponseCode) imaplib.ResponseCode {
+	if errors.Is(err, locks.ErrUnavailable) {
+		return imaplib.ResponseCodeUnavailable
+	}
+	return fallback
+}
+
+// dependencyError re-classifies a storage error on its way to the client.
+//
+// Anything that is not an *imap.Error is turned into NO [SERVERBUG] by the
+// library, so a lock service being restarted reached clients as "this server is
+// broken" -- and the operator went looking for a crash that never happened.
+// Errors that are not a dependency outage are returned untouched, so nothing
+// else is reclassified by accident.
+func dependencyError(err error) error {
+	if err == nil || !errors.Is(err, locks.ErrUnavailable) {
+		return err
+	}
+	return &imaplib.Error{
+		Type: imaplib.StatusResponseTypeNo,
+		Code: imaplib.ResponseCodeUnavailable,
+		Text: "Temporarily unavailable, try again",
 	}
 }
