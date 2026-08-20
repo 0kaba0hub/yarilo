@@ -36,7 +36,7 @@ func TestUserDir_Conflict_LoserKicksStaleSessions(t *testing.T) {
 
 	// The winner's conflicting assignment arrives: u → X, SAME seq, lower id.
 	srv.membership.applyEnvelope("USER-ASSIGN",
-		[]string{fmt.Sprintf("%d", hu), "10.0.0.30:993", "1", "10.0.0.1:9102"})
+		[]string{fmt.Sprintf("%d", hu), "10.0.0.30:993", "1", "10.0.0.1:9102"}, 1)
 
 	// Local entry must have switched to the winner's backend.
 	if e := srv.userDir.GetByHash(hu); e == nil || e.Host != "10.0.0.30:993" {
@@ -76,7 +76,7 @@ func TestUserDir_Conflict_WinnerKeepsAndDoesNotKick(t *testing.T) {
 
 	// Loser's assignment: w → Z, same seq, HIGHER id → we win, keep 10.0.0.40.
 	srv.membership.applyEnvelope("USER-ASSIGN",
-		[]string{fmt.Sprintf("%d", hw), "10.0.0.50:993", "1", "10.0.0.2:9102"})
+		[]string{fmt.Sprintf("%d", hw), "10.0.0.50:993", "1", "10.0.0.2:9102"}, 2)
 
 	if e := srv.userDir.GetByHash(hw); e == nil || e.Host != "10.0.0.40:993" {
 		t.Fatalf("winner must keep its backend, got %+v", e)

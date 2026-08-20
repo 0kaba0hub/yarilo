@@ -45,13 +45,13 @@ func TestMoveUser_CompareAndDeleteKick(t *testing.T) {
 	}
 
 	// The move-kick (old=.1) applied on a replica must NOT clear the fresh .2 pin.
-	s.membership.applyEnvelope("USER-KICKED", []string{"u@d.test", "10.0.0.1"})
+	s.membership.applyEnvelope("USER-KICKED", []string{"u@d.test", "10.0.0.1"}, 1)
 	if e := s.userDir.Get("u@d.test"); e == nil || e.Host != "10.0.0.2:10143" {
 		t.Fatalf("move-kick must leave the new pin intact, got %+v", e)
 	}
 
 	// A plain admin kick (no old backend) clears unconditionally (#823).
-	s.membership.applyEnvelope("USER-KICKED", []string{"u@d.test"})
+	s.membership.applyEnvelope("USER-KICKED", []string{"u@d.test"}, 2)
 	if s.userDir.Get("u@d.test") != nil {
 		t.Fatal("plain admin kick must clear the pin unconditionally")
 	}
