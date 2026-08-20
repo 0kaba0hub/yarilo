@@ -101,7 +101,7 @@ func (s *Server) evacPumpLocked(e *evacuation) {
 			newBackend = b.IP
 		}
 		s.attachFlush(hash, flushCtx{user: user, oldBackend: e.ip, newBackend: newBackend})
-		s.originateRingEvent("USER-KICKED", fmt.Sprintf("%s\t%s", user, e.ip), nil)
+		s.originateUserKick(user, e.ip, nil)
 	}
 }
 

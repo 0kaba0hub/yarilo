@@ -1708,7 +1708,7 @@ func (m *Membership) applyEnvelope(kind string, payload []string, origin string,
 		} else {
 			m.srv.userDir.Delete(user)
 		}
-		m.srv.broadcastToLogins(fmt.Sprintf("USER-KICKED\t%s", user))
+		m.srv.broadcastToLogins(loginKickLine(user))
 	case "SESSION-OPEN":
 		// payload: <id> <user> <backend> <proto> (#804) — a remote replica of a
 		// session another director owns; feeds the least_sessions load view.
