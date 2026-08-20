@@ -405,7 +405,23 @@ func aclUnavailable(folder string, err error) error {
 // Errors that are not a dependency outage are returned untouched, so nothing
 // else is reclassified by accident.
 func dependencyError(err error) error {
-	if err == nil || !errors.Is(err, locks.ErrUnavailable) {
+	if err == nil {
+		return err
+	}
+	// A folder whose index cannot be read is neither our bug nor a wait: the
+	// data on disk is not what this version writes, and retrying changes
+	// nothing. RFC 5530 has a code for exactly this, and the folder is named
+	// because the rest of the account still works -- the client is losing one
+	// mailbox, not the server.
+	var corrupt *mailbox.CorruptIndexError
+	if errors.As(err, &corrupt) {
+		return &imaplib.Error{
+			Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeCorruption,
+			Text: fmt.Sprintf("Mailbox %q has a damaged index and cannot be opened; it must be repaired", corrupt.Folder),
+		}
+	}
+	if !errors.Is(err, locks.ErrUnavailable) {
 		return err
 	}
 	return &imaplib.Error{

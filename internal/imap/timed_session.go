@@ -1,11 +1,15 @@
 package imap
 
 import (
+	"errors"
+	"log/slog"
 	"time"
 
 	imaplib "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-sasl"
+
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // timedSession is the one seam every command passes through on its way back to
@@ -38,6 +42,30 @@ func (t *timedSession) observe(command string, start time.Time) {
 	metricCommandSeconds.WithLabelValues(command, driver).Observe(time.Since(start).Seconds())
 }
 
+// classify turns a store failure into the answer a client can act on, and says
+// in the log what the client cannot be told.
+//
+// The rule the log line follows, for whoever adds the next soft degradation:
+// the diagnosis is needed MOST where the service degrades gently. A failure
+// that takes everything down is found in seconds; one folder refusing inside a
+// working account is found only if the server names it. That is why this line
+// carries the account, the folder and the session, and why the JMAP side --
+// which fails the whole account at once -- had them first and this side did not
+// (#1344).
+func (t *timedSession) classify(err error) error {
+	out := dependencyError(err)
+	var corrupt *mailbox.CorruptIndexError
+	if errors.As(err, &corrupt) {
+		user := ""
+		if t.s.userInfo != nil {
+			user = t.s.userInfo.Username
+		}
+		slog.Error("imap: folder index is unreadable, refusing this folder only",
+			"user", user, "sid", t.s.sid, "folder", corrupt.Folder, "err", corrupt.Err)
+	}
+	return out
+}
+
 // SessionID, Close and AuthenticateMechanisms are plumbing rather than
 // commands: they answer no client request of their own.
 func (t *timedSession) SessionID() string                { return t.s.SessionID() }
@@ -47,19 +75,19 @@ func (t *timedSession) AuthenticateMechanisms() []string { return t.s.Authentica
 func (t *timedSession) GetACL(folder string) (*imaplib.GetACLData, error) {
 	defer t.observe("GetACL", time.Now())
 	v, err := t.s.GetACL(folder)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) MyRights(folder string) (*imaplib.MyRightsData, error) {
 	defer t.observe("MyRights", time.Now())
 	v, err := t.s.MyRights(folder)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) ListRights(folder string, identifier imaplib.RightsIdentifier) (*imaplib.ListRightsData, error) {
 	defer t.observe("ListRights", time.Now())
 	v, err := t.s.ListRights(folder, identifier)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) SetACL(folder string, identifier imaplib.RightsIdentifier, modification imaplib.RightModification, rights imaplib.RightSet) error {
@@ -75,13 +103,13 @@ func (t *timedSession) DeleteACL(folder string, identifier imaplib.RightsIdentif
 func (t *timedSession) GetQuotaRoot(mailbox string) (*imaplib.QuotaRootData, error) {
 	defer t.observe("GetQuotaRoot", time.Now())
 	v, err := t.s.GetQuotaRoot(mailbox)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) GetQuota(root string) (*imaplib.QuotaData, error) {
 	defer t.observe("GetQuota", time.Now())
 	v, err := t.s.GetQuota(root)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) Login(username, password string) error {
@@ -92,13 +120,13 @@ func (t *timedSession) Login(username, password string) error {
 func (t *timedSession) Authenticate(mech string) (sasl.Server, error) {
 	defer t.observe("Authenticate", time.Now())
 	v, err := t.s.Authenticate(mech)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) Select(name string, opts *imaplib.SelectOptions) (*imaplib.SelectData, error) {
 	defer t.observe("Select", time.Now())
 	v, err := t.s.Select(name, opts)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) Unselect() error {
@@ -139,13 +167,13 @@ func (t *timedSession) List(w *imapserver.ListWriter, ref string, patterns []str
 func (t *timedSession) Status(name string, opts *imaplib.StatusOptions) (*imaplib.StatusData, error) {
 	defer t.observe("Status", time.Now())
 	v, err := t.s.Status(name, opts)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) Append(name string, r imaplib.LiteralReader, opts *imaplib.AppendOptions) (*imaplib.AppendData, error) {
 	defer t.observe("Append", time.Now())
 	v, err := t.s.Append(name, r, opts)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) Notify(w *imapserver.UpdateWriter, options *imaplib.NotifyOptions) error {
@@ -171,7 +199,7 @@ func (t *timedSession) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet
 func (t *timedSession) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriteria, opts *imaplib.SearchOptions) (*imaplib.SearchData, error) {
 	defer t.observe("Search", time.Now())
 	v, err := t.s.Search(kind, criteria, opts)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *imaplib.FetchOptions) error {
@@ -187,7 +215,7 @@ func (t *timedSession) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, s
 func (t *timedSession) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, error) {
 	defer t.observe("Copy", time.Now())
 	v, err := t.s.Copy(numSet, dest)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 // ID answers RFC 2971. It takes no error path -- the answer is configuration,
@@ -201,13 +229,13 @@ func (t *timedSession) ID(clientID *imaplib.IDData) *imaplib.IDData {
 func (t *timedSession) Namespace() (*imaplib.NamespaceData, error) {
 	defer t.observe("Namespace", time.Now())
 	v, err := t.s.Namespace()
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) GetMetadata(folder string, entries []string, opts *imaplib.GetMetadataOptions) (*imaplib.GetMetadataData, error) {
 	defer t.observe("GetMetadata", time.Now())
 	v, err := t.s.GetMetadata(folder, entries, opts)
-	return v, dependencyError(err)
+	return v, t.classify(err)
 }
 
 func (t *timedSession) SetMetadata(folder string, entries map[string]*[]byte) error {
