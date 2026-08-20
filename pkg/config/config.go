@@ -1043,10 +1043,18 @@ type FTSConfig struct {
 	// that surface the flag cannot choose a fallback and a failed lookup is
 	// refused instead (serverFail; a lagging index is serverUnavailable, which
 	// says "retry"). Deliberate divergence, not an oversight.
-	SearchReadFallback     bool `koanf:"fts_search_read_fallback"`
-	SearchTimeoutSecs      int  `koanf:"fts_search_timeout"`
-	SearchTimeoutSecsAlias int  `koanf:"fts_search_timeout_secs"`
-	SearchStrict           bool `koanf:"fts_search_strict"`
+	SearchReadFallback bool `koanf:"fts_search_read_fallback"`
+	SearchTimeoutSecs  int  `koanf:"fts_search_timeout"`
+	// SearchFirstIndexGraceSecs bounds the wait for a mailbox that has NOTHING
+	// indexed yet. Such a mailbox gives no signal to judge the indexer by: a
+	// flat checkpoint is what a job not yet picked up looks like, and what a
+	// broken engine looks like. The lag heuristic that protects a client from
+	// a broken engine needs movement to reason about, so on a first index this
+	// grace is the bound instead, and it is separate because it measures queue
+	// latency rather than indexing speed (#1379).
+	SearchFirstIndexGraceSecs int  `koanf:"fts_search_first_index_grace"`
+	SearchTimeoutSecsAlias    int  `koanf:"fts_search_timeout_secs"`
+	SearchStrict              bool `koanf:"fts_search_strict"`
 	// Search disables FTS SEARCH while indexing keeps running (#726 item
 	// 3) — incident degradation (bad query results, engine misbehaving)
 	// without losing index freshness. Sessions treat Search=false as "no
@@ -2521,6 +2529,7 @@ func Load(path string) (*Config, error) {
 			SearchAddMissing:           "body-search-only",
 			SearchReadFallback:         true,
 			SearchTimeoutSecs:          30,
+			SearchFirstIndexGraceSecs:  10,
 			Search:                     true,
 			Languages:                  []string{"en"},
 			LanguageFilters:            []string{"lowercase", "stopwords", "snowball"},

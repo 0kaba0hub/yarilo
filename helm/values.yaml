@@ -2466,6 +2466,13 @@ fts:
   fts_commit_limit: 500
   fts_search_add_missing: body-search-only
   fts_search_read_fallback: true
+  ## Seconds to wait for a mailbox that has NOTHING indexed yet. A first index
+  ## gives no signal to judge the engine by -- a flat checkpoint is what a job
+  ## the indexer has not reached looks like, and what a broken engine looks
+  ## like -- so the lag heuristic cannot run and this is the bound instead. It
+  ## measures queue latency, not indexing speed, which is why it is separate
+  ## from fts_search_timeout_secs.
+  fts_search_first_index_grace: 10
   fts_search_timeout_secs: 30
   fts_search_strict: false
   ## Disables FTS SEARCH only, while indexing/autoindex keep running

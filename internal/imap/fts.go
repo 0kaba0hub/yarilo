@@ -56,6 +56,10 @@ type FTSOptions struct {
 	ReadFallback bool
 	Timeout      time.Duration
 	Strict       bool
+	// FirstIndexGrace bounds the wait for a mailbox with nothing indexed yet.
+	// See the cold-start comment in ftsCatchUp: the lag heuristic needs
+	// movement to judge, and a first index provides none (#1379).
+	FirstIndexGrace time.Duration
 	// Autoindex triggers INDEX on delivered events; MaxRecent is the
 	// autoindex throttle forwarded to the service.
 	Autoindex bool
@@ -230,6 +234,24 @@ func (s *session) ftsCatchUp(user string, mbox fts.MailboxRef, msgs []*mailbox.M
 		best := last
 		stalls := 0
 		reason := "timed out"
+		// A mailbox with nothing indexed has no baseline for that judgement:
+		// zero progress there is what a job the indexer has not picked up yet
+		// looks like, and what a broken backend looks like, and the two are
+		// indistinguishable until something moves. Counting stalls from an
+		// absent checkpoint refused the first touch of a cold account -- the
+		// user's first action after a break -- while the second attempt, a
+		// moment later, succeeded (#1379). The overall timeout still bounds
+		// the wait; only the early exit is held back until there is movement
+		// to reason about.
+		cold := last == 0
+		coldGrace := o.FirstIndexGrace
+		if coldGrace <= 0 {
+			coldGrace = 10 * time.Second
+		}
+		if coldGrace > timeout {
+			coldGrace = timeout
+		}
+		coldDeadline := time.Now().Add(coldGrace)
 		for time.Now().Before(deadline) {
 			time.Sleep(250 * time.Millisecond)
 			cur, _, serr := o.Client.Status(user, mbox)
@@ -244,6 +266,18 @@ func (s *session) ftsCatchUp(user string, mbox fts.MailboxRef, msgs []*mailbox.M
 			if cur > best {
 				best = cur
 				stalls = 0
+				cold = false
+				continue
+			}
+			if cold {
+				// No baseline to judge the indexer by, so the grace is the
+				// bound: long enough for the queue to pick the job up, short
+				// enough that an engine which never starts does not hold the
+				// client for the whole search timeout.
+				if time.Now().After(coldDeadline) {
+					reason = "first index did not start within the grace"
+					break
+				}
 				continue
 			}
 			stalls++
@@ -252,8 +286,14 @@ func (s *session) ftsCatchUp(user string, mbox fts.MailboxRef, msgs []*mailbox.M
 				break
 			}
 		}
+		if cold && reason == "timed out" {
+			// Named apart from a stall: this mailbox never had an index, so
+			// what timed out is the FIRST build, not a lagging one. An
+			// operator reading "no progress" would look for a broken backend.
+			reason = "first index not built within the timeout"
+		}
 		slog.Warn("imap: fts catch-up giving up, falling back to scan", "user", user, "folder", mbox.Name,
-			"reason", reason, "indexed", last, "want", maxUID)
+			"reason", reason, "indexed", last, "want", maxUID, "cold", cold)
 	}
 	if o.ReadFallback {
 		return true, nil

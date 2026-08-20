@@ -467,6 +467,7 @@ data:
       fts_search_add_missing: {{ $.Values.fts.fts_search_add_missing | quote }}
       fts_search_read_fallback: {{ $.Values.fts.fts_search_read_fallback }}
       fts_search_timeout: {{ $.Values.fts.fts_search_timeout_secs }}
+      fts_search_first_index_grace: {{ $.Values.fts.fts_search_first_index_grace | default 10 | int64 }}
       fts_search_strict: {{ $.Values.fts.fts_search_strict }}
       fts_search: {{ $.Values.fts.fts_search | default true }}
       languages: {{ $.Values.fts.languages | toJson }}

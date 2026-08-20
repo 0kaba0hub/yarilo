@@ -15,6 +15,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/index/file"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
 	"github.com/yarilomail/yarilo/pkg/fts"
+	"github.com/yarilomail/yarilo/pkg/ftsproto"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -83,6 +84,14 @@ func startFTSTestServer(t *testing.T, fake *fakeFTS, autoindex bool) *imapclient
 // reach, for tests that have to disturb what is on disk.
 func startFTSTestServerIn(t *testing.T, fake *fakeFTS, autoindex bool, root string) *imapclient.Client {
 	t.Helper()
+	return startFTSTestServerWith(t, fake, autoindex, root, nil)
+}
+
+// startFTSTestServerWith lets a test take any FTS client and adjust the
+// options -- the timeout and the read fallback decide what a slow first index
+// looks like to a client, and that is the thing under test in #1379.
+func startFTSTestServerWith(t *testing.T, client ftsproto.Client, autoindex bool, root string, tune func(*imapserver.FTSOptions)) *imapclient.Client {
+	t.Helper()
 	set := language.DefaultSettings()
 	chain, err := language.NewMultiChain([]string{set.Language}, set.Filters, nil, set.TokenMaxLen, set.AddressMaxLen, 0)
 	if err != nil {
@@ -94,7 +103,6 @@ func startFTSTestServerIn(t *testing.T, fake *fakeFTS, autoindex bool, root stri
 		Resolver: &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"},
 		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
 		FTS: imapserver.FTSOptions{
-			Client:        fake,
 			Chain:         chain,
 			AddMissing:    "body-search-only",
 			ReadFallback:  true,
@@ -102,6 +110,10 @@ func startFTSTestServerIn(t *testing.T, fake *fakeFTS, autoindex bool, root stri
 			Autoindex:     autoindex,
 			SearchEnabled: true,
 		},
+	}
+	opts.FTS.Client = client
+	if tune != nil {
+		tune(&opts.FTS)
 	}
 	srv := imapserver.New(opts)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -330,7 +342,15 @@ func TestSearchFallbackOnFTSError(t *testing.T) {
 // which still finds the message — and it happens well before the 3s timeout.
 func TestSearchFallsBackWhenFTSStuck(t *testing.T) {
 	fake := &fakeFTS{stuck: true}
-	c := startFTSTestServer(t, fake, false)
+	// The mailbox has nothing indexed, which since #1379 is the cold case: a
+	// flat checkpoint there cannot be read as "stuck", because it is also what
+	// a job the indexer has not picked up looks like. The early exit is the
+	// first-index grace instead of the stall counter, so the property this
+	// test guards -- the client is not held to the full search timeout --
+	// still holds, and is stated with the bound that now provides it.
+	c := startFTSTestServerWith(t, fake, false, t.TempDir(), func(o *imapserver.FTSOptions) {
+		o.FirstIndexGrace = time.Second
+	})
 	appendBody(t, c, "stuckneedle")
 	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
 		t.Fatal(err)
@@ -341,10 +361,10 @@ func TestSearchFallsBackWhenFTSStuck(t *testing.T) {
 	if len(uids) != 1 || uids[0] != 1 {
 		t.Fatalf("fallback search = %v, want [1]", uids)
 	}
-	// No-progress early-exit fires at ~2s (8×250ms); a regression to waiting the
-	// full 3s timeout (or hanging) is what this guards.
-	if elapsed > 2800*time.Millisecond {
-		t.Errorf("search took %v; the no-progress fallback should fire before the 3s timeout", elapsed)
+	// The early exit fires at the grace (1s); a regression to waiting the full
+	// 3s timeout (or hanging) is what this guards.
+	if elapsed > 2*time.Second {
+		t.Errorf("search took %v; the fallback should fire at the first-index grace, well before the 3s timeout", elapsed)
 	}
 }
 
@@ -504,7 +524,6 @@ func TestSearchDisabledFallsBackToScanWithoutTouchingFTS(t *testing.T) {
 		Resolver: &mailbox.Resolver{Root: t.TempDir(), HomeTemplate: "%d/%n"},
 		Auth:     &stubPassdb{user: "user@test.com", pass: "testpass"},
 		FTS: imapserver.FTSOptions{
-			Client:        fake,
 			Chain:         chain,
 			AddMissing:    "body-search-only",
 			ReadFallback:  true,
