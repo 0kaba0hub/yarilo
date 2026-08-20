@@ -37,10 +37,11 @@ type maxLineLenConn struct {
 	net.Conn
 	br      *bufio.Reader
 	pending []byte
-	// literal counts down the bytes of a declared literal still to pass through
-	// without applying the line-length limit.
-	literal int64
-	limit   int
+	// lit counts down the bytes of a declared literal still to pass through
+	// without applying the line-length limit. Shared with the ID interceptor's
+	// copy of this problem (#1370).
+	lit   literalTracker
+	limit int
 }
 
 // Unwrap exposes the wrapped conn so the server can walk the wrapper chain to
@@ -57,13 +58,9 @@ func (c *maxLineLenConn) Read(b []byte) (int, error) {
 	}
 
 	// Literal mode: stream the declared bytes straight through, uncounted.
-	if c.literal > 0 {
-		max := len(b)
-		if int64(max) > c.literal {
-			max = int(c.literal)
-		}
-		n, err := c.br.Read(b[:max])
-		c.literal -= int64(n)
+	if c.lit.inLiteral() {
+		n, err := c.br.Read(b[:c.lit.cap(len(b))])
+		c.lit.consumed(n)
 		return n, err
 	}
 
@@ -73,9 +70,7 @@ func (c *maxLineLenConn) Read(b []byte) (int, error) {
 		c.Conn.Close()
 		return 0, fmt.Errorf("imap: command line length %d exceeds limit %d", len(line), c.limit)
 	}
-	if n := literalSize(line); n > 0 {
-		c.literal = n
-	}
+	c.lit.observeLine(line)
 	if len(line) > 0 {
 		n := copy(b, line)
 		if n < len(line) {
