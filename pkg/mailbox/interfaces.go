@@ -452,3 +452,20 @@ func ReadMessages(idx UserIndex, folderID uint64, uids SeqSet) ([]*MessageMeta, 
 	}
 	return idx.GetMessages(folderID, uids)
 }
+
+// CorruptIndexError says the folder's index cannot be read because what is on
+// disk is not what this version writes -- a wrong major version, a truncated
+// header. It names the folder because that is the one thing an operator needs
+// and the one thing a generic error loses: the failure is per folder, the rest
+// of the account keeps working, and without the name there is nothing to point
+// a repair at.
+type CorruptIndexError struct {
+	Folder string
+	Err    error
+}
+
+func (e *CorruptIndexError) Error() string {
+	return "mailbox: index of folder " + e.Folder + " is unreadable: " + e.Err.Error()
+}
+
+func (e *CorruptIndexError) Unwrap() error { return e.Err }

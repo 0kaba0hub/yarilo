@@ -3,6 +3,7 @@ package imap_test
 import (
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,6 +18,13 @@ import (
 // #1370 needed to appear -- one of them knew about literals and the other did
 // not.
 func sandboxLikeServer(t *testing.T) string {
+	addr, _ := sandboxLikeServerWithHome(t)
+	return addr
+}
+
+// sandboxLikeServerWithHome also returns the user's home, for tests that reach
+// past the protocol to the files under it.
+func sandboxLikeServerWithHome(t *testing.T) (addr, home string) {
 	t.Helper()
 	root := t.TempDir()
 	srv := imapserver.New(imapserver.Options{
@@ -36,7 +44,7 @@ func sandboxLikeServer(t *testing.T) string {
 	}
 	t.Cleanup(func() { ln.Close() })
 	go srv.Serve(ln) //nolint:errcheck
-	return ln.Addr().String()
+	return ln.Addr().String(), filepath.Join(root, "alice")
 }
 
 func selectedSession(t *testing.T) *rawConn {

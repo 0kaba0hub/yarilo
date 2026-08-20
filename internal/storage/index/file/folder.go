@@ -187,7 +187,13 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 		return fmt.Errorf("fileindex/openfolder: stat: %w", err)
 	}
 	_ = st
-	return u.loadExisting(fs)
+	if err := u.loadExisting(fs); err != nil {
+		// An unreadable on-disk format is the state of the data, not a fault
+		// in this code, and it stops at one folder. Named here so every layer
+		// above can say WHICH folder without re-deriving it from a path.
+		return asCorrupt(fs.folder, err)
+	}
+	return nil
 }
 
 // loadOrInitMissing handles the ErrNotExist branch under the folder's
@@ -698,6 +704,28 @@ func (u *userIndex) withFolder(folderID uint64, fn func(*folderState) error) err
 //  2. Base unchanged, log grew: apply only the new log entries.
 //  3. Base changed: full re-read of base + remaining log.
 func (fs *folderState) reload() error {
+	// One wrapper for every path out of the read: the format is unreadable in
+	// more places than the first open, and the field found it through this one
+	// (#1344). Naming the folder at the point of failure is what lets the
+	// layers above answer per folder instead of per account.
+	return asCorrupt(fs.folder, fs.reloadLocked())
+}
+
+// asCorrupt names the folder on an error that means what is on disk is not
+// what this version reads. It is the state of the data, not a fault in this
+// code, and it stops at one folder.
+func asCorrupt(folder string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, mailindex.ErrMajorMismatch) || errors.Is(err, mailindex.ErrShortRead) ||
+		errors.Is(err, mailindex.ErrEndian) {
+		return &mailbox.CorruptIndexError{Folder: folder, Err: err}
+	}
+	return err
+}
+
+func (fs *folderState) reloadLocked() error {
 	t0 := time.Now()
 	nextUIDBefore := uint32(0)
 	if fs.file != nil {

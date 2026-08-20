@@ -125,13 +125,25 @@ func TestEverySessionMethodClassifiesThroughTheSeam(t *testing.T) {
 	// answers one but returns no error to classify -- its answer is
 	// configuration, so there is no store call behind it that can fail.
 	exempt := map[string]bool{"SessionID": true, "Close": true, "AuthenticateMechanisms": true, "ID": true}
+
+	// Both shapes are checked, because only checking the one-liner left the
+	// common shape unguarded: a call that takes its error into a variable and
+	// then returns it plainly passed this test while reaching clients as
+	// SERVERBUG. Found by mutating a site the guard was supposed to protect.
+	lines := strings.Split(src, "\n")
 	var unclassified []string
-	for _, line := range strings.Split(src, "\n") {
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "return t.s.") && !strings.HasPrefix(trimmed, "v, err := t.s.") {
+		oneLiner := strings.HasPrefix(trimmed, "return t.s.")
+		captured := strings.HasPrefix(trimmed, "v, err := t.s.") || strings.HasPrefix(trimmed, "err := t.s.") ||
+			strings.HasPrefix(trimmed, "err = t.s.")
+		if !oneLiner && !captured {
 			continue
 		}
-		call := strings.TrimPrefix(strings.TrimPrefix(trimmed, "return "), "v, err := ")
+		call := trimmed
+		for _, prefix := range []string{"return ", "v, err := ", "err := ", "err = "} {
+			call = strings.TrimPrefix(call, prefix)
+		}
 		name := call[len("t.s."):]
 		if i := strings.Index(name, "("); i > 0 {
 			name = name[:i]
@@ -139,7 +151,25 @@ func TestEverySessionMethodClassifiesThroughTheSeam(t *testing.T) {
 		if exempt[name] {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "return t.s.") {
+		if oneLiner {
+			unclassified = append(unclassified, name)
+			continue
+		}
+		// The error was captured: the return that follows must hand it to the
+		// classifier rather than pass it through.
+		classified := false
+		for _, next := range lines[i+1:] {
+			nt := strings.TrimSpace(next)
+			if !strings.HasPrefix(nt, "return ") {
+				if nt == "}" {
+					break
+				}
+				continue
+			}
+			classified = strings.Contains(nt, "t.classify(err)")
+			break
+		}
+		if !classified {
 			unclassified = append(unclassified, name)
 		}
 	}
