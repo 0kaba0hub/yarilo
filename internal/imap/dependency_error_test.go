@@ -173,6 +173,23 @@ func TestEverySessionMethodClassifiesThroughTheSeam(t *testing.T) {
 			unclassified = append(unclassified, name)
 		}
 	}
+	// And the seam must reach the classifier through t.classify, never through
+	// the pure mapper: the mapper cannot log, because it knows neither the
+	// account nor the folder. Calling it directly returns the right answer to
+	// the client and writes nothing for the operator -- which is the half of
+	// #1344 that was worth more than the code.
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.Contains(trimmed, "dependencyError(") || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.Contains(trimmed, "out := dependencyError(err)") {
+			continue // classify itself
+		}
+		t.Errorf("timed_session.go:%d calls dependencyError directly: %s\n  use t.classify, or the operator gets no line for a failure the client is told about",
+			i+1, trimmed)
+	}
+
 	if len(unclassified) > 0 {
 		t.Errorf("these commands return the store's error unclassified, so the library turns it into SERVERBUG:\n  %s",
 			strings.Join(unclassified, "\n  "))
