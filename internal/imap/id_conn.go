@@ -43,6 +43,11 @@ type idImapConn struct {
 	br         *bufio.Reader
 	pending    []byte
 	serverResp []byte
+	// lit keeps this scanner out of literal payload. Without it a message
+	// body line reading like an ID command was answered and removed from the
+	// stream, and the literal made up the missing octets from the command
+	// that followed -- which then vanished, unanswered and unlogged (#1370).
+	lit literalTracker
 }
 
 func (c *idImapConn) Unwrap() net.Conn { return c.Conn }
@@ -54,8 +59,16 @@ func (c *idImapConn) Read(b []byte) (int, error) {
 			c.pending = c.pending[n:]
 			return n, nil
 		}
+		// Literal payload passes through untouched and uninspected.
+		if c.lit.inLiteral() {
+			n, err := c.br.Read(b[:c.lit.cap(len(b))])
+			c.lit.consumed(n)
+			return n, err
+		}
+
 		line, err := c.br.ReadString('\n')
 		if len(line) > 0 {
+			c.lit.observeLine(line)
 			fields := strings.Fields(strings.TrimRight(line, "\r\n"))
 			if len(fields) >= 2 && strings.ToUpper(fields[1]) == "ID" {
 				tag := fields[0]
@@ -63,6 +76,14 @@ func (c *idImapConn) Read(b []byte) (int, error) {
 				c.Conn.Write(resp) //nolint:errcheck
 				if err != nil {
 					return 0, err
+				}
+				// An ID command may carry its arguments as literals, which
+				// makes it span several lines. This wrapper answered it and
+				// it never reaches the parser, so the whole command must go
+				// -- payload and the tail that follows it alike, since a
+				// leftover ")" would be read as the start of a command.
+				if derr := c.discardRestOfCommand(); derr != nil {
+					return 0, derr
 				}
 				continue
 			}
@@ -76,6 +97,29 @@ func (c *idImapConn) Read(b []byte) (int, error) {
 			return 0, err
 		}
 	}
+}
+
+// discardRestOfCommand drops what is left of a command this wrapper answered
+// itself: the payload of each literal declared on it, and the line that
+// continues after each one.
+func (c *idImapConn) discardRestOfCommand() error {
+	buf := make([]byte, 4096)
+	for c.lit.inLiteral() {
+		n, err := c.br.Read(buf[:c.lit.cap(len(buf))])
+		c.lit.consumed(n)
+		if err != nil {
+			return err
+		}
+		if c.lit.inLiteral() {
+			continue
+		}
+		line, err := c.br.ReadString('\n')
+		c.lit.observeLine(line)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *idImapConn) Write(b []byte) (int, error) {
