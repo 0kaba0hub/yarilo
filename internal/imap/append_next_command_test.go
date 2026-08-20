@@ -138,3 +138,30 @@ func TestIDCommandWithLiteralArgument(t *testing.T) {
 		t.Fatalf("the command after a literal-carrying ID was not answered; got %q", got)
 	}
 }
+
+// TestMalformedAppendTailKeepsTheNextCommand is #1370 as the field hit it: a
+// client that omits the CRLF terminating its APPEND command line. The message
+// is stored and answered OK (#1129), the framing fault is logged -- and the
+// command that follows, which the client sent correctly, must still be served.
+//
+// Kept here as well as in the fork because this is the property yarilo depends
+// on, and a pin bump is where it would silently come back.
+func TestMalformedAppendTailKeepsTheNextCommand(t *testing.T) {
+	c := selectedSession(t)
+	body := "From: a@b\r\nSubject: t\r\n\r\nhello\r\n"
+	// No terminating CRLF after the literal; the next command follows at once.
+	fmt.Fprintf(c.conn, "b1 APPEND INBOX {%d+}\r\n%s", len(body), body)
+	fmt.Fprint(c.conn, "b2 NOOP\r\n")
+	for {
+		l := c.readLine()
+		if strings.HasPrefix(l, "b1 ") {
+			if !strings.Contains(l, "OK") {
+				t.Fatalf("a stored message must still be answered OK: %s", l)
+			}
+			break
+		}
+	}
+	if got := c.readLine(); !strings.HasPrefix(got, "b2 ") {
+		t.Fatalf("the client's next command was discarded by the resync; got %q", got)
+	}
+}
