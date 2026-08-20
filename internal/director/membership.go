@@ -294,6 +294,13 @@ func (m *Membership) Members() []Member {
 // stretching its convergence past 60s while its two peers took ~14s.
 var errJoinSelfDial = errors.New("director/join: self-dial via load-balanced seed")
 
+// errLeaving refuses any outbound join once Leave has run. A member that has
+// announced DIRECTOR-REMOVE and then re-joins undoes its own departure: peers
+// drop it and re-add it in the same breath, and after the pod dies the ring
+// carries it as a phantom until death detection notices -- the latency Leave
+// exists to remove (#1352).
+var errLeaving = errors.New("director/join: this member is leaving the ring")
+
 // joinLoop joins the ring via the seeds, then keeps polling a seed
 // periodically forever (#759 Fix A) — it never returns while ctx lives
 // (unless seed polling is explicitly disabled, which restores the old
@@ -350,6 +357,12 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 		ok := false
 		for _, addr := range seeds {
 			if ctx.Err() != nil {
+				return
+			}
+			// Checked per seed, not once on entry: Leave can land in the
+			// middle of a cycle, and one more poll after it re-adds this
+			// member to a ring that has just been told to drop it (#1352).
+			if m.leaving.Load() {
 				return
 			}
 			polled, err := m.pollSeed(ctx, addr)
@@ -413,6 +426,9 @@ func (m *Membership) joinLoop(ctx context.Context, seeds []string) {
 // (single-member DNS answer while alone), with err carrying the self-dial
 // classification when applicable.
 func (m *Membership) pollSeed(ctx context.Context, addr string) (polled bool, err error) {
+	if m.leaving.Load() {
+		return false, errLeaving
+	}
 	candidates := m.expandSeed(ctx, addr)
 	if len(candidates) == 0 {
 		return false, fmt.Errorf("%w: seed %s resolves only to this node", errJoinSelfDial, addr)
@@ -529,6 +545,15 @@ func (m *Membership) joinVia(ctx context.Context, addr string) error {
 	rd := bufio.NewReaderSize(conn, 4096)
 	if err := consumeServerHandshake(rd); err != nil {
 		return fmt.Errorf("director/join: handshake: %w", err)
+	}
+	// Re-checked at the last moment before announcing ourselves: the
+	// handshake above takes time, and a Leave during it must not be
+	// followed by a JOIN that undoes its DIRECTOR-REMOVE. This is also the
+	// backstop for joinVia's OTHER caller -- the liveness probe in
+	// onLeftConnLost, which is a full JOIN and was the path that actually
+	// fired in CI (#1352).
+	if m.leaving.Load() {
+		return errLeaving
 	}
 
 	if _, err := fmt.Fprintf(conn, "DIRECTOR-JOIN\t%s\t%d\n", m.self.IP, m.self.Port); err != nil {
@@ -1850,6 +1875,14 @@ func (m *Membership) ringPinger(ctx context.Context, conn net.Conn) {
 // next poll, clearing the tombstone).
 func (m *Membership) onLeftConnLost(ctx context.Context, dialer Member) {
 	if dialer.isZero() || ctx == nil || ctx.Err() != nil {
+		return
+	}
+	// A leaving member does neither half of this: its probe is a real JOIN,
+	// which re-adds it to the peer it probes and undoes its own
+	// DIRECTOR-REMOVE, and declaring anyone else dead on the way out is a
+	// verdict it will not be around to correct (#1352). Leave closes every
+	// ring connection, so this fires for the leaver by construction.
+	if m.leaving.Load() {
 		return
 	}
 	left, ok := m.leftNeighbor()
