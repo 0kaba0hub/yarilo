@@ -120,9 +120,11 @@ func TestEverySessionMethodClassifiesThroughTheSeam(t *testing.T) {
 	}
 	src := string(body)
 
-	// Every forwarded call either classifies, or is one of the three named
-	// exceptions that answer no client request of their own.
-	exempt := map[string]bool{"SessionID": true, "Close": true, "AuthenticateMechanisms": true}
+	// Every forwarded call either classifies, or is one of the named
+	// exceptions. The first three answer no client request of their own; ID
+	// answers one but returns no error to classify -- its answer is
+	// configuration, so there is no store call behind it that can fail.
+	exempt := map[string]bool{"SessionID": true, "Close": true, "AuthenticateMechanisms": true, "ID": true}
 	var unclassified []string
 	for _, line := range strings.Split(src, "\n") {
 		trimmed := strings.TrimSpace(line)

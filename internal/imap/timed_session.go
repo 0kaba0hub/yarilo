@@ -190,6 +190,14 @@ func (t *timedSession) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyDa
 	return v, dependencyError(err)
 }
 
+// ID answers RFC 2971. It takes no error path -- the answer is configuration,
+// not a lookup -- but it goes through the same seam as every other command so
+// the structural guard stays true and the timing has no hole.
+func (t *timedSession) ID(clientID *imaplib.IDData) *imaplib.IDData {
+	defer t.observe("ID", time.Now())
+	return t.s.ID(clientID)
+}
+
 func (t *timedSession) Namespace() (*imaplib.NamespaceData, error) {
 	defer t.observe("Namespace", time.Now())
 	v, err := t.s.Namespace()

@@ -7,16 +7,17 @@ import (
 )
 
 // TestUnwrapPreambleConn_ThroughWrappers guards #830: the #828 reorder put the
-// line-length / greeting / ID wrappers ABOVE the PreambleListener, so the
-// server must still find the *PreambleConn (pre-auth state) by walking Unwrap()
+// line-length / greeting wrappers ABOVE the PreambleListener, so the server
+// must still find the *PreambleConn (pre-auth state) by walking Unwrap()
 // through them. Before the fix, maxLineLenConn had no Unwrap() and the walk
 // stopped there → sessions started unauthenticated.
 func TestUnwrapPreambleConn_ThroughWrappers(t *testing.T) {
 	pc := &loginproto.PreambleConn{Username: "u@d.test", SessionID: "s1"}
 
-	// The full co-located chain, outermost first: ID → greeting → maxLineLen →
-	// PreambleConn.
-	stack := &idImapConn{Conn: &greetingConn{Conn: &maxLineLenConn{Conn: pc, limit: 512}}}
+	// The full co-located chain, outermost first: greeting → maxLineLen →
+	// PreambleConn. ID used to sit on top and was removed with the wrapper
+	// (#1375) -- the command is parsed now.
+	stack := &greetingConn{Conn: &maxLineLenConn{Conn: pc, limit: 512}}
 
 	got := unwrapPreambleConn(stack)
 	if got == nil {

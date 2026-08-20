@@ -335,6 +335,11 @@ func New(opts Options) *Server {
 	if opts.IMAPQuota {
 		caps[imaplib.CapQuota] = struct{}{}
 	}
+	// Announced only when there is something to answer with: ID is served by
+	// the parser now, and an empty imap_id_send answers NIL.
+	if len(parseIDSend(opts.IDSend)) > 0 {
+		caps[imaplib.CapID] = struct{}{}
+	}
 
 	s.srv = imapserver.New(&imapserver.Options{
 		NewSession:   s.newSession,
@@ -404,9 +409,6 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 	}
 	if s.opts.LoginGreeting != "" {
 		ln = &greetingListener{Listener: ln, greeting: s.opts.LoginGreeting}
-	}
-	if s.opts.IDSend != "" {
-		ln = newIDListener(ln, s.opts.IDSend)
 	}
 	return ln
 }
