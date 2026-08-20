@@ -67,7 +67,12 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM alpine:3.24
 # hadolint ignore=DL3018,DL3019
-RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata xapian-core libstdc++ && \
+# tini is PID 1 (see ENTRYPOINT): the components that run external programs --
+# the director's flush hook, sieve pipe/filter/execute, the quota-warning
+# script -- leave orphaned grandchildren behind when one is killed, and Go
+# reaps only its own children. With the binary itself as PID 1 those orphans
+# stayed as zombies, one per killed hook, against the pod's PID limit (#1373).
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata xapian-core libstdc++ tini && \
     addgroup -g 1000 yarilo && \
     adduser -u 1000 -G yarilo -s /sbin/nologin -D yarilo
 
@@ -97,4 +102,8 @@ USER 1000:1000
 
 EXPOSE 143 993 465 587 8080
 
-ENTRYPOINT ["/entrypoint.sh"]
+# No -g: the entrypoint execs the component, so tini's direct child IS the
+# component and the default signal path already reaches it. Signalling the
+# whole group would also hit external programs that did not put themselves in
+# one -- a sieve pipe mid-write is not something a shutdown should interrupt.
+ENTRYPOINT ["/sbin/tini", "--", "/entrypoint.sh"]
