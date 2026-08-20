@@ -164,6 +164,12 @@ type liveSession struct {
 	id          string
 	user        string
 	backendConn net.Conn
+	// clientConn is the other leg. A kick must close BOTH: biProxy waits for
+	// its two copies, and the client-to-backend one sits on a client that may
+	// say nothing for minutes, so closing the backend alone leaves the proxy
+	// running -- and with it the session record and the SESSION-CLOSE the
+	// director waits for to confirm the kill (#1366).
+	clientConn net.Conn
 }
 
 // watchConn wraps a proto.Conn for the persistent director watch connection.
@@ -908,7 +914,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	// Keyed by the identity the session acts as: a kick for the target must
 	// find it, and a master session filed under "target*master" is invisible
 	// to every administrative command (#1306).
-	sess := &liveSession{id: sessID, user: est.user, backendConn: backendConn}
+	sess := &liveSession{id: sessID, user: est.user, backendConn: backendConn, clientConn: authConn}
 	s.sessMu.Lock()
 	s.sessions[est.user] = append(s.sessions[est.user], sess)
 	s.sessMu.Unlock()
@@ -1363,28 +1369,37 @@ func (s *Server) kickUser(username string) {
 	// Logged with the count, including zero: a kick that matched nothing is a
 	// normal event on a pod that does not hold the user, and it must not look
 	// the same as a kick that never arrived (#1363).
-	slog.Info("login: user kick received", "user", username, "sessions", len(sessions))
+	slog.Info("login: user kick received", "user", username,
+		"proto", string(s.opts.Protocol), "sessions", len(sessions))
 	for _, sess := range sessions {
-		slog.Info("login: kicking session", "user", username, "session", sess.id)
-		sess.backendConn.Close()
+		sess.close("kicked by admin or move")
 	}
 }
 
-// kickSession closes the backend connection of the session with
-// the given id, regardless of which user owns it. Returns true
-// when a matching session was found and closed. Silently no-ops
-// when nothing matches — kick events are broadcast to every pod
-// and only the owner reacts.
+// close tears down both legs of a proxied session. The reason is logged rather
+// than sent: the proxy does not know where the current response ends, so a
+// notice injected mid-literal would corrupt the stream a client is parsing. A
+// clean TCP close is what a kick means, and every client handles it.
+func (sess *liveSession) close(reason string) {
+	slog.Info("login: kicking session", "user", sess.user, "session", sess.id, "reason", reason)
+	sess.backendConn.Close()
+	if sess.clientConn != nil {
+		sess.clientConn.Close()
+	}
+}
+
+// kickSession closes both legs of the session with the given id, regardless of
+// which user owns it. Returns true when a matching session was found and
+// closed. Silently no-ops when nothing matches — kick events are broadcast to
+// every pod and only the owner reacts.
 func (s *Server) kickSession(id string) bool {
 	s.sessMu.RLock()
 	var target *liveSession
-	var user string
 findLoop:
-	for u, list := range s.sessions {
+	for _, list := range s.sessions {
 		for _, sess := range list {
 			if sess.id == id {
 				target = sess
-				user = u
 				break findLoop
 			}
 		}
@@ -1393,8 +1408,7 @@ findLoop:
 	if target == nil {
 		return false
 	}
-	slog.Info("login: kicking session by id", "user", user, "session", id)
-	target.backendConn.Close()
+	target.close("kicked by session id")
 	return true
 }
 
