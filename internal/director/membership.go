@@ -107,9 +107,14 @@ type Membership struct {
 
 	mu      sync.RWMutex
 	members []Member          // sorted, includes self once Start has run
-	lastSeq map[string]uint64 // "ip:port" -> highest seq processed (dedup)
-	seq     atomic.Uint64     // this node's own outgoing seq counter
-	leaving atomic.Bool       // graceful shutdown in progress (#770): reject new JOINs
+	lastSeq map[string]uint64 // "ip:port" -> highest seq seen (anti-entropy view)
+	// seen is the dedup proper: which events have been applied, by identity.
+	// order refuses an event older than the state it would overwrite, per
+	// object -- see envelopeseq.go for why both exist (#1359).
+	seen    *seenSeqs
+	order   *orderGuard
+	seq     atomic.Uint64 // this node's own outgoing seq counter
+	leaving atomic.Bool   // graceful shutdown in progress (#770): reject new JOINs
 	// removed is the set of members known to be dead (#754), mapped to
 	// when THIS node first learned of the death — a tombstone, not just a
 	// transient absence from the current member list. Required because
@@ -188,6 +193,8 @@ func NewMembership(srv *Server, self Member, secret []byte, tlsCfg *tls.Config, 
 		minMembers:      minMembers,
 		joinAllowedNets: joinAllowedNets,
 		lastSeq:         make(map[string]uint64),
+		seen:            newSeenSeqs(),
+		order:           newOrderGuard(),
 		removed:         make(map[Member]time.Time),
 		ringConns:       make(map[net.Conn]ringConnMeta),
 		backendHashMiss: make(map[net.Conn]int),
@@ -1583,12 +1590,18 @@ func (m *Membership) handleEnvelope(fields []string, arrivalConn net.Conn) {
 	}
 
 	key := fmt.Sprintf("%s:%d", originIP, originPort)
-	m.mu.Lock()
-	if seq <= m.lastSeq[key] {
-		m.mu.Unlock()
-		return // already processed (duplicate / out-of-order retransmit)
+	// Seen by identity, not by recency. A high-water mark here dropped every
+	// copy that arrived after a newer event -- which is exactly what the ring's
+	// second path delivers, so one dead link turned into permanent, selective
+	// loss, and the drop happened before the forward, taking the event away
+	// from everyone downstream too (#1359).
+	if !m.seen.admit(key, seq) {
+		return // this very event was already applied, by either path
 	}
-	m.lastSeq[key] = seq
+	m.mu.Lock()
+	if seq > m.lastSeq[key] {
+		m.lastSeq[key] = seq // still the high-water mark, for anti-entropy
+	}
 	m.mu.Unlock()
 
 	// Forward BEFORE applying: applyEnvelope reconciles on ADD/REMOVE,
@@ -1598,10 +1611,47 @@ func (m *Membership) handleEnvelope(fields []string, arrivalConn net.Conn) {
 	// nothing about the local apply feeds into it; dedup was already
 	// recorded above, so a concurrent redelivery can't double-forward.
 	m.broadcastRing(arrivalConn, strings.Join(fields, "\t"))
-	m.applyEnvelope(kind, payload)
+	m.applyEnvelope(kind, payload, key, seq)
 }
 
-func (m *Membership) applyEnvelope(kind string, payload []string) {
+// applyEnvelope dispatches one envelope. seq is carried in because dedup by
+// identity no longer guarantees ascending order per origin: a handler that
+// would overwrite newer state with older has to refuse, and refusing needs the
+// event's own number.
+func (m *Membership) applyEnvelope(kind string, payload []string, origin string, seq uint64) {
+	// Ordering audit, per kind. Restoring the ring's redundancy removed the
+	// accidental guarantee that one origin's events applied in ascending order,
+	// so each handler is either commutative, versioned by its own field, or
+	// refused below by object.
+	//
+	//   USER-MOVED, USER-ASSIGN   versioned already (MergeByHash by assign seq)
+	//   RING-CHANGE               idempotent: it restates the ring, not a delta
+	//   BACKEND-UNREACHABLE       accumulates reports; a repeat is harmless
+	//   SESSION-OPEN/CLOSE        NOT safe: a late OPEN after the CLOSE of the
+	//                             same id resurrects a replica that nothing
+	//                             will remove again -- guarded by id
+	//   USER-KILLING/KILL-DONE    NOT safe: a late KILLING after DONE recreates
+	//                             a hold only the TTL can end -- guarded by hash
+	//   USER-KICKED               NOT safe: a late kick would kill the NEW
+	//                             session of the same user -- guarded by user
+	//   DIRECTOR-ADD/REMOVE       NOT safe: a late ADD after REMOVE brings a
+	//                             departed member back until it is probed dead
+	//                             again -- guarded by member
+	// Keyed by object AND origin, because a sequence number only means
+	// something within the member that issued it: two directors' counters are
+	// unrelated (in the sandbox: 114, 138 and 8). Comparing across them would
+	// refuse a fresh event from a member whose counter happens to be lower --
+	// turning the selective loss this change removes into a deterministic one.
+	//
+	// The named limit: two DIFFERENT members issuing events about one object
+	// are not ordered against each other. In the field they do not -- a
+	// session's events come from the one director its login pod talks to, a
+	// kill's from the member that started it (#1360) -- and where they can
+	// (an admin move landing on another director), the second event is a new
+	// decision rather than a stale copy of the first.
+	if key := envelopeObject(kind, payload); key != "" && !m.order.admit(key+"@"+origin, seq) {
+		return
+	}
 	switch kind {
 	case "DIRECTOR-ADD":
 		if len(payload) < 2 {
@@ -1695,6 +1745,28 @@ func (m *Membership) applyEnvelope(kind string, payload []string) {
 			}
 		}
 	}
+}
+
+// envelopeObject names what an envelope is about, for the ordering guard, or ""
+// when the kind needs no guard. The audit above says which is which and why.
+func envelopeObject(kind string, payload []string) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	switch kind {
+	case "SESSION-OPEN", "SESSION-CLOSE":
+		return "sess:" + payload[0]
+	case "USER-KILLING", "USER-KILL-DONE":
+		return "kill:" + payload[0]
+	case "USER-KICKED":
+		return "kick:" + payload[0]
+	case "DIRECTOR-ADD", "DIRECTOR-REMOVE":
+		if len(payload) < 2 {
+			return ""
+		}
+		return "member:" + payload[0] + ":" + payload[1]
+	}
+	return ""
 }
 
 // broadcastRing writes line to every currently live ring connection except
