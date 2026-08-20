@@ -627,26 +627,12 @@ func (s *Server) broadcast(line string, exclude *client) {
 // (full-mesh), so a peer relaying it further is exactly the ping-pong loop
 // this method exists to avoid.
 func (s *Server) broadcastToLogins(line string) {
-	s.clientMu.RLock()
-	targets := make([]*client, 0, len(s.clients))
-	for c := range s.clients {
-		if !c.isPeer {
-			targets = append(targets, c)
-		}
-	}
-	s.clientMu.RUnlock()
-	for _, c := range targets {
-		_ = c.WriteLine(line)
-	}
+	s.writeToLogins(line, nil)
 }
 
-// originateRingEvent delivers a RING-CHANGE/USER-MOVED/USER-KICKED event
-// this node just authored: local login clients get the plain historical
-// line (exclude, when non-nil, skips the client that triggered it — e.g.
-// the health pod whose own BACKEND-UP doesn't need echoing back), and the
-// ring (#750) gets the (origin, seq)-enveloped form via Membership.originate
-// for propagation to the right neighbor and, eventually, every member.
-func (s *Server) originateRingEvent(kind, payload string, exclude *client) {
+// writeToLogins is the single write path to login-proxy clients; exclude, when
+// non-nil, skips the client that triggered the event.
+func (s *Server) writeToLogins(line string, exclude *client) {
 	s.clientMu.RLock()
 	targets := make([]*client, 0, len(s.clients))
 	for c := range s.clients {
@@ -656,8 +642,40 @@ func (s *Server) originateRingEvent(kind, payload string, exclude *client) {
 	}
 	s.clientMu.RUnlock()
 	for _, c := range targets {
-		_ = c.WriteLine(kind + "\t" + payload)
+		_ = c.WriteLine(line)
 	}
+}
+
+// loginKickLine builds the USER-KICKED line for login proxies. A login takes a
+// username and nothing else; the old-backend field a move or evacuation kick
+// carries belongs to the ring, where DeleteIfBackend reads it. Every kick —
+// authored here or arriving from a peer — is built by this one function,
+// because when the originator wrote its ring line straight to its own logins
+// they glued that field onto the username and kicked nobody, silently (#1363).
+func loginKickLine(user string) string {
+	return "USER-KICKED\t" + user
+}
+
+// originateUserKick authors a kick: logins get the login form, the ring gets
+// the ring form. A non-empty oldBackend makes it conditional — kick the user
+// off that backend, and drop the sticky pin only where it still points there.
+func (s *Server) originateUserKick(user, oldBackend string, exclude *client) {
+	s.writeToLogins(loginKickLine(user), exclude)
+	payload := user
+	if oldBackend != "" {
+		payload += "\t" + oldBackend
+	}
+	s.membership.originate("USER-KICKED", payload)
+}
+
+// originateRingEvent delivers a RING-CHANGE/USER-MOVED/USER-KICKED event
+// this node just authored: local login clients get the plain historical
+// line (exclude, when non-nil, skips the client that triggered it — e.g.
+// the health pod whose own BACKEND-UP doesn't need echoing back), and the
+// ring (#750) gets the (origin, seq)-enveloped form via Membership.originate
+// for propagation to the right neighbor and, eventually, every member.
+func (s *Server) originateRingEvent(kind, payload string, exclude *client) {
+	s.writeToLogins(kind+"\t"+payload, exclude)
 	s.membership.originate(kind, payload)
 }
 
@@ -1047,8 +1065,9 @@ func (s *Server) moveUser(user, addr string, exclude *client) {
 		// #848: run the operator flush hook once this move confirms (old sessions
 		// gone). Only this originating director attaches the context.
 		s.attachFlush(hash, flushCtx{user: user, oldBackend: oldIP, newBackend: host})
-		// Conditional kick: USER-KICKED with a trailing old-backend field.
-		s.originateRingEvent("USER-KICKED", fmt.Sprintf("%s\t%s", user, oldIP), exclude)
+		// Conditional kick: the ring line carries the old backend, the login
+		// line never does.
+		s.originateUserKick(user, oldIP, exclude)
 	}
 	slog.Info("director: user moved", "user", user, "backend", addr, "kicked_old", oldIP)
 }
@@ -1083,7 +1102,7 @@ func (s *Server) handleUserKick(c *client, fields []string) {
 	// Mark the user killing (and replicate it) BEFORE the kick tears sessions
 	// down, so the LOOKUP hold is in force ring-wide for the whole drain (#847).
 	s.startKilling(HashUsername(user, s.hf))
-	s.originateRingEvent("USER-KICKED", user, c)
+	s.originateUserKick(user, "", c)
 	_ = c.WriteLine("OK")
 }
 

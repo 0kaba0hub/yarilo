@@ -59,12 +59,12 @@ func (s *Server) apiUserKick(w http.ResponseWriter, r *http.Request) {
 	if delay := s.opts.userKickDelay(); delay > 0 {
 		time.AfterFunc(delay, func() {
 			s.userDir.Delete(user)
-			s.originateRingEvent("USER-KICKED", user, nil)
+			s.originateUserKick(user, "", nil)
 		})
 		slog.Info("director API: user kick scheduled", "user", user, "delay", delay)
 	} else {
 		s.userDir.Delete(user)
-		s.originateRingEvent("USER-KICKED", user, nil)
+		s.originateUserKick(user, "", nil)
 		slog.Info("director API: user kicked", "user", user)
 	}
 	apiJSON(w, map[string]string{"status": "ok"})

@@ -1322,15 +1322,34 @@ func (s *Server) watchReadLoop(c *proto.Conn, wc *watchConn) error {
 				wc.deliver(fields[1], line)
 			}
 		case strings.HasPrefix(line, "USER-KICKED\t"):
-			fields := strings.SplitN(line, "\t", 2)
-			if len(fields) == 2 {
-				s.kickUser(fields[1])
+			user, ok := kickedUser(line)
+			if !ok {
+				// Arity is checked rather than trimmed: a form nobody wrote on
+				// purpose is a protocol error and says so. Splitting off the
+				// first field and ignoring the rest is what let a ring field
+				// travel into the username and kick nobody, in silence (#1363).
+				slog.Warn("login: malformed USER-KICKED push, ignored", "line", line)
+				break
 			}
+			s.kickUser(user)
 		case line == "PING":
 			wc.pong()
 		}
 		// OK and other push lines silently ignored.
 	}
+}
+
+// kickedUser reads the username out of a USER-KICKED push. Exactly two forms
+// are accepted: the plain kick, and the move/evacuation kick whose trailing
+// field names the backend being emptied. A director of this version sends the
+// plain form to logins either way; the two-field form is taken during a mixed
+// rollout, where an older originator still writes its ring line here.
+func kickedUser(line string) (string, bool) {
+	fields := strings.Split(line, "\t")
+	if len(fields) < 2 || len(fields) > 3 || fields[1] == "" {
+		return "", false
+	}
+	return fields[1], true
 }
 
 // kickUser closes all active backend connections for the given username,
@@ -1341,6 +1360,10 @@ func (s *Server) kickUser(username string) {
 	copy(sessions, s.sessions[username])
 	s.sessMu.RUnlock()
 
+	// Logged with the count, including zero: a kick that matched nothing is a
+	// normal event on a pod that does not hold the user, and it must not look
+	// the same as a kick that never arrived (#1363).
+	slog.Info("login: user kick received", "user", username, "sessions", len(sessions))
 	for _, sess := range sessions {
 		slog.Info("login: kicking session", "user", username, "session", sess.id)
 		sess.backendConn.Close()
