@@ -3063,6 +3063,17 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			extracted := imapserver.ExtractBodySection(rc, section)
 			rc.Close()
 			if extracted == nil {
+				// The section could not be produced: since #1377 the library
+				// serves a message whose header it cannot parse, so what is
+				// left is a part spec that needs a parse the message does not
+				// support. An empty literal is the only thing the protocol
+				// lets us put here, so the reason goes to the log rather than
+				// nowhere -- a client seeing {0} has no way to tell "empty"
+				// from "we could not".
+				slog.Warn("imap: fetch produced no data for a body section",
+					"user", s.userInfo.Username, "folder", s.folder.Name,
+					"uid", m.UID, "file", m.Filename,
+					"specifier", string(section.Specifier), "part", section.Part)
 				extracted = []byte{}
 			}
 			if slog.Default().Enabled(context.Background(), slog.LevelDebug) &&
