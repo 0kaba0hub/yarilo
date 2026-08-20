@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // #1344: a folder whose index cannot be read used to answer NO [SERVERBUG]
@@ -31,17 +32,7 @@ func TestCorruptFolderIndexIsNamedAndTheAccountKeepsWorking(t *testing.T) {
 		t.Fatal("select INBOX")
 	}
 
-	// Damage the folder's index the way the field did: an unreadable major
-	// version in the header.
-	idx := filepath.Join(home, ".Broken", "yarilo.index")
-	raw, err := os.ReadFile(idx)
-	if err != nil {
-		t.Fatalf("read index: %v", err)
-	}
-	raw[0] = 67
-	if err := os.WriteFile(idx, raw, 0o600); err != nil {
-		t.Fatalf("write index: %v", err)
-	}
+	damageIndex(t, filepath.Join(home, ".Broken", "yarilo.index"))
 
 	// A fresh session, so nothing is served from the open handle.
 	c2 := dialRaw(t, addr)
@@ -68,5 +59,29 @@ func TestCorruptFolderIndexIsNamedAndTheAccountKeepsWorking(t *testing.T) {
 	}
 	if !strings.Contains(c2.cmd(`LIST "" "*"`), "INBOX") {
 		t.Error("LIST must still work")
+	}
+}
+
+// damageIndex writes an unreadable major version into a folder's index, the
+// way the field found it, and moves the file's mtime forward.
+//
+// The mtime is not decoration: reload has a fast path that skips the read when
+// the base mtime and log size are unchanged, and rewriting a byte in place
+// changes neither. Whether the damage was noticed then depended on the
+// filesystem's clock resolution -- the test passed locally and skipped the
+// reload entirely in CI, which is the flake this comment exists to prevent.
+func damageIndex(t *testing.T, path string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read index: %v", err)
+	}
+	raw[0] = 67
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatalf("bump index mtime: %v", err)
 	}
 }

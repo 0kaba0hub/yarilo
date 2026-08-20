@@ -3,7 +3,6 @@ package imap_test
 import (
 	"bytes"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -52,15 +51,7 @@ func TestCorruptFolderIsLoggedOnTheCommandThatHitsIt(t *testing.T) {
 		t.Fatal("select")
 	}
 
-	idx := filepath.Join(home, ".Broken", "yarilo.index")
-	raw, err := os.ReadFile(idx)
-	if err != nil {
-		t.Fatalf("read index: %v", err)
-	}
-	raw[0] = 67
-	if err := os.WriteFile(idx, raw, 0o600); err != nil {
-		t.Fatalf("write index: %v", err)
-	}
+	damageIndex(t, filepath.Join(home, ".Broken", "yarilo.index"))
 
 	got := c.cmd("FETCH 1:* (FLAGS)")
 	if !strings.Contains(got, "CORRUPTION") {
