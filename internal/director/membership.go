@@ -1611,14 +1611,14 @@ func (m *Membership) handleEnvelope(fields []string, arrivalConn net.Conn) {
 	// nothing about the local apply feeds into it; dedup was already
 	// recorded above, so a concurrent redelivery can't double-forward.
 	m.broadcastRing(arrivalConn, strings.Join(fields, "\t"))
-	m.applyEnvelope(kind, payload, seq)
+	m.applyEnvelope(kind, payload, key, seq)
 }
 
 // applyEnvelope dispatches one envelope. seq is carried in because dedup by
 // identity no longer guarantees ascending order per origin: a handler that
 // would overwrite newer state with older has to refuse, and refusing needs the
 // event's own number.
-func (m *Membership) applyEnvelope(kind string, payload []string, seq uint64) {
+func (m *Membership) applyEnvelope(kind string, payload []string, origin string, seq uint64) {
 	// Ordering audit, per kind. Restoring the ring's redundancy removed the
 	// accidental guarantee that one origin's events applied in ascending order,
 	// so each handler is either commutative, versioned by its own field, or
@@ -1637,7 +1637,19 @@ func (m *Membership) applyEnvelope(kind string, payload []string, seq uint64) {
 	//   DIRECTOR-ADD/REMOVE       NOT safe: a late ADD after REMOVE brings a
 	//                             departed member back until it is probed dead
 	//                             again -- guarded by member
-	if key := envelopeObject(kind, payload); key != "" && !m.order.admit(key, seq) {
+	// Keyed by object AND origin, because a sequence number only means
+	// something within the member that issued it: two directors' counters are
+	// unrelated (in the sandbox: 114, 138 and 8). Comparing across them would
+	// refuse a fresh event from a member whose counter happens to be lower --
+	// turning the selective loss this change removes into a deterministic one.
+	//
+	// The named limit: two DIFFERENT members issuing events about one object
+	// are not ordered against each other. In the field they do not -- a
+	// session's events come from the one director its login pod talks to, a
+	// kill's from the member that started it (#1360) -- and where they can
+	// (an admin move landing on another director), the second event is a new
+	// decision rather than a stale copy of the first.
+	if key := envelopeObject(kind, payload); key != "" && !m.order.admit(key+"@"+origin, seq) {
 		return
 	}
 	switch kind {

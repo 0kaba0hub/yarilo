@@ -94,6 +94,59 @@ func TestOrderGuardRefusesStaleEventsPerObject(t *testing.T) {
 	}
 }
 
+// The blocker the review caught: sequence numbers are only meaningful within
+// the member that issued them -- in the sandbox the three directors sat at 114,
+// 138 and 8 -- so comparing across origins would refuse a fresh event from a
+// member whose counter is lower. An admin move lands on whichever director the
+// client reached, so the second move of one user is routinely issued by a
+// different member than the first: guarding by object alone would have turned
+// the selective loss this change removes into a deterministic one.
+func TestOrderGuardDoesNotCompareAcrossOrigins(t *testing.T) {
+	g := newOrderGuard()
+	const object = "kick:u@d.test"
+
+	if !g.admit(object+"@10.0.0.1:9102", 138) {
+		t.Fatal("the first event was refused")
+	}
+	// Another member, lower counter, genuinely later event.
+	if !g.admit(object+"@10.0.0.2:9102", 8) {
+		t.Error("a fresh event from another member was refused as stale -- " +
+			"its counter is unrelated to the first member's")
+	}
+	// The same member repeating itself is still refused.
+	if g.admit(object+"@10.0.0.1:9102", 137) {
+		t.Error("a stale repeat from the same member was applied")
+	}
+}
+
+// The same property through the envelope path, which is where the keying
+// actually happens: the unit row above exercises the guard directly and cannot
+// see how the dispatcher builds its key. This one fails if the origin is left
+// out of it -- the blocker as it would reach the field.
+func TestEnvelopeGuardKeysIncludeTheOrigin(t *testing.T) {
+	s := NewWithOptions(Options{UserKillConfirmGrace: time.Millisecond, UserKillTimeout: time.Minute})
+	const user = "u9@d.test"
+	hash := HashUsername(user, s.hf)
+
+	deliver := func(ip string, seq uint64) {
+		s.membership.handleEnvelope([]string{
+			"USER-KILLING", ip, "9102", fmt.Sprintf("%d", seq),
+			fmt.Sprintf("%d", hash), "60000",
+		}, nil)
+	}
+
+	// A member far along its own counter, then a different member early in its
+	// own -- an admin move landing on another director, which is routine.
+	deliver("10.0.0.1", 138)
+	s.applyKillDone(hash)
+	deliver("10.0.0.2", 8)
+
+	if !s.isKilling(hash) {
+		t.Fatal("a kill from a second member was refused because its counter is lower than " +
+			"the first member's -- counters are per member and mean nothing across them")
+	}
+}
+
 // The field case, end to end through the envelope path: a batch of MOVED,
 // KILLING and KICKED from one originator, where the direct copy of KILLING is
 // lost and its relayed copy arrives after MOVED. The kill must still be

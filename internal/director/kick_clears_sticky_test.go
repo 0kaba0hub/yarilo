@@ -30,7 +30,7 @@ func TestUserKickedApply_ClearsPin(t *testing.T) {
 	s := NewWithOptions(Options{AntiEntropyInterval: -1})
 	s.userDir.Set("u@d.test", "10.0.0.1:10143", false)
 
-	s.membership.applyEnvelope("USER-KICKED", []string{s.normalizeUser("u@d.test")}, 1)
+	s.membership.applyEnvelope("USER-KICKED", []string{s.normalizeUser("u@d.test")}, "10.0.0.99:9102", 1)
 
 	if s.userDir.Get("u@d.test") != nil {
 		t.Fatal("USER-KICKED apply must clear the pin")

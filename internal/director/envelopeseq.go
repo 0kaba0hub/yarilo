@@ -10,13 +10,15 @@ import "sync"
 // for: the backup copy of an event always arrives after the direct copy of the
 // next one (#1359).
 //
-// seenSeqs is the first half of the correction: a bounded per-origin window of
-// the sequence numbers already applied.
+// seenSeqs is the first half of the correction: the sequence numbers already
+// applied, remembered per origin and bounded in total.
 //
-// The bound is a stated limit, not an accident. An event older than the window
-// is treated as seen and dropped; with the window at seenWindow events per
-// origin that is a member which has been unreachable for thousands of events,
-// where a missing envelope is the smaller of its problems.
+// Two bounds, and they are different things. The staleness threshold is PER
+// ORIGIN: an event more than seenWindow behind that origin's highest is treated
+// as seen. The memory is bounded ACROSS origins: seenWindow entries in the live
+// generation, after which the older generation is dropped whole. Both are
+// stated limits rather than accidents -- a member that far behind has a larger
+// problem than one missing envelope.
 const seenWindow = 4096
 
 type seenSeqs struct {
