@@ -92,12 +92,12 @@ func (t *timedSession) ListRights(folder string, identifier imaplib.RightsIdenti
 
 func (t *timedSession) SetACL(folder string, identifier imaplib.RightsIdentifier, modification imaplib.RightModification, rights imaplib.RightSet) error {
 	defer t.observe("SetACL", time.Now())
-	return dependencyError(t.s.SetACL(folder, identifier, modification, rights))
+	return t.classify(t.s.SetACL(folder, identifier, modification, rights))
 }
 
 func (t *timedSession) DeleteACL(folder string, identifier imaplib.RightsIdentifier) error {
 	defer t.observe("DeleteACL", time.Now())
-	return dependencyError(t.s.DeleteACL(folder, identifier))
+	return t.classify(t.s.DeleteACL(folder, identifier))
 }
 
 func (t *timedSession) GetQuotaRoot(mailbox string) (*imaplib.QuotaRootData, error) {
@@ -114,7 +114,7 @@ func (t *timedSession) GetQuota(root string) (*imaplib.QuotaData, error) {
 
 func (t *timedSession) Login(username, password string) error {
 	defer t.observe("Login", time.Now())
-	return dependencyError(t.s.Login(username, password))
+	return t.classify(t.s.Login(username, password))
 }
 
 func (t *timedSession) Authenticate(mech string) (sasl.Server, error) {
@@ -131,37 +131,37 @@ func (t *timedSession) Select(name string, opts *imaplib.SelectOptions) (*imapli
 
 func (t *timedSession) Unselect() error {
 	defer t.observe("Unselect", time.Now())
-	return dependencyError(t.s.Unselect())
+	return t.classify(t.s.Unselect())
 }
 
 func (t *timedSession) Create(name string, opts *imaplib.CreateOptions) error {
 	defer t.observe("Create", time.Now())
-	return dependencyError(t.s.Create(name, opts))
+	return t.classify(t.s.Create(name, opts))
 }
 
 func (t *timedSession) Delete(name string) error {
 	defer t.observe("Delete", time.Now())
-	return dependencyError(t.s.Delete(name))
+	return t.classify(t.s.Delete(name))
 }
 
 func (t *timedSession) Rename(oldName, newName string, opts *imaplib.RenameOptions) error {
 	defer t.observe("Rename", time.Now())
-	return dependencyError(t.s.Rename(oldName, newName, opts))
+	return t.classify(t.s.Rename(oldName, newName, opts))
 }
 
 func (t *timedSession) Subscribe(name string) error {
 	defer t.observe("Subscribe", time.Now())
-	return dependencyError(t.s.Subscribe(name))
+	return t.classify(t.s.Subscribe(name))
 }
 
 func (t *timedSession) Unsubscribe(name string) error {
 	defer t.observe("Unsubscribe", time.Now())
-	return dependencyError(t.s.Unsubscribe(name))
+	return t.classify(t.s.Unsubscribe(name))
 }
 
 func (t *timedSession) List(w *imapserver.ListWriter, ref string, patterns []string, opts *imaplib.ListOptions) error {
 	defer t.observe("List", time.Now())
-	return dependencyError(t.s.List(w, ref, patterns, opts))
+	return t.classify(t.s.List(w, ref, patterns, opts))
 }
 
 func (t *timedSession) Status(name string, opts *imaplib.StatusOptions) (*imaplib.StatusData, error) {
@@ -178,22 +178,22 @@ func (t *timedSession) Append(name string, r imaplib.LiteralReader, opts *imapli
 
 func (t *timedSession) Notify(w *imapserver.UpdateWriter, options *imaplib.NotifyOptions) error {
 	defer t.observe("Notify", time.Now())
-	return dependencyError(t.s.Notify(w, options))
+	return t.classify(t.s.Notify(w, options))
 }
 
 func (t *timedSession) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	defer t.observe("Poll", time.Now())
-	return dependencyError(t.s.Poll(w, allowExpunge))
+	return t.classify(t.s.Poll(w, allowExpunge))
 }
 
 func (t *timedSession) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
 	defer t.observe("Idle", time.Now())
-	return dependencyError(t.s.Idle(w, stop))
+	return t.classify(t.s.Idle(w, stop))
 }
 
 func (t *timedSession) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) error {
 	defer t.observe("Expunge", time.Now())
-	return dependencyError(t.s.Expunge(w, uids))
+	return t.classify(t.s.Expunge(w, uids))
 }
 
 func (t *timedSession) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriteria, opts *imaplib.SearchOptions) (*imaplib.SearchData, error) {
@@ -204,12 +204,12 @@ func (t *timedSession) Search(kind imapserver.NumKind, criteria *imaplib.SearchC
 
 func (t *timedSession) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *imaplib.FetchOptions) error {
 	defer t.observe("Fetch", time.Now())
-	return dependencyError(t.s.Fetch(w, numSet, opts))
+	return t.classify(t.s.Fetch(w, numSet, opts))
 }
 
 func (t *timedSession) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeFlags *imaplib.StoreFlags, opts *imaplib.StoreOptions) error {
 	defer t.observe("Store", time.Now())
-	return dependencyError(t.s.Store(w, numSet, storeFlags, opts))
+	return t.classify(t.s.Store(w, numSet, storeFlags, opts))
 }
 
 func (t *timedSession) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, error) {
@@ -240,10 +240,10 @@ func (t *timedSession) GetMetadata(folder string, entries []string, opts *imapli
 
 func (t *timedSession) SetMetadata(folder string, entries map[string]*[]byte) error {
 	defer t.observe("SetMetadata", time.Now())
-	return dependencyError(t.s.SetMetadata(folder, entries))
+	return t.classify(t.s.SetMetadata(folder, entries))
 }
 
 func (t *timedSession) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest string) error {
 	defer t.observe("Move", time.Now())
-	return dependencyError(t.s.Move(w, numSet, dest))
+	return t.classify(t.s.Move(w, numSet, dest))
 }
