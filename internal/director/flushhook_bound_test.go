@@ -33,7 +33,12 @@ func writeHook(t *testing.T, dir string, holdSeconds int) (script, pidFile strin
 	return script, pidFile
 }
 
-func alive(t *testing.T, pidFile string) bool {
+// stillRunning polls for the grandchild's pid to disappear. Polled rather than
+// sampled once: the kill is delivered to the group, but the pid stays visible
+// until whoever inherits the orphan reaps it, and that is not instant. The
+// window is far shorter than the hook's own 20s hold, so a grandchild that
+// actually survived the bound still fails the assertion.
+func stillRunning(t *testing.T, pidFile string) bool {
 	t.Helper()
 	raw, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -43,7 +48,14 @@ func alive(t *testing.T, pidFile string) bool {
 	if err != nil {
 		t.Fatalf("grandchild pid %q: %v", raw, err)
 	}
-	return syscall.Kill(pid, 0) == nil
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(pid, 0) != nil {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return true
 }
 
 // TestFlushHook_BoundHoldsOverTheTree walks the two measurements that separated
@@ -70,7 +82,7 @@ func TestFlushHook_BoundHoldsOverTheTree(t *testing.T) {
 			if max := bound + flushWaitDelay + time.Second; elapsed > max {
 				t.Errorf("run took %v, over the %v budget — the wait scaled with the hook, not the bound", elapsed, max)
 			}
-			if alive(t, pidFile) {
+			if stillRunning(t, pidFile) {
 				t.Error("the hook's grandchild outlived the bound — the group kill did not reach it")
 			}
 			if escaped {
@@ -97,7 +109,7 @@ func TestFlushHook_LongBoundIsNotMistakenForAnEscape(t *testing.T) {
 	if escaped {
 		t.Error("a hook killed with its group must not be reported as possibly surviving")
 	}
-	if alive(t, pidFile) {
+	if stillRunning(t, pidFile) {
 		t.Error("the grandchild outlived the bound")
 	}
 }
