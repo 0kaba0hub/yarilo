@@ -41,10 +41,7 @@ env:
 jobs:
   lint:
     name: Lint
-    # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
-    # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
-    # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     permissions:
       contents: read
     steps:
@@ -97,10 +94,7 @@ jobs:
 
   test:
     name: Test
-    # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
-    # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
-    # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     permissions:
       checks: write
       contents: read
@@ -163,10 +157,7 @@ jobs:
     name: Build & Push
     if: github.event_name == 'push'
     needs: [lint, test]
-    # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
-    # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
-    # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     concurrency:
       group: build-main-${{ github.ref }}
       cancel-in-progress: false
@@ -205,13 +196,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.2.0
         with:
-          # TEMPORARY, tied to the ubuntu-24.04 runs-on override above: the
-          # docker driver needs the containerd image store to export a GHA
-          # cache (self-hosted has it enabled; the hosted runner's default
-          # docker daemon does not), and nothing after this step reaches into
-          # the local image store, so docker-container is a safe swap. Revert
-          # together with the runs-on lines once self-hosted dispatch resumes.
-          driver: docker-container
+          # The self-hosted runner's docker daemon persists between runs, same
+          # as GOCACHE/GOMODCACHE above, so the classic docker driver already
+          # reuses layers from its own local build cache with no export step
+          # and no per-run trip to the GitHub Actions cache API -- see the
+          # dropped cache-from/cache-to below.
+          driver: docker
 
       - name: Log in to GHCR
         uses: docker/login-action@v4.6.0
@@ -248,8 +238,11 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # No cache-from/cache-to: the docker driver above already reuses
+          # this runner's own layer cache locally. An explicit GHA cache
+          # export would only add a network round-trip this runner does not
+          # need, and it requires the containerd image store to be enabled on
+          # the daemon in the first place -- a setting outside this file.
           build-args: |
             BUILD_VERSION=${{ steps.version.outputs.image_tag }}
 
