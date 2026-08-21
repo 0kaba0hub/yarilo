@@ -41,7 +41,10 @@ env:
 jobs:
   lint:
     name: Lint
-    runs-on: [self-hosted, linux]
+    # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
+    # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
+    # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -94,7 +97,10 @@ jobs:
 
   test:
     name: Test
-    runs-on: [self-hosted, linux]
+    # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
+    # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
+    # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
+    runs-on: ubuntu-24.04
     permissions:
       checks: write
       contents: read
@@ -157,7 +163,10 @@ jobs:
     name: Build & Push
     if: github.event_name == 'push'
     needs: [lint, test]
-    runs-on: [self-hosted, linux]
+    # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
+    # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
+    # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
+    runs-on: ubuntu-24.04
     concurrency:
       group: build-main-${{ github.ref }}
       cancel-in-progress: false
