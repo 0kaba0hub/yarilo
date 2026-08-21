@@ -661,11 +661,11 @@ func loginKickLine(user string) string {
 // off that backend, and drop the sticky pin only where it still points there.
 func (s *Server) originateUserKick(user, oldBackend string, exclude *client) {
 	s.writeToLogins(loginKickLine(user), exclude)
-	payload := user
 	if oldBackend != "" {
-		payload += "\t" + oldBackend
+		s.membership.originateUserEvent("USER-KICKED", user, oldBackend)
+		return
 	}
-	s.membership.originate("USER-KICKED", payload)
+	s.membership.originateUserEvent("USER-KICKED", user)
 }
 
 // originateRingEvent delivers a RING-CHANGE/USER-MOVED/USER-KICKED event
@@ -1053,7 +1053,10 @@ func (s *Server) moveUser(user, addr string, exclude *client) {
 	}
 	s.userDir.Set(user, addr, false)
 	host, portStr, _ := net.SplitHostPort(addr)
-	s.originateRingEvent("USER-MOVED", fmt.Sprintf("%s\t%s\t%s", user, host, portStr), exclude)
+	// The login line keeps the historical shape; the ring line goes through
+	// the escaping builder (#1365).
+	s.writeToLogins(fmt.Sprintf("USER-MOVED\t%s\t%s\t%s", user, host, portStr), exclude)
+	s.membership.originateUserEvent("USER-MOVED", user, host, portStr)
 	if oldIP != "" && oldIP != host {
 		// A genuine relocation kicks the old sessions — same split-writer window
 		// as an admin kick, so hold LOOKUP until the old sessions confirm gone
