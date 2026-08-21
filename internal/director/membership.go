@@ -80,6 +80,13 @@ type Membership struct {
 	// See noteUnknownRingEvent.
 	unknownMu   sync.Mutex
 	unknownSeen map[string]time.Time
+	// incarnation distinguishes this process from whatever held the same
+	// address before it. Peers key dedup on the whole origin field, so a
+	// restart on a reused address is a NEW origin to them and its first
+	// events are not mistaken for ones the dead instance already sent
+	// (#1362). Generated once, at construction: it must not change while the
+	// process lives, or every event would look like a different origin.
+	incarnation string
 	secret      []byte // HMAC ring-join secret; empty = JOIN always rejected
 	tlsCfg      *tls.Config
 	minMembers  int
@@ -194,6 +201,7 @@ func NewMembership(srv *Server, self Member, secret []byte, tlsCfg *tls.Config, 
 	return &Membership{
 		srv:             srv,
 		self:            self,
+		incarnation:     newIncarnation(),
 		secret:          secret,
 		tlsCfg:          tlsCfg,
 		minMembers:      minMembers,
@@ -1532,11 +1540,68 @@ func (m *Membership) checkRedirect(dialer Member) (Member, bool) {
 // they've always received.
 func (m *Membership) originate(kind, payload string) {
 	seq := m.seq.Add(1)
-	key := fmt.Sprintf("%s:%d", m.self.IP, m.self.Port)
+	origin := m.originField()
+	key := fmt.Sprintf("%s:%d", origin, m.self.Port)
 	m.mu.Lock()
 	m.lastSeq[key] = seq
 	m.mu.Unlock()
-	m.broadcastRing(nil, fmt.Sprintf("%s\t%s\t%d\t%d\t%s", kind, m.self.IP, m.self.Port, seq, payload))
+	m.broadcastRing(nil, fmt.Sprintf("%s\t%s\t%d\t%d\t%s", kind, origin, m.self.Port, seq, payload))
+}
+
+// originField is this node's identity in an envelope: its address and the
+// incarnation of this process. Readers split the two -- the address says which
+// member, the whole field says which run of it.
+func (m *Membership) originField() string {
+	if m.incarnation == "" {
+		return m.self.IP
+	}
+	return m.self.IP + "@" + m.incarnation
+}
+
+// newIncarnation is a value that differs between runs of the same process on
+// the same address. Random rather than a timestamp: two pods can start inside
+// the same clock tick, and a clock that steps backwards would hand out a value
+// already used.
+func newIncarnation() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand does not fail in practice; if it ever did, a
+		// timestamp still distinguishes this run from most others, and the
+		// alternative -- no incarnation -- is the defect being fixed.
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// originateUserEvent is the one place a user event reaches the ring. The
+// username is escaped here and the kind carries the escaped form, so the two
+// cannot drift apart: a caller cannot forget the escaping without also
+// naming a kind that does not exist (#1365).
+//
+// trailing is whatever the kind carries after the username, already in wire
+// form -- a backend address, a host and port. Only the username needs
+// escaping; the rest is numbers and addresses.
+func (m *Membership) originateUserEvent(plainKind, user string, trailing ...string) {
+	escKind, ok := plainToEscapedUserEvent[plainKind]
+	if !ok {
+		// A user event whose escaped kind was never registered would go out
+		// raw and silently truncate on a name with a TAB. Refusing loudly is
+		// the only honest answer; the guard test keeps this unreachable.
+		slog.Error("director: user event has no escaped kind, not sent",
+			"kind", plainKind, "self", m.self)
+		return
+	}
+	fields := append([]string{proto.TabEscape(user)}, trailing...)
+	m.originate(escKind, strings.Join(fields, "\t"))
+}
+
+// plainToEscapedUserEvent is the inverse of escapedUserEvents. The two are
+// written out separately and a test walks the pair, because a kind that can be
+// read and not written (or the reverse) is the failure this split exists to
+// avoid.
+var plainToEscapedUserEvent = map[string]string{
+	"USER-KICKED": "USER-KICKED-ESC",
+	"USER-MOVED":  "USER-MOVED-ESC",
 }
 
 // Leave performs a graceful ring exit (#770), called on SIGTERM BEFORE the
