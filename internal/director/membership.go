@@ -72,11 +72,15 @@ func (m Member) less(o Member) bool {
 // outgoing connection to this node's right neighbor, and (origin, seq)
 // deduplicated event forwarding around the ring.
 type Membership struct {
-	srv        *Server
-	self       Member
-	secret     []byte // HMAC ring-join secret; empty = JOIN always rejected
-	tlsCfg     *tls.Config
-	minMembers int
+	srv  *Server
+	self Member
+	// unknownSeen throttles the log line for an unknown ring event, per kind.
+	// See noteUnknownRingEvent.
+	unknownMu   sync.Mutex
+	unknownSeen map[string]time.Time
+	secret      []byte // HMAC ring-join secret; empty = JOIN always rejected
+	tlsCfg      *tls.Config
+	minMembers  int
 	// joinAllowedNets restricts source CIDRs for DIRECTOR-JOIN (#773); nil/empty
 	// = allow all. Checked before the HMAC challenge.
 	joinAllowedNets []*net.IPNet
@@ -1579,7 +1583,68 @@ func (m *Membership) handleRingLine(fields []string, arrivalConn net.Conn) {
 	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED", "USER-ASSIGN",
 		"SESSION-OPEN", "SESSION-CLOSE", "BACKEND-UNREACHABLE", "USER-KILLING", "USER-KILL-DONE":
 		m.handleEnvelope(fields, arrivalConn)
+	default:
+		// A kind this build does not know is dropped -- there is nothing else
+		// to do with it -- but never in silence. A peer speaking a vocabulary
+		// this member has not learned means a rollout is in progress or one
+		// skipped a step, and the consequence is events quietly not happening:
+		// kicks that never arrive, pins that never clear. Read from a log that
+		// says nothing, that looks like "it works sometimes" (#1365; the same
+		// shape as #1314, where an unknown transaction type was skipped).
+		//
+		// PING/PONG never reach here: the two read loops answer them first.
+		m.noteUnknownRingEvent(fields[0])
 	}
+}
+
+// unknownRingEventLogEvery bounds the log line to once per kind per interval.
+// A mixed ring produces one unknown event per user action, and a line per
+// event would bury the rest of the ring's log in a rollout -- exactly when it
+// is needed most. The counter is unthrottled, so the true rate stays visible.
+const unknownRingEventLogEvery = time.Minute
+
+func (m *Membership) noteUnknownRingEvent(kind string) {
+	// Bounded by construction: the label is only ever recorded for a kind that
+	// passed the sanity check below, so a peer sending garbage cannot grow the
+	// metric's cardinality without limit.
+	if !plausibleEventKind(kind) {
+		ringEventUnknown.WithLabelValues("malformed").Inc()
+		kind = "malformed"
+	} else {
+		ringEventUnknown.WithLabelValues(kind).Inc()
+	}
+
+	m.unknownMu.Lock()
+	last, seen := m.unknownSeen[kind]
+	now := time.Now()
+	if !seen || now.Sub(last) >= unknownRingEventLogEvery {
+		if m.unknownSeen == nil {
+			m.unknownSeen = make(map[string]time.Time, 4)
+		}
+		m.unknownSeen[kind] = now
+		m.unknownMu.Unlock()
+		slog.Warn("director: unknown ring event, dropped",
+			"kind", kind, "self", m.self,
+			"hint", "a peer is newer than this build, or a staged rollout skipped a step")
+		return
+	}
+	m.unknownMu.Unlock()
+}
+
+// plausibleEventKind keeps a hostile or corrupt peer from turning the metric's
+// kind label into unbounded cardinality: a real event kind is short and made
+// of upper-case letters and dashes.
+func plausibleEventKind(kind string) bool {
+	if len(kind) == 0 || len(kind) > 32 {
+		return false
+	}
+	for i := 0; i < len(kind); i++ {
+		c := kind[i]
+		if (c < 'A' || c > 'Z') && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // handleEnvelope implements the propagation rule that makes the ring

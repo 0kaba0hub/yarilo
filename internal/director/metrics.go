@@ -30,6 +30,17 @@ var (
 		Help:      "Current active proxied sessions per backend IP (all protocols); sum across directors for the total.",
 	}, []string{"ip", "tag"})
 
+	// ringEventUnknown counts ring events this build does not know. It is the
+	// signal that a peer is speaking a vocabulary this member has not learned
+	// -- a rollout in progress, or one that skipped a step. Labelled by kind
+	// so the answer to "which event am I losing" needs no log grep.
+	ringEventUnknown = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "director",
+		Name:      "ring_event_unknown_total",
+		Help:      "Ring events dropped because this build does not know the kind (label: kind).",
+	}, []string{"kind"})
+
 	// joinAccepted / joinRejected count ring DIRECTOR-JOIN outcomes (#750).
 	// Rejected includes: no ring secret configured, malformed proof, and
 	// HMAC mismatch — the counter alone doesn't distinguish which; the
