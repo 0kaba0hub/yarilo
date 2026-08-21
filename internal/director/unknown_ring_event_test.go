@@ -22,9 +22,13 @@ func TestUnknownRingEventIsCountedAndNotApplied(t *testing.T) {
 		wantLabel string
 	}{
 		{
+			// Deliberately a kind no build has ever emitted: the point is a
+			// vocabulary this member has not learned. Naming a kind that is
+			// merely NEW would make this row expire the moment it is added --
+			// as USER-KICKED-ESC did, one step later.
 			name:      "a kind from a newer build",
-			line:      []string{"USER-KICKED-ESC", "10.0.0.1", "9102", "1", "u@example.com"},
-			wantLabel: "USER-KICKED-ESC",
+			line:      []string{"FUTURE-EVENT", "10.0.0.1", "9102", "1", "u@example.com"},
+			wantLabel: "FUTURE-EVENT",
 		},
 		{
 			name:      "garbage is folded into one label",

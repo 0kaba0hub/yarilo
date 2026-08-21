@@ -34,6 +34,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/yarilomail/yarilo/internal/cluster/proto"
 )
 
 // Member identifies one director replica by its ring-protocol address.
@@ -1581,7 +1583,10 @@ func (m *Membership) Leave() {
 func (m *Membership) handleRingLine(fields []string, arrivalConn net.Conn) {
 	switch fields[0] {
 	case "DIRECTOR-ADD", "DIRECTOR-REMOVE", "RING-CHANGE", "USER-MOVED", "USER-KICKED", "USER-ASSIGN",
-		"SESSION-OPEN", "SESSION-CLOSE", "BACKEND-UNREACHABLE", "USER-KILLING", "USER-KILL-DONE":
+		"SESSION-OPEN", "SESSION-CLOSE", "BACKEND-UNREACHABLE", "USER-KILLING", "USER-KILL-DONE",
+		// The escaped user events (#1365 step 1). Accepted now, written only
+		// once every member accepts them.
+		"USER-KICKED-ESC", "USER-MOVED-ESC":
 		m.handleEnvelope(fields, arrivalConn)
 	default:
 		// A kind this build does not know is dropped -- there is nothing else
@@ -1631,9 +1636,16 @@ func (m *Membership) noteUnknownRingEvent(kind string) {
 	m.unknownMu.Unlock()
 }
 
-// plausibleEventKind keeps a hostile or corrupt peer from turning the metric's
-// kind label into unbounded cardinality: a real event kind is short and made
-// of upper-case letters and dashes.
+// plausibleEventKind keeps a corrupt peer from turning the metric's kind label
+// into unbounded cardinality: a real event kind is short and made of
+// upper-case letters and dashes.
+//
+// The assumption it rests on, stated because it is not visible here: a ring
+// connection is already authenticated, so the peers that reach this point are
+// trusted members. This check bounds the damage from a member sending garbage,
+// not from an attacker choosing labels -- an unauthenticated writer would have
+// bigger consequences than metric cardinality, and the join proof is what
+// stops it.
 func plausibleEventKind(kind string) bool {
 	if len(kind) == 0 || len(kind) > 32 {
 		return false
@@ -1664,7 +1676,8 @@ func (m *Membership) handleEnvelope(fields []string, arrivalConn net.Conn) {
 	if len(fields) < 4 {
 		return
 	}
-	kind, originIP, originPortStr, seqStr := fields[0], fields[1], fields[2], fields[3]
+	kind, originField, originPortStr, seqStr := fields[0], fields[1], fields[2], fields[3]
+	originAddr, _ := splitOrigin(originField)
 	originPort, err := strconv.Atoi(originPortStr)
 	if err != nil {
 		return
@@ -1675,11 +1688,20 @@ func (m *Membership) handleEnvelope(fields []string, arrivalConn net.Conn) {
 	}
 	payload := fields[4:]
 
-	if originIP == m.self.IP && originPort == m.self.Port {
-		return // absorb: this is our own event, back around the ring
+	if originAddr == m.self.IP && originPort == m.self.Port {
+		// Absorb: our own event, back around the ring. Compared on the
+		// ADDRESS alone, because the incarnation makes the field differ from
+		// our own on every restart -- and an event we failed to absorb is one
+		// we apply to ourselves and send around a second time.
+		return
 	}
 
-	key := fmt.Sprintf("%s:%d", originIP, originPort)
+	// The dedup key keeps the WHOLE field, incarnation included. That is the
+	// point of the incarnation: a director restarting on a reused address is
+	// the same member to the ring and a new origin to dedup, so its first
+	// events are not mistaken for ones already applied by the instance that
+	// held the address before it (#1362).
+	key := fmt.Sprintf("%s:%d", originField, originPort)
 	// Seen by identity, not by recency. A high-water mark here dropped every
 	// copy that arrived after a newer event -- which is exactly what the ring's
 	// second path delivers, so one dead link turned into permanent, selective
@@ -1701,7 +1723,46 @@ func (m *Membership) handleEnvelope(fields []string, arrivalConn net.Conn) {
 	// nothing about the local apply feeds into it; dedup was already
 	// recorded above, so a concurrent redelivery can't double-forward.
 	m.broadcastRing(arrivalConn, strings.Join(fields, "\t"))
+	kind, payload = normalizeUserEvent(kind, payload)
 	m.applyEnvelope(kind, payload, key, seq)
+}
+
+// splitOrigin reads an origin field, which is either an address or an address
+// and an incarnation: "10.0.0.1" or "10.0.0.1@1724264". The incarnation is
+// opaque here -- nothing compares two of them, only whether the field as a
+// whole differs from the one seen before.
+func splitOrigin(field string) (addr, incarnation string) {
+	if i := strings.IndexByte(field, '@'); i >= 0 {
+		return field[:i], field[i+1:]
+	}
+	return field, ""
+}
+
+// escapedUserEvents maps the escaped form of a user event to its plain kind.
+// The form is announced by the kind rather than guessed from the bytes,
+// because it cannot be guessed: TabUnescape is not a no-op on a name that was
+// never escaped -- a legal "a\tb" would come out carrying a real TAB, which is
+// the very damage escaping exists to prevent (#1365).
+var escapedUserEvents = map[string]string{
+	"USER-KICKED-ESC": "USER-KICKED",
+	"USER-MOVED-ESC":  "USER-MOVED",
+}
+
+// normalizeUserEvent turns an escaped user event into the plain one every
+// applyEnvelope case already handles: same kind, username decoded. The
+// username is payload[0] in both kinds.
+//
+// This is the reader half of a two-step change. Writers still emit the plain
+// kinds; they switch only once no member without this code can be in the ring.
+func normalizeUserEvent(kind string, payload []string) (string, []string) {
+	plain, ok := escapedUserEvents[kind]
+	if !ok || len(payload) == 0 {
+		return kind, payload
+	}
+	decoded := make([]string, len(payload))
+	copy(decoded, payload)
+	decoded[0] = proto.TabUnescape(payload[0])
+	return plain, decoded
 }
 
 // applyEnvelope dispatches one envelope. seq is carried in because dedup by
