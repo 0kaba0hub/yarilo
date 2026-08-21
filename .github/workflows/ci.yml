@@ -41,10 +41,7 @@ env:
 jobs:
   lint:
     name: Lint
-    # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
-    # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
-    # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     permissions:
       contents: read
     steps:
@@ -97,10 +94,7 @@ jobs:
 
   test:
     name: Test
-    # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
-    # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
-    # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     permissions:
       checks: write
       contents: read
@@ -163,10 +157,7 @@ jobs:
     name: Build & Push
     if: github.event_name == 'push'
     needs: [lint, test]
-    # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
-    # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
-    # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     concurrency:
       group: build-main-${{ github.ref }}
       cancel-in-progress: false
@@ -205,12 +196,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.2.0
         with:
-          # TEMPORARY, tied to the ubuntu-24.04 runs-on override above: the
-          # docker driver needs the containerd image store to export a GHA
-          # cache (self-hosted has it enabled; the hosted runner's default
-          # docker daemon does not), and nothing after this step reaches into
-          # the local image store, so docker-container is a safe swap. Revert
-          # together with the runs-on lines once self-hosted dispatch resumes.
+          # docker-container over docker: exporting a type=gha cache with the
+          # docker driver depends on the runner's daemon having the containerd
+          # image store enabled, which is a runner-specific setting we do not
+          # control from here. Nothing after this step reaches into the local
+          # docker image store, so docker-container has no downside and does
+          # not carry that dependency.
           driver: docker-container
 
       - name: Log in to GHCR
