@@ -44,7 +44,7 @@ jobs:
     # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
     # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
     # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     permissions:
       contents: read
     steps:
@@ -100,7 +100,7 @@ jobs:
     # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
     # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
     # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     permissions:
       checks: write
       contents: read
@@ -166,7 +166,7 @@ jobs:
     # TEMPORARY: both org self-hosted runners are online but not dispatching jobs
     # (GitHub-side broker issue, not ours). Revert to [self-hosted, linux] once
     # dispatch resumes -- ubuntu-24.04 is slower and burns included Actions minutes.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     concurrency:
       group: build-main-${{ github.ref }}
       cancel-in-progress: false
