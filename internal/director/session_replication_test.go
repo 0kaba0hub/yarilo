@@ -12,7 +12,7 @@ import (
 func TestApplyRemoteSession_FeedsCounts(t *testing.T) {
 	s := NewWithOptions(Options{AntiEntropyInterval: -1})
 
-	s.applyRemoteSessionOpen([]string{"sid1", "u@d.test", "10.0.0.5", "imap"})
+	s.applyRemoteSessionOpen([]string{"sid1", "u@d.test", "10.0.0.5", "imap"}, "10.0.0.99@run1")
 	total, byProto := s.sessionCounts()
 	if total["10.0.0.5"] != 1 || byProto["10.0.0.5"]["imap"] != 1 {
 		t.Fatalf("remote session must be counted, got total=%v byProto=%v", total, byProto)
@@ -41,7 +41,7 @@ func TestApplyRemoteSessionOpen_DoesNotClobberLocal(t *testing.T) {
 	s.sessByBE["10.0.0.1"] = map[string]bool{"sid1": true}
 	s.sessRecMu.Unlock()
 
-	s.applyRemoteSessionOpen([]string{"sid1", "u", "10.0.0.9", "imap"})
+	s.applyRemoteSessionOpen([]string{"sid1", "u", "10.0.0.9", "imap"}, "10.0.0.99@run1")
 
 	s.sessRecMu.RLock()
 	rec := s.sessById["sid1"]
@@ -57,7 +57,7 @@ func TestKickSessionsForBackend_SkipsRemote(t *testing.T) {
 	s := NewWithOptions(Options{AntiEntropyInterval: -1})
 	s.ring.AddBackend(&ring.Backend{IP: "10.0.0.5", Port: 10143, Tag: "a", Up: true, Vhosts: 100})
 	// One remote session (cl == nil) on the backend.
-	s.applyRemoteSessionOpen([]string{"sid1", "u@d.test", "10.0.0.5", "imap"})
+	s.applyRemoteSessionOpen([]string{"sid1", "u@d.test", "10.0.0.5", "imap"}, "10.0.0.99@run1")
 
 	// Must not panic on the nil conn, and must clear the registry for the backend.
 	s.kickSessionsForBackend("10.0.0.5")
