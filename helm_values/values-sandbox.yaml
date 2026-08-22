@@ -51,6 +51,10 @@ fts:
   # IMAP error instead of silently falling back to a sequential scan, so FTS
   # regressions (e.g. #638) are caught by smoketest instead of being masked.
   fts_search_read_fallback: false
+  # Written down explicitly, at the default, because the 2.3.215 window ran with
+  # it lowered to 60 via --set to watch an eviction inside a short window. The
+  # sandbox's real state belongs in this file, not in someone's shell history.
+  fts_handle_idle_timeout: 300
   language_filters: [lowercase, stopwords, snowball]
   # The detector only picks among the languages listed here, so a single-entry
   # list silently indexes every message as English -- including non-English mail,
