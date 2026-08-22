@@ -1047,6 +1047,13 @@ type FTSConfig struct {
 	HeaderExcludes         []string `koanf:"fts_header_excludes"`
 	CommitLimit            int      `koanf:"fts_commit_limit"`
 
+	// HandleIdleTimeoutSecs bounds how long an unused per-user index handle is
+	// kept open. The handle owns a writable index, which holds the on-disk
+	// write lock: cached for the life of the process, a user who moves to
+	// another backend leaves this one holding that lock and the new owner can
+	// never index them (#1396). 0 = default (300).
+	HandleIdleTimeoutSecs int `koanf:"fts_handle_idle_timeout"`
+
 	SearchAddMissing string `koanf:"fts_search_add_missing"`
 	// SearchReadFallback falls back to the exact scan when a lookup fails or
 	// the index lags. JMAP has no scan: Email/query never reads bodies, so on
@@ -2539,6 +2546,7 @@ func Load(path string) (*Config, error) {
 			SearchAddMissing:           "body-search-only",
 			SearchReadFallback:         true,
 			SearchTimeoutSecs:          30,
+			HandleIdleTimeoutSecs:      300,
 			SearchFirstIndexGraceSecs:  10,
 			Search:                     true,
 			Languages:                  []string{"en"},
