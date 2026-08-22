@@ -36,6 +36,9 @@ type Options struct {
 	CommitLimit int
 	// Workers is the number of concurrent index workers (default 1).
 	Workers int
+	// HandleIdleTimeout bounds how long an unused per-user handle -- and the
+	// write lock its index holds -- is kept open. Zero selects the default.
+	HandleIdleTimeout time.Duration
 	// PrefetchDepth is how many messages a pass reads ahead of the one it is
 	// indexing. Below two it reads one at a time, which is the sequential
 	// behaviour.
@@ -109,7 +112,21 @@ type userHandle struct {
 	ui   fts.UserIndex
 	box  mailbox.UserMailbox
 	idx  mailbox.UserIndex
+
+	// inUse counts the operations holding this handle right now. The idle
+	// sweeper must not close an index mid-commit, so a handle is only ever
+	// closed at zero -- the same condition the shutdown path relies on, which
+	// is why both go through closeHandle.
+	inUse    int
+	lastUsed time.Time
 }
+
+// defaultHandleIdleTimeout is deliberately generous: closing a handle costs a
+// reopen on the next operation, and the case it exists for -- a user that moved
+// to another backend and will never come back here -- is not urgent to the
+// second. Five minutes bounds the stall for the new owner while leaving a busy
+// account's handle open through any realistic gap in its traffic.
+const defaultHandleIdleTimeout = 5 * time.Minute
 
 // New builds the service and starts its workers.
 func New(opts Options) (*Service, error) {
@@ -160,6 +177,8 @@ func New(opts Options) (*Service, error) {
 	go s.optimizeWorker(ctx)
 	s.wg.Add(1)
 	go s.lagSampler(ctx.Done(), lagSampleInterval)
+	s.wg.Add(1)
+	go s.idleSweeper(ctx)
 	return s, nil
 }
 
@@ -183,14 +202,25 @@ func (s *Service) Close() error {
 			h.idx.Close() //nolint:errcheck
 		}
 	}
+	_ = closeHandle // shutdown closes in place so it can report the first error
 	s.users = map[string]*userHandle{}
 	return firstErr
 }
 
+// handle returns the user's open handle, creating it if needed, and marks it
+// in use. Every caller must release it.
+//
+// A handle owns a writable Xapian database per mailbox, and that database
+// holds the on-disk write lock for as long as it is open. Cached forever, a
+// user who moves to another backend leaves this one holding the lock and the
+// new owner can never index them (#1396) -- so the cache is now bounded by
+// idleness rather than by process lifetime.
 func (s *Service) handle(user string) (*userHandle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if h, ok := s.users[user]; ok {
+		h.inUse++
+		h.lastUsed = time.Now()
 		return h, nil
 	}
 	info, err := s.opts.ResolveUser(user)
@@ -207,8 +237,100 @@ func (s *Service) handle(user string) (*userHandle, error) {
 		box:  s.mailboxFor(info).OpenUser(info),
 		idx:  s.opts.Index.OpenUser(info),
 	}
+	h.inUse = 1
+	h.lastUsed = time.Now()
 	s.users[user] = h
 	return h, nil
+}
+
+// release marks an operation on a handle finished. Idleness is measured from
+// the last release, so a long indexing run counts as work throughout.
+func (s *Service) release(h *userHandle) {
+	if h == nil {
+		return
+	}
+	s.mu.Lock()
+	if h.inUse > 0 {
+		h.inUse--
+	}
+	h.lastUsed = time.Now()
+	s.mu.Unlock()
+}
+
+// handleIdleTimeout is how long a user handle may sit unused before it is
+// closed and its write lock released.
+func (s *Service) handleIdleTimeout() time.Duration {
+	if s.opts.HandleIdleTimeout > 0 {
+		return s.opts.HandleIdleTimeout
+	}
+	return defaultHandleIdleTimeout
+}
+
+// idleSweeper closes handles nobody has touched for the idle timeout. The
+// write lock goes with them, which is the point: a user who moved away is not
+// coming back to this process, and nothing else can tell us so (#1396).
+func (s *Service) idleSweeper(ctx context.Context) {
+	defer s.wg.Done()
+	every := s.handleIdleTimeout() / 4
+	if every < time.Second {
+		every = time.Second
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.sweepIdleHandles(s.handleIdleTimeout())
+		}
+	}
+}
+
+func (s *Service) sweepIdleHandles(idle time.Duration) {
+	now := time.Now()
+	type closing struct {
+		user string
+		h    *userHandle
+		idle time.Duration
+	}
+	var due []closing
+	s.mu.Lock()
+	for user, h := range s.users {
+		// In use means work in flight -- a commit, a search, a rescan. Closing
+		// under it would tear the index out from beneath a write.
+		if h.inUse > 0 {
+			continue
+		}
+		if age := now.Sub(h.lastUsed); age >= idle {
+			due = append(due, closing{user: user, h: h, idle: age})
+			delete(s.users, user)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, c := range due {
+		closeHandle(c.h)
+		ftsHandlesEvicted.Inc()
+		// Logged rather than inferred from the absence of errors: this is the
+		// moment another backend can take over the user's index.
+		slog.Info("fts: closed idle user handle, released its write lock",
+			"user", c.user, "idle", c.idle.Round(time.Second))
+	}
+}
+
+// closeHandle is the one place a handle is torn down, so the sweeper and
+// shutdown cannot drift apart in what they release.
+func closeHandle(h *userHandle) {
+	if h.ui != nil {
+		h.ui.Close() //nolint:errcheck
+	}
+	if h.box != nil {
+		h.box.Close() //nolint:errcheck
+	}
+	if h.idx != nil {
+		h.idx.Close() //nolint:errcheck
+	}
 }
 
 // mailboxFor selects the backend matching the user's storage driver, falling
@@ -358,6 +480,7 @@ func (s *Service) Expunge(user string, mbox fts.MailboxRef, uid uint32) error {
 	if err != nil {
 		return err
 	}
+	defer s.release(h)
 	err = s.opts.LockMailbox(user, mbox.Name, func() error {
 		return h.ui.Expunge(mbox, uid)
 	})
@@ -375,6 +498,7 @@ func (s *Service) Lookup(user string, mbox fts.MailboxRef, q fts.Query) (fts.Res
 		metricLookupErrors.Inc()
 		return fts.Result{}, err
 	}
+	defer s.release(h)
 	t0 := time.Now()
 	res, err := h.ui.Lookup(mbox, q)
 	metricLookupDuration.Observe(time.Since(t0).Seconds())
@@ -396,6 +520,7 @@ func (s *Service) Status(user string, mbox fts.MailboxRef) (uint32, uint32, erro
 	if err != nil {
 		return 0, 0, err
 	}
+	defer s.release(h)
 	last, storedUIDV, sum, err := h.ui.Checkpoint(mbox)
 	// A checkpoint recorded under a different UIDVALIDITY belongs to a mailbox
 	// since recreated — report "not indexed" (last=0) so the client's catch-up
@@ -419,6 +544,7 @@ func (s *Service) Rescan(user string, mbox fts.MailboxRef) error {
 	if err != nil {
 		return err
 	}
+	defer s.release(h)
 	present, maxUID, uidValidity, err := s.presentUIDs(h, mbox)
 	if err != nil {
 		return err
@@ -453,6 +579,7 @@ func (s *Service) Optimize(user string) error {
 	if err != nil {
 		return err
 	}
+	defer s.release(h)
 	// Per mailbox, under that mailbox's own lock. A single user-keyed lock
 	// would exclude nobody: every writer -- index jobs, rescan, auto-optimize
 	// -- keys on (user, folder), so a whole-user compaction holding
@@ -556,6 +683,7 @@ func (s *Service) runOptimize(j optimizeJob) {
 			"user", j.user.Username, "folder", j.mbox.Name, "err", err)
 		return
 	}
+	defer s.release(h)
 	if err := s.opts.LockMailbox(j.user.Username, j.mbox.Name, func() error {
 		return h.ui.OptimizeMailbox(j.mbox)
 	}); err != nil {
@@ -647,6 +775,7 @@ func (s *Service) runIndex(j job) error {
 	if err != nil {
 		return err
 	}
+	defer s.release(h)
 	tStart := time.Now()
 	checksum := s.opts.Chain.SettingsChecksum()
 

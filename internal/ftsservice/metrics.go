@@ -212,3 +212,14 @@ func declareSkipReasons() bool {
 	}
 	return true
 }
+
+// ftsHandlesEvicted counts per-user handles closed for idleness. Each one
+// releases the write lock its index held, which is what lets another backend
+// take a moved user over (#1396) -- so a non-zero rate here is the mechanism
+// working, not a problem.
+var ftsHandlesEvicted = promauto.NewCounter(prometheus.CounterOpts{
+	Namespace: "yarilo",
+	Subsystem: "fts",
+	Name:      "handles_evicted_total",
+	Help:      "Per-user index handles closed after being idle, releasing their write lock.",
+})

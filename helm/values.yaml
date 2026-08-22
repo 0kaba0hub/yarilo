@@ -2480,6 +2480,13 @@ fts:
   ## measures queue latency, not indexing speed, which is why it is separate
   ## from fts_search_timeout_secs.
   fts_search_first_index_grace: 10
+  ## Seconds an unused per-user index handle stays open. The handle owns a
+  ## writable index, which holds the on-disk write lock, so a user who moves to
+  ## another backend leaves the old one holding that lock until this expires --
+  ## and until then the new owner cannot index them at all.
+  ## Lower means a moved user is picked up sooner; higher avoids reopening the
+  ## index across gaps in a busy account's traffic. 0 = built-in default (300).
+  fts_handle_idle_timeout: 300
   fts_search_timeout_secs: 30
   fts_search_strict: false
   ## Disables FTS SEARCH only, while indexing/autoindex keep running

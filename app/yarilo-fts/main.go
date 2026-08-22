@@ -104,12 +104,13 @@ func main() {
 		// adding a backend locker would stack two locks on one resource. What
 		// that guard does not cover is OpenFolder creating an index for a folder
 		// that has none — an indexer has nothing to index there anyway.
-		Workers:          fc.IndexWorkers,
-		PrefetchDepth:    fc.PrefetchDepth,
-		PrefetchMaxBytes: fc.PrefetchMaxBytes,
-		Index:            file.New(file.WithNoCreate()),
-		ResolveUser:      userResolver(fc.AuthMasterAddr, resolver, authTLS),
-		Chain:            chain,
+		Workers:           fc.IndexWorkers,
+		HandleIdleTimeout: time.Duration(cfg.FTS.HandleIdleTimeoutSecs) * time.Second,
+		PrefetchDepth:     fc.PrefetchDepth,
+		PrefetchMaxBytes:  fc.PrefetchMaxBytes,
+		Index:             file.New(file.WithNoCreate()),
+		ResolveUser:       userResolver(fc.AuthMasterAddr, resolver, authTLS),
+		Chain:             chain,
 		Build: buildmail.Options{
 			HeaderIncludes:       fc.HeaderIncludes,
 			HeaderExcludes:       fc.HeaderExcludes,
