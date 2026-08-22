@@ -87,9 +87,13 @@ type Membership struct {
 	// (#1362). Generated once, at construction: it must not change while the
 	// process lives, or every event would look like a different origin.
 	incarnation string
-	secret      []byte // HMAC ring-join secret; empty = JOIN always rejected
-	tlsCfg      *tls.Config
-	minMembers  int
+	// originRun remembers which run of each member we last heard from, so a
+	// member coming back as a different run can be noticed (#1393).
+	originMu   sync.Mutex
+	originRun  map[string]string
+	secret     []byte // HMAC ring-join secret; empty = JOIN always rejected
+	tlsCfg     *tls.Config
+	minMembers int
 	// joinAllowedNets restricts source CIDRs for DIRECTOR-JOIN (#773); nil/empty
 	// = allow all. Checked before the HMAC challenge.
 	joinAllowedNets []*net.IPNet
@@ -207,6 +211,7 @@ func NewMembership(srv *Server, self Member, secret []byte, tlsCfg *tls.Config, 
 		minMembers:      minMembers,
 		joinAllowedNets: joinAllowedNets,
 		lastSeq:         make(map[string]uint64),
+		originRun:       make(map[string]string, 4),
 		seen:            newSeenSeqs(),
 		order:           newOrderGuard(),
 		removed:         make(map[Member]time.Time),
@@ -1761,6 +1766,8 @@ func (m *Membership) handleEnvelope(fields []string, arrivalConn net.Conn) {
 		return
 	}
 
+	m.noteOriginIncarnation(originField, originAddr, originPort)
+
 	// The dedup key keeps the WHOLE field, incarnation included. That is the
 	// point of the incarnation: a director restarting on a reused address is
 	// the same member to the ring and a new origin to dedup, so its first
@@ -1792,6 +1799,38 @@ func (m *Membership) handleEnvelope(fields []string, arrivalConn net.Conn) {
 	m.applyEnvelope(kind, payload, key, seq)
 }
 
+// noteOriginIncarnation watches for a member coming back as a different run.
+//
+// This is the trigger that survives a hard kill: a director that is SIGKILLed
+// sends no DIRECTOR-REMOVE, so the only evidence its previous run ended is the
+// next event arriving from the same address under a new incarnation. What that
+// run owned -- session replicas above all -- has no owner left to close it and
+// would otherwise sit in every peer's count forever (#1393).
+func (m *Membership) noteOriginIncarnation(field, addr string, port int) {
+	if m.srv == nil {
+		return
+	}
+	member := fmt.Sprintf("%s:%d", addr, port)
+	// Stored in the same form the session records carry, which is the key
+	// applyEnvelope hands down -- the whole origin field WITH the port. Two
+	// spellings of the same thing is how a purge silently matches nothing.
+	run := fmt.Sprintf("%s:%d", field, port)
+	m.originMu.Lock()
+	if m.originRun == nil {
+		m.originRun = make(map[string]string, 4)
+	}
+	previous, seen := m.originRun[member]
+	m.originRun[member] = run
+	m.originMu.Unlock()
+
+	if !seen || previous == run {
+		return
+	}
+	slog.Info("director: peer came back as a new run, dropping what the old one owned",
+		"member", member, "previous", previous, "now", run)
+	m.srv.purgeReplicasOf(previous)
+}
+
 // splitOrigin reads an origin field, which is either an address or an address
 // and an incarnation: "10.0.0.1" or "10.0.0.1@1724264". The incarnation is
 // opaque here -- nothing compares two of them, only whether the field as a
@@ -1801,6 +1840,23 @@ func splitOrigin(field string) (addr, incarnation string) {
 		return field[:i], field[i+1:]
 	}
 	return field, ""
+}
+
+// purgeReplicasOfMember drops the session replicas of a member's CURRENT run,
+// by address rather than by the exact origin field: the caller knows which
+// member left, and this is where the address is turned back into the run.
+func (m *Membership) purgeReplicasOfMember(gone Member) {
+	if m.srv == nil {
+		return
+	}
+	key := fmt.Sprintf("%s:%d", gone.IP, gone.Port)
+	m.originMu.Lock()
+	field, seen := m.originRun[key]
+	delete(m.originRun, key)
+	m.originMu.Unlock()
+	if seen {
+		m.srv.purgeReplicasOf(field)
+	}
 }
 
 // escapedUserEvents maps the escaped form of a user event to its plain kind.
@@ -1887,7 +1943,13 @@ func (m *Membership) applyEnvelope(kind string, payload []string, origin string,
 		if err != nil {
 			return
 		}
-		m.removeMember(Member{IP: payload[0], Port: port})
+		gone := Member{IP: payload[0], Port: port}
+		m.removeMember(gone)
+		// Whatever that member's current run owned goes with it: its replicas
+		// have no owner left to close them (#1393). The incarnation trigger
+		// covers a hard kill; this covers the announced exit, which is the
+		// case where the ring learns sooner.
+		m.purgeReplicasOfMember(gone)
 		m.reconcile()
 	case "RING-CHANGE":
 		applyRingChangeFields(m.srv, payload)
@@ -1929,7 +1991,7 @@ func (m *Membership) applyEnvelope(kind string, payload []string, origin string,
 		// payload: <id> <user> <backend> <proto> (#804) — a remote replica of a
 		// session another director owns; feeds the least_sessions load view.
 		if m.srv != nil {
-			m.srv.applyRemoteSessionOpen(payload)
+			m.srv.applyRemoteSessionOpen(payload, origin)
 		}
 	case "SESSION-CLOSE":
 		if m.srv != nil && len(payload) >= 1 {

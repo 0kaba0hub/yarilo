@@ -322,6 +322,12 @@ type sessionRec struct {
 	backend string  // backend IP (without port)
 	proto   string  // base protocol (imap/pop3/…), for least_sessions counts
 	cl      *client // which login-pod connection owns this session
+	// origin names the director this replica came from, incarnation and all
+	// (empty for a session this director owns). Without it a replica is
+	// anonymous, and an anonymous replica cannot be cleaned up when its owner
+	// dies: nobody is left to send its SESSION-CLOSE, and nothing here can
+	// tell whose it was (#1393).
+	origin string
 }
 
 // Server is the yarilo-director TCP server.
@@ -1516,11 +1522,11 @@ func (s *Server) removeClientSessions(c *client) {
 // applyRemoteSessionOpen records a session reported by ANOTHER director via the
 // ring (#804). Marked remote (cl=nil): it feeds the least_sessions load view but
 // is never kicked locally (that is the owning director's job).
-func (s *Server) applyRemoteSessionOpen(payload []string) {
+func (s *Server) applyRemoteSessionOpen(payload []string, origin string) {
 	if len(payload) < 3 {
 		return
 	}
-	rec := &sessionRec{id: payload[0], user: proto.TabUnescape(payload[1]), backend: payload[2]}
+	rec := &sessionRec{id: payload[0], user: proto.TabUnescape(payload[1]), backend: payload[2], origin: origin}
 	if len(payload) >= 4 {
 		rec.proto = payload[3]
 	}
@@ -1538,6 +1544,45 @@ func (s *Server) applyRemoteSessionOpen(payload []string) {
 	s.sessByBE[rec.backend][rec.id] = true
 	s.sessRecMu.Unlock()
 	s.noteSessionOpened(rec.user) // #847: remote session also voids a pending confirm
+	s.updateMetrics()
+}
+
+// purgeReplicasOf drops every session replica that came from one director run.
+// Called when that run ends: the member left the ring, or it came back with a
+// new incarnation, which is the same thing seen from the other side and the
+// only signal that survives a hard kill (#1393).
+//
+// Replicas only: a session this director owns has a live login connection
+// behind it and is closed by that connection, not by ring bookkeeping.
+func (s *Server) purgeReplicasOf(origin string) {
+	if origin == "" {
+		return
+	}
+	var closedUsers []string
+	s.sessRecMu.Lock()
+	for id, rec := range s.sessById {
+		if rec.cl != nil || rec.origin != origin {
+			continue
+		}
+		closedUsers = append(closedUsers, rec.user)
+		delete(s.sessById, id)
+		delete(s.sessByBE[rec.backend], id)
+	}
+	s.sessRecMu.Unlock()
+	if len(closedUsers) == 0 {
+		return
+	}
+	// Logged rather than left to be inferred from a difference between two
+	// dumps: this is the moment the count becomes true again, and a window
+	// that cannot see it can only measure the aftermath.
+	slog.Info("director: purged session replicas of a director run that ended",
+		"origin", origin, "count", len(closedUsers))
+	for _, user := range closedUsers {
+		// A purged replica also arms the kill-confirm: the sessions it stood
+		// for are gone with their owner, and a kill waiting on them would
+		// otherwise wait out its timeout (#847).
+		s.noteSessionClosed(user)
+	}
 	s.updateMetrics()
 }
 

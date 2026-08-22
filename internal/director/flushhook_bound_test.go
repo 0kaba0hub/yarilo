@@ -48,7 +48,11 @@ func stillRunning(t *testing.T, pidFile string) bool {
 	if err != nil {
 		t.Fatalf("grandchild pid %q: %v", raw, err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	// Eight seconds, not three: the reap is done by whoever inherits the
+	// orphan, and under a loaded machine (the full package run) that took
+	// longer than three -- once. Still far below the hook's own 20s hold, so
+	// a grandchild that actually survived the bound fails just as loudly.
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		if syscall.Kill(pid, 0) != nil {
 			return false

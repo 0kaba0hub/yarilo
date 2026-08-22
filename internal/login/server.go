@@ -170,6 +170,12 @@ type liveSession struct {
 	// running -- and with it the session record and the SESSION-CLOSE the
 	// director waits for to confirm the kill (#1366).
 	clientConn net.Conn
+	// backendIP and proto are what the director was told about this session.
+	// Kept so the session can be announced AGAIN: the announcement is made to
+	// one director, and when that director dies the session outlives its
+	// record (#1393).
+	backendIP string
+	proto     string
 }
 
 // watchConn wraps a proto.Conn for the persistent director watch connection.
@@ -914,7 +920,11 @@ func (s *Server) handleConn(conn net.Conn) {
 	// Keyed by the identity the session acts as: a kick for the target must
 	// find it, and a master session filed under "target*master" is invisible
 	// to every administrative command (#1306).
-	sess := &liveSession{id: sessID, user: est.user, backendConn: backendConn, clientConn: authConn}
+	backendIP, _, _ := net.SplitHostPort(backendAddr)
+	sess := &liveSession{
+		id: sessID, user: est.user, backendConn: backendConn, clientConn: authConn,
+		backendIP: backendIP, proto: s.opts.Protocol.Base(),
+	}
 	s.sessMu.Lock()
 	s.sessions[est.user] = append(s.sessions[est.user], sess)
 	s.sessMu.Unlock()
@@ -930,14 +940,11 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.sessMu.Unlock()
 	}()
 
-	backendIP, _, _ := net.SplitHostPort(backendAddr)
-	s.watchMu.RLock()
-	wc := s.watch
-	s.watchMu.RUnlock()
-	if wc != nil {
-		wc.sessionOpen(sessID, est.user, backendIP, s.opts.Protocol.Base())
-		defer wc.sessionClose(sessID)
-	}
+	s.announceSession(sess)
+	// Closed through whatever watch connection is current at the time, not
+	// the one captured here: after a reconnect the captured one is dead, and
+	// the close would be written into it and lost (#1393).
+	defer s.announceSessionClose(sessID)
 
 	log.Info("login: session routed", "user", pre.username, "backend", backendAddr, "result", "ok")
 	s.incResult("ok")
@@ -1294,6 +1301,7 @@ func (s *Server) runWatch(ctx context.Context) {
 	}()
 
 	slog.Info("login: director watch connected", "addr", s.opts.DirectorAddr)
+	s.reannounceSessions()
 
 	readErr := make(chan error, 1)
 	go func() {
@@ -1356,6 +1364,54 @@ func kickedUser(line string) (string, bool) {
 		return "", false
 	}
 	return fields[1], true
+}
+
+// announceSession tells the director this session exists. Safe to repeat: the
+// director keys sessions by id, so a re-announcement after a reconnect
+// replaces the record rather than adding one.
+func (s *Server) announceSession(sess *liveSession) {
+	s.watchMu.RLock()
+	wc := s.watch
+	s.watchMu.RUnlock()
+	if wc == nil {
+		return
+	}
+	wc.sessionOpen(sess.id, sess.user, sess.backendIP, sess.proto)
+}
+
+func (s *Server) announceSessionClose(sessID string) {
+	s.watchMu.RLock()
+	wc := s.watch
+	s.watchMu.RUnlock()
+	if wc == nil {
+		return
+	}
+	wc.sessionClose(sessID)
+}
+
+// reannounceSessions re-sends SESSION-OPEN for every session still running,
+// after a watch connection is established.
+//
+// A session is announced once, to the director holding the watch at the time.
+// When that director dies the login pod reconnects -- often to a different one
+// -- and the session keeps running with nobody counting it. That is the mirror
+// of the phantom replica: the count is then LOW, and a kill waiting for it to
+// reach zero confirms immediately on a user whose session was never touched
+// (#1393).
+func (s *Server) reannounceSessions() {
+	s.sessMu.RLock()
+	live := make([]*liveSession, 0, len(s.sessions))
+	for _, list := range s.sessions {
+		live = append(live, list...)
+	}
+	s.sessMu.RUnlock()
+	if len(live) == 0 {
+		return
+	}
+	for _, sess := range live {
+		s.announceSession(sess)
+	}
+	slog.Info("login: re-announced live sessions to the director", "count", len(live))
 }
 
 // kickUser closes all active backend connections for the given username,
