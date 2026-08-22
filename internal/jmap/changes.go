@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/yarilomail/yarilo/pkg/authclient"
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -218,7 +219,10 @@ func cannotCalculate(why string) *jmapcore.MethodError {
 // serverFail says "something went wrong here", which a client treats as final
 // and reports to its user (#1339).
 func storeFailure(what, accountID string, err error) *jmapcore.MethodError {
-	if errors.Is(err, locks.ErrUnavailable) {
+	// Two dependencies, one answer: the lock service and the auth master are
+	// both reached over the network on this path, and either being restarted
+	// is a wait, not a defect on this server (#1402).
+	if errors.Is(err, locks.ErrUnavailable) || errors.Is(err, authclient.ErrUnavailable) {
 		slog.Warn("jmap: "+what+" unavailable", "account", accountID, "err", err)
 		return &jmapcore.MethodError{
 			Type:        jmapcore.ErrServerUnavailable,
