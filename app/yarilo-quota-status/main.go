@@ -90,7 +90,7 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		authcl, err = authclient.Dial(qs.AuthMasterAddr, authTLS)
+		authcl, err = authclient.DialWaiting(context.Background(), qs.AuthMasterAddr, authTLS, cfg.AuthService.StartupWait())
 		if err != nil {
 			slog.Error("authclient dial failed", "addr", qs.AuthMasterAddr, "err", err)
 			os.Exit(1)

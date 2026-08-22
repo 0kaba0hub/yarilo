@@ -930,8 +930,18 @@ type AuthServiceConfig struct {
 	// MasterAddr is the address backend services use to dial the
 	// yarilo-auth master protocol for userdb lookups (USER command).
 	// Defaults to empty (userdb checks disabled) when not set.
-	MasterAddr string         `koanf:"master_addr"`
-	Shutdown   ShutdownConfig `koanf:"shutdown"`
+	MasterAddr string `koanf:"master_addr"`
+	// StartupWaitSeconds bounds how long a process waits at STARTUP for auth
+	// to become reachable before giving up. A process starting while auth
+	// rolls has nobody to tell, so exiting turns a few seconds of dependency
+	// downtime into a restart loop (#1369).
+	//
+	// It bounds startup only. On a request the opposite is right -- a client
+	// is waiting for an answer, and a fast refusal beats a hang -- so the
+	// per-request dials do not use it. 0 = default (30); negative = do not
+	// wait.
+	StartupWaitSeconds int            `koanf:"auth_startup_wait"`
+	Shutdown           ShutdownConfig `koanf:"shutdown"`
 }
 
 // ClientAddr returns the address login pods use to dial yarilo-auth.
@@ -963,11 +973,29 @@ type LocksClientConfig struct {
 	StartupWaitSeconds int `koanf:"locks_client_startup_wait"`
 }
 
+// DefaultAuthStartupWait is the built-in bound for waiting on auth at startup.
+const DefaultAuthStartupWait = 30 * time.Second
+
 // DefaultLocksStartupWait is the window a component waits for the lock service
 // on the first connection.
 const DefaultLocksStartupWait = 30 * time.Second
 
 // StartupWait resolves the configured window.
+// StartupWait is how long a process waits at startup for auth to answer. Zero
+// selects the default; negative turns the waiting off. Written once here, as
+// the locks knob is, so the two startup waits read the same way and neither
+// grows its own idea of what zero means.
+func (c AuthServiceConfig) StartupWait() time.Duration {
+	switch {
+	case c.StartupWaitSeconds == 0:
+		return DefaultAuthStartupWait
+	case c.StartupWaitSeconds < 0:
+		return 0
+	default:
+		return time.Duration(c.StartupWaitSeconds) * time.Second
+	}
+}
+
 func (c LocksClientConfig) StartupWait() time.Duration {
 	switch {
 	case c.StartupWaitSeconds == 0:
@@ -2444,7 +2472,8 @@ func Load(path string) (*Config, error) {
 			},
 		},
 		AuthService: AuthServiceConfig{
-			Listen: ":9100",
+			Listen:             ":9100",
+			StartupWaitSeconds: 30,
 			Shutdown: ShutdownConfig{
 				SessionGracePeriod: 30,
 				KillTimeout:        5,

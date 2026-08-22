@@ -146,7 +146,7 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		authcl, err = authclient.Dial(cfg.BackendAPI.AuthMasterAddr, authTLS)
+		authcl, err = authclient.DialWaiting(context.Background(), cfg.BackendAPI.AuthMasterAddr, authTLS, cfg.AuthService.StartupWait())
 		if err != nil {
 			slog.Error("backend-api: authclient dial",
 				"addr", cfg.BackendAPI.AuthMasterAddr, "err", err)

@@ -668,6 +668,14 @@ components:
   auth:
     enabled: true
     replicas: 1
+    ## Seconds a process waits at STARTUP for yarilo-auth to answer before it
+    ## gives up and exits. A pod starting while auth is rolling has nobody to
+    ## tell, so exiting immediately turns a few seconds of dependency downtime
+    ## into a restart loop.
+    ## Startup only: on a request a fast refusal beats a hang, so the
+    ## per-request dials never wait. 0 = built-in default (30); negative = do
+    ## not wait at all.
+    startup_wait: 30
     ## listen — client protocol (login pods speak here).
     listen: ":9100"
     ## addr — address login pods dial to reach yarilo-auth.
