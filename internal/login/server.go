@@ -116,8 +116,12 @@ type Options struct {
 	// Their product must exceed the director's worst-case confirm time.
 	// 0 uses the defaults (20 / 150ms → 3s budget). From
 	// login.lookup_hold_max / lookup_hold_backoff_ms.
-	LookupHoldMax     int
-	LookupHoldBackoff time.Duration
+	// SessionSyncInterval paces the full session list this pod sends the
+	// director. Zero selects the default; negative sends it only when a watch
+	// connection is (re)established. See syncSessions (#1393).
+	SessionSyncInterval time.Duration
+	LookupHoldMax       int
+	LookupHoldBackoff   time.Duration
 
 	// AuthAddr is the host:port of yarilo-auth (e.g. "yarilo-auth:9100").
 	// Required: if empty every login attempt is rejected with a temporary error.
@@ -278,6 +282,30 @@ func (w *watchConn) sessionOpen(sessID, username, backendIP, protoName string) {
 	_ = w.c.WriteLine(fmt.Sprintf("SESSION-OPEN\t%s\t%s\t%s\t%s", sessID, proto.TabEscape(username), backendIP, protoName))
 }
 
+// The reconciliation is framed START ... chunks ... END so the director can
+// tell a complete list from a truncated one: applying half a list would erase
+// live sessions. The framing follows the handshake's HOST-HAND-START/END.
+func (w *watchConn) sessionSyncStart() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.c.WriteLine("SESSION-SYNC-START")
+}
+
+func (w *watchConn) sessionSyncChunk(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.c.WriteLine("SESSION-SYNC\t" + strings.Join(ids, "\t"))
+}
+
+func (w *watchConn) sessionSyncEnd() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.c.WriteLine("SESSION-SYNC-END")
+}
+
 func (w *watchConn) sessionClose(sessID string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -321,8 +349,13 @@ type Server struct {
 	sessSeq atomic.Uint64
 	seed    string // 4 base51 chars, random per Server instance
 
-	sessMu   sync.RWMutex
-	sessions map[string][]*liveSession // username → active sessions
+	sessMu sync.RWMutex
+	// announceMu orders what this pod tells the director about its sessions.
+	// A session registers and announces itself under it, and the full-list
+	// reconciliation takes it too -- so a list can never be built before a
+	// session exists and sent after that session's SESSION-OPEN (#1393).
+	announceMu sync.Mutex
+	sessions   map[string][]*liveSession // username → active sessions
 
 	watchMu sync.RWMutex
 	watch   *watchConn // persistent director connection for push notifications
@@ -925,6 +958,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		id: sessID, user: est.user, backendConn: backendConn, clientConn: authConn,
 		backendIP: backendIP, proto: s.opts.Protocol.Base(),
 	}
+	s.announceMu.Lock()
 	s.sessMu.Lock()
 	s.sessions[est.user] = append(s.sessions[est.user], sess)
 	s.sessMu.Unlock()
@@ -940,7 +974,8 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.sessMu.Unlock()
 	}()
 
-	s.announceSession(sess)
+	s.announceSessionLocked(sess)
+	s.announceMu.Unlock()
 	// Closed through whatever watch connection is current at the time, not
 	// the one captured here: after a reconnect the captured one is dead, and
 	// the close would be written into it and lost (#1393).
@@ -1302,6 +1337,9 @@ func (s *Server) runWatch(ctx context.Context) {
 
 	slog.Info("login: director watch connected", "addr", s.opts.DirectorAddr)
 	s.reannounceSessions()
+	// Adding what it does not know is only half: the list below is what
+	// removes what it knows and we do not.
+	s.syncSessions()
 
 	readErr := make(chan error, 1)
 	go func() {
@@ -1309,6 +1347,26 @@ func (s *Server) runWatch(ctx context.Context) {
 		wc.failPending()
 		readErr <- err
 	}()
+
+	// Reconciliation while the connection stays up. A (re)connect covers a
+	// close lost to a watch outage; this covers one lost any other way, which
+	// is the point of reconciling rather than patching a known path.
+	syncStop := make(chan struct{})
+	defer close(syncStop)
+	if every := s.sessionSyncInterval(); every > 0 {
+		go func() {
+			t := time.NewTicker(every)
+			defer t.Stop()
+			for {
+				select {
+				case <-syncStop:
+					return
+				case <-t.C:
+					s.syncSessions()
+				}
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -1366,10 +1424,76 @@ func kickedUser(line string) (string, bool) {
 	return fields[1], true
 }
 
+// defaultSessionSyncInterval paces the reconciliation when the operator has
+// not chosen one. It bounds how long a director may count a session nobody is
+// running, which is the thing being fixed -- not how fresh the count is.
+const defaultSessionSyncInterval = 30 * time.Second
+
+// sessionSyncIDsPerLine keeps a sync line inside the director's read buffer
+// (4 KiB). Session ids are ~17 bytes, so a hundred per line leaves room to
+// spare; a longer line would not be truncated, it would break the connection.
+const sessionSyncIDsPerLine = 100
+
+func (s *Server) sessionSyncInterval() time.Duration {
+	if s.opts.SessionSyncInterval == 0 {
+		return defaultSessionSyncInterval
+	}
+	return s.opts.SessionSyncInterval
+}
+
+// syncSessions sends the director the complete list of sessions this pod is
+// running, so it can drop what it still counts and nobody has.
+//
+// Announcing opens and closes alone leaves a lost event wrong forever: nothing
+// ever says "this is all of it". A director that missed one SESSION-CLOSE --
+// because the watch was down at that instant, or for any other reason -- keeps
+// a phantom that feeds least_sessions and the kill-confirm (#1393).
+//
+// The snapshot and the write happen under announceMu, the same lock a session
+// takes to register and announce itself. Without that, a session opened
+// between the snapshot and the write would have its SESSION-OPEN arrive first
+// and be erased by a list taken before it existed.
+func (s *Server) syncSessions() {
+	s.announceMu.Lock()
+	defer s.announceMu.Unlock()
+
+	s.watchMu.RLock()
+	wc := s.watch
+	s.watchMu.RUnlock()
+	if wc == nil {
+		return
+	}
+
+	s.sessMu.RLock()
+	ids := make([]string, 0, len(s.sessions))
+	for _, list := range s.sessions {
+		for _, sess := range list {
+			ids = append(ids, sess.id)
+		}
+	}
+	s.sessMu.RUnlock()
+
+	wc.sessionSyncStart()
+	for i := 0; i < len(ids); i += sessionSyncIDsPerLine {
+		end := i + sessionSyncIDsPerLine
+		if end > len(ids) {
+			end = len(ids)
+		}
+		wc.sessionSyncChunk(ids[i:end])
+	}
+	wc.sessionSyncEnd()
+}
+
 // announceSession tells the director this session exists. Safe to repeat: the
 // director keys sessions by id, so a re-announcement after a reconnect
 // replaces the record rather than adding one.
 func (s *Server) announceSession(sess *liveSession) {
+	s.announceMu.Lock()
+	defer s.announceMu.Unlock()
+	s.announceSessionLocked(sess)
+}
+
+func (s *Server) announceSessionLocked(sess *liveSession) {
 	s.watchMu.RLock()
 	wc := s.watch
 	s.watchMu.RUnlock()
@@ -1380,10 +1504,18 @@ func (s *Server) announceSession(sess *liveSession) {
 }
 
 func (s *Server) announceSessionClose(sessID string) {
+	s.announceMu.Lock()
+	defer s.announceMu.Unlock()
 	s.watchMu.RLock()
 	wc := s.watch
 	s.watchMu.RUnlock()
 	if wc == nil {
+		// The session ended while no director was reachable, so this close is
+		// lost -- and until the reconciliation it stayed lost forever. Counted
+		// rather than swallowed: if phantoms disappear while this stays zero,
+		// the reconciliation is covering some OTHER path and we would never
+		// learn which (#1393).
+		metricSessionCloseDropped.Inc()
 		return
 	}
 	wc.sessionClose(sessID)
@@ -1408,9 +1540,11 @@ func (s *Server) reannounceSessions() {
 	if len(live) == 0 {
 		return
 	}
+	s.announceMu.Lock()
 	for _, sess := range live {
-		s.announceSession(sess)
+		s.announceSessionLocked(sess)
 	}
+	s.announceMu.Unlock()
 	slog.Info("login: re-announced live sessions to the director", "count", len(live))
 }
 

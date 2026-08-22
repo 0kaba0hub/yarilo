@@ -90,3 +90,15 @@ func (s *Server) incTransientRetry(stage string) {
 func (s *Server) incTransientExhausted(stage string) {
 	transientExhausted.WithLabelValues(string(s.opts.Protocol), stage).Inc()
 }
+
+// sessionCloseDropped counts sessions that ended while no director connection
+// was up, so their SESSION-CLOSE went nowhere. Until the full-list
+// reconciliation such a session was counted by the director forever; the
+// counter stays because it distinguishes "the reconciliation fixed the cause
+// we found" from "it covered a path we never identified" (#1393).
+var metricSessionCloseDropped = promauto.NewCounter(prometheus.CounterOpts{
+	Namespace: "yarilo",
+	Subsystem: "login",
+	Name:      "session_close_dropped_total",
+	Help:      "Session closes not delivered because no director watch connection was up.",
+})

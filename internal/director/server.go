@@ -293,6 +293,12 @@ func (o *Options) writeTimeout() time.Duration {
 // makes each written LINE atomic; it does NOT order pushes relative to command
 // replies — proto.Conn.readReply skips interleaved pushes instead.
 type client struct {
+	// syncIDs accumulates a SESSION-SYNC list between its START and END. Held
+	// per connection and applied only on END: half a list would erase live
+	// sessions (#1393).
+	syncIDs map[string]bool
+	syncing bool
+
 	conn         net.Conn
 	mu           sync.Mutex
 	writeTimeout time.Duration // per-write deadline; 0 = none
@@ -332,6 +338,10 @@ type sessionRec struct {
 
 // Server is the yarilo-director TCP server.
 type Server struct {
+	// unknownCmdSeen throttles the log for an unknown login-pod command.
+	unknownCmdMu   sync.Mutex
+	unknownCmdSeen map[string]time.Time
+
 	ring *ring.Ring
 	opts Options
 
@@ -782,6 +792,20 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleLookup(c, fields)
 		case "SESSION-OPEN":
 			s.handleSessionOpen(c, fields)
+		case "SESSION-SYNC-START":
+			c.syncIDs = make(map[string]bool, 64)
+			c.syncing = true
+		case "SESSION-SYNC":
+			if c.syncing {
+				for _, id := range fields[1:] {
+					c.syncIDs[id] = true
+				}
+			}
+		case "SESSION-SYNC-END":
+			if c.syncing {
+				s.reconcileSessions(c, c.syncIDs)
+				c.syncIDs, c.syncing = nil, false
+			}
 		case "SESSION-CLOSE":
 			s.handleSessionClose(c, fields)
 		case "BACKEND-UP":
@@ -807,6 +831,14 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 		case "PING":
 			_ = c.WriteLine("PONG")
+		default:
+			// A command this build does not know is ignored -- the connection
+			// stays usable -- but never in silence. During a rollout a newer
+			// login pod speaks to an older director for one iteration, and
+			// "the reconciliation is not happening" must be visible rather
+			// than inferred from a count that stays wrong (#1393, and the
+			// same treatment as the ring's unknown events in #1365).
+			s.noteUnknownClientCommand(fields[0])
 		case "QUIT":
 			reason := ""
 			if len(fields) >= 2 {
@@ -1255,6 +1287,67 @@ func (s *Server) handleSessionClose(c *client, fields []string) {
 	}
 	s.updateMetrics() // refresh backend_sessions
 	_ = c.WriteLine("OK")
+}
+
+// reconcileSessions applies a login pod's full session list: whatever this
+// director still holds for THAT connection and the pod does not is gone, and
+// is dropped as if its SESSION-CLOSE had arrived.
+//
+// Scoped to the connection on purpose. The list is authoritative only about
+// the pod that sent it: another pod's sessions, and replicas of other
+// directors, are none of its business (#1393).
+func (s *Server) reconcileSessions(c *client, live map[string]bool) {
+	type gone struct{ id, user string }
+	var dropped []gone
+	s.sessRecMu.Lock()
+	for id, rec := range s.sessById {
+		if rec.cl != c || live[id] {
+			continue
+		}
+		dropped = append(dropped, gone{id: id, user: rec.user})
+		delete(s.sessById, id)
+		delete(s.sessByBE[rec.backend], id)
+	}
+	s.sessRecMu.Unlock()
+	if len(dropped) == 0 {
+		return
+	}
+	slog.Info("director: session list reconciled, dropped sessions the login pod no longer has",
+		"count", len(dropped), "still_live", len(live))
+	for _, g := range dropped {
+		// Peers hold replicas of these; without the gossip the count would be
+		// right here and wrong everywhere else -- the same asymmetry, mirrored.
+		s.membership.originate("SESSION-CLOSE", g.id)
+		s.noteSessionClosed(g.user)
+	}
+	s.updateMetrics()
+}
+
+// unknownClientCommandLogEvery bounds the log line per verb: a pod that keeps
+// sending something we do not know would otherwise fill the log with one line
+// per attempt.
+const unknownClientCommandLogEvery = time.Minute
+
+func (s *Server) noteUnknownClientCommand(verb string) {
+	if !plausibleEventKind(verb) {
+		verb = "malformed"
+	}
+	clientCommandUnknown.WithLabelValues(verb).Inc()
+
+	s.unknownCmdMu.Lock()
+	last, seen := s.unknownCmdSeen[verb]
+	now := time.Now()
+	if seen && now.Sub(last) < unknownClientCommandLogEvery {
+		s.unknownCmdMu.Unlock()
+		return
+	}
+	if s.unknownCmdSeen == nil {
+		s.unknownCmdSeen = make(map[string]time.Time, 4)
+	}
+	s.unknownCmdSeen[verb] = now
+	s.unknownCmdMu.Unlock()
+	slog.Warn("director: unknown command from a login pod, ignored",
+		"command", verb, "hint", "the pod is newer than this director, or a rollout is in progress")
 }
 
 // kickSessionsForBackend sends USER-KICKED to every login-pod connection that
