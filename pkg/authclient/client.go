@@ -31,6 +31,22 @@ var ErrNotImplemented = errors.New("authclient: PASS not implemented (Phase AUTH
 // Subsequent calls return it so callers can re-Dial rather than hang.
 var ErrClosed = errors.New("authclient: client closed")
 
+// ErrUnavailable marks a failure to REACH yarilo-auth, as opposed to an answer
+// from it. The distinction is the whole point: a protocol above can say "try
+// again in a moment" for a service being redeployed, where a client told
+// "this server is broken" stops retrying a request that would work seconds
+// later.
+//
+// The same seam as locks.ErrUnavailable (#1339), for the other dependency: the
+// jmap and fts user resolvers reach auth on the request path, and without a
+// marker their transport failures arrived at the classifiers as ordinary
+// errors and became serverFail / a bare NO (#1402).
+//
+// Carried only by transport failures. An answer from the service -- NOTFOUND,
+// FAIL, a malformed or unexpected response -- is not unavailability, however
+// unwelcome it is.
+var ErrUnavailable = errors.New("authclient: service unavailable")
+
 // Client speaks the yarilo-auth master protocol over a single TCP (optionally
 // mTLS-wrapped) connection. Methods are safe for concurrent use: a mutex
 // enforces one in-flight request at a time on the underlying conn.
@@ -106,7 +122,7 @@ func DialContext(ctx context.Context, addr string, tlsCfg *tls.Config) (*Client,
 	d := net.Dialer{Timeout: defaultDialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("authclient: dial %s: %w", addr, err)
+		return nil, fmt.Errorf("authclient: dial %s: %w: %w", addr, ErrUnavailable, err)
 	}
 	if tlsCfg != nil {
 		tc := tls.Client(conn, tlsCfg)
@@ -115,7 +131,7 @@ func DialContext(ctx context.Context, addr string, tlsCfg *tls.Config) (*Client,
 		}
 		if err := tc.HandshakeContext(ctx); err != nil {
 			tc.Close()
-			return nil, fmt.Errorf("authclient: tls handshake %s: %w", addr, err)
+			return nil, fmt.Errorf("authclient: tls handshake %s: %w: %w", addr, ErrUnavailable, err)
 		}
 		_ = tc.SetDeadline(time.Time{})
 		conn = tc
@@ -135,7 +151,10 @@ func (c *Client) consumeHandshake() error {
 	for {
 		line, err := c.rd.ReadString('\n')
 		if err != nil {
-			return fmt.Errorf("authclient: read handshake: %w", err)
+			// The read failed, so the service was not reached. The version
+			// checks below are the opposite case -- it answered, and answered
+			// something we refuse -- and stay unmarked.
+			return fmt.Errorf("authclient: read handshake: %w: %w", ErrUnavailable, err)
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "DONE" {
@@ -241,13 +260,13 @@ func (c *Client) iterateUsersLocked(ctx context.Context) ([]string, error) {
 	}
 	defer c.clearDeadline()
 	if _, err := c.conn.Write([]byte(fmt.Sprintf("LIST\t%s\n", id))); err != nil {
-		return nil, fmt.Errorf("authclient: write LIST: %w", err)
+		return nil, fmt.Errorf("authclient: write LIST: %w: %w", ErrUnavailable, err)
 	}
 	var out []string
 	for {
 		line, err := c.rd.ReadString('\n')
 		if err != nil {
-			return nil, fmt.Errorf("authclient: read LIST: %w", err)
+			return nil, fmt.Errorf("authclient: read LIST: %w: %w", ErrUnavailable, err)
 		}
 		line = strings.TrimRight(line, "\r\n")
 		parts := strings.Split(line, "\t")
@@ -366,11 +385,11 @@ func (c *Client) exchangeLocked(ctx context.Context, line string) (string, error
 	}
 	defer c.clearDeadline()
 	if _, err := c.conn.Write([]byte(line)); err != nil {
-		return "", fmt.Errorf("authclient: write: %w", err)
+		return "", fmt.Errorf("authclient: write: %w: %w", ErrUnavailable, err)
 	}
 	resp, err := c.rd.ReadString('\n')
 	if err != nil {
-		return "", fmt.Errorf("authclient: read: %w", err)
+		return "", fmt.Errorf("authclient: read: %w: %w", ErrUnavailable, err)
 	}
 	return strings.TrimRight(resp, "\r\n"), nil
 }
@@ -382,13 +401,13 @@ func (c *Client) redial() error {
 	d := net.Dialer{Timeout: defaultDialTimeout}
 	conn, err := d.DialContext(context.Background(), "tcp", c.addr)
 	if err != nil {
-		return fmt.Errorf("authclient: redial %s: %w", c.addr, err)
+		return fmt.Errorf("authclient: redial %s: %w: %w", c.addr, ErrUnavailable, err)
 	}
 	if c.tlsCfg != nil {
 		tc := tls.Client(conn, c.tlsCfg)
 		if err := tc.HandshakeContext(context.Background()); err != nil {
 			tc.Close()
-			return fmt.Errorf("authclient: redial tls %s: %w", c.addr, err)
+			return fmt.Errorf("authclient: redial tls %s: %w: %w", c.addr, ErrUnavailable, err)
 		}
 		conn = tc
 	}
@@ -484,12 +503,29 @@ func (c *Client) allocID() string {
 // a read/write deadline instead of hanging. Returns ctx.Err if ctx is done.
 func (c *Client) applyDeadline(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return waitFailure(err)
 	}
 	if dl, ok := ctx.Deadline(); ok {
 		return c.conn.SetDeadline(dl)
 	}
 	return nil
+}
+
+// waitFailure marks a deadline that elapsed while waiting on auth as
+// unavailability.
+//
+// Only a DEADLINE, never a cancellation. A cancelled context is the caller
+// giving up -- a client that disconnected, a request abandoned -- and calling
+// that a service outage would report our own callers' departures as failures
+// of yarilo-auth. The deadlines that reach here are the request budgets the
+// resolvers set, which is the case the mark is for: a Service with no
+// endpoints blackholes rather than refusing, so the failure arrives as a
+// timeout with nothing else to recognise it by.
+func waitFailure(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	return err
 }
 
 func (c *Client) clearDeadline() {
