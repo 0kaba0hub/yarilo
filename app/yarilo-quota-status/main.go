@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	_ "github.com/yarilomail/yarilo/pkg/dict/drivers/all"
 
@@ -91,7 +90,7 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		authcl, err = authclient.DialWaiting(context.Background(), qs.AuthMasterAddr, authTLS, authStartupWait(cfg))
+		authcl, err = authclient.DialWaiting(context.Background(), qs.AuthMasterAddr, authTLS, cfg.AuthService.StartupWait())
 		if err != nil {
 			slog.Error("authclient dial failed", "addr", qs.AuthMasterAddr, "err", err)
 			os.Exit(1)
@@ -200,15 +199,4 @@ func openDict(dicts map[string]config.DictConfig, name string) (dict.Dict, error
 	}
 	slog.Info("dict opened", "name", name, "driver", cfg.Driver)
 	return d, nil
-}
-
-// authStartupWait is how long this process waits for auth at STARTUP before
-// giving up. Waiting here and not on the request path is deliberate: at
-// startup there is nobody to tell, so exiting turns a brief dependency gap
-// into a restart loop (#1369).
-func authStartupWait(cfg *config.Config) time.Duration {
-	if cfg.AuthService.StartupWaitSeconds == 0 {
-		return 30 * time.Second
-	}
-	return time.Duration(cfg.AuthService.StartupWaitSeconds) * time.Second
 }

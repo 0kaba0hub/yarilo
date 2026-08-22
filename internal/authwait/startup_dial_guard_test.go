@@ -12,6 +12,10 @@ import (
 // variants exist so that cannot happen -- and this guard is what keeps the
 // next startup site from being written with the plain Dial.
 //
+// The exemption list is the other half of its value: every entry is a place
+// where failing fast is the RIGHT answer, with the reason recorded, so the
+// decision this PR made is visible instead of being rediscovered.
+//
 // Read from the source, because what it protects against is a call site nobody
 // has written yet.
 func TestStartupSitesDialWithAWait(t *testing.T) {
@@ -29,11 +33,30 @@ func TestStartupSitesDialWithAWait(t *testing.T) {
 		// thirty seconds before saying "auth is down" helps nobody: the
 		// operator can see it, fix it and run the command again.
 		"app/yarilo-migrate/guidbackfill.go": "one-shot operator command: tell the operator now, do not wait",
+		// Per-login and lazy-lookup sites: each has a client waiting for an
+		// answer, and for a dependency that can be down for minutes a refusal
+		// it can act on beats a hang.
+		"internal/login/server.go":        "per-login dial: refuse fast, the client is waiting",
+		"internal/loginproto/listener.go": "per-login dial: refuse fast, the client is waiting",
+		"internal/backend/backend.go":     "lazy userdb lookups: refuse fast, the request is waiting",
 	}
 
 	var offenders []string
-	err := filepath.WalkDir(filepath.Join(root, "app"), func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+	// The WHOLE tree, not just app/. The startup site that started #1353 was in
+	// internal/, and a guard that reads only the binaries proves nothing about
+	// the next one written a layer down.
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor", "node_modules":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, path)

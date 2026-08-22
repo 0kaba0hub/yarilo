@@ -146,7 +146,7 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		authcl, err = authclient.DialWaiting(context.Background(), cfg.BackendAPI.AuthMasterAddr, authTLS, authStartupWait(cfg))
+		authcl, err = authclient.DialWaiting(context.Background(), cfg.BackendAPI.AuthMasterAddr, authTLS, cfg.AuthService.StartupWait())
 		if err != nil {
 			slog.Error("backend-api: authclient dial",
 				"addr", cfg.BackendAPI.AuthMasterAddr, "err", err)
@@ -298,15 +298,4 @@ func parseCIDRs(in []string) []*net.IPNet {
 		out = append(out, n)
 	}
 	return out
-}
-
-// authStartupWait is how long this process waits for auth at STARTUP before
-// giving up. Waiting here and not on the request path is deliberate: at
-// startup there is nobody to tell, so exiting turns a brief dependency gap
-// into a restart loop (#1369).
-func authStartupWait(cfg *config.Config) time.Duration {
-	if cfg.AuthService.StartupWaitSeconds == 0 {
-		return 30 * time.Second
-	}
-	return time.Duration(cfg.AuthService.StartupWaitSeconds) * time.Second
 }

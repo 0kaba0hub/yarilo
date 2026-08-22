@@ -67,7 +67,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	auth, err := authclient.DialWaiting(context.Background(), authAddr(cfg), intTLS, authStartupWait(cfg))
+	auth, err := authclient.DialWaiting(context.Background(), authAddr(cfg), intTLS, cfg.AuthService.StartupWait())
 	if err != nil {
 		slog.Error("auth client failed", "err", err, "addr", authAddr(cfg))
 		os.Exit(1)
@@ -233,15 +233,4 @@ func parseCIDRs(ss []string) []*net.IPNet {
 		nets = append(nets, n)
 	}
 	return nets
-}
-
-// authStartupWait is how long this process waits for auth at STARTUP before
-// giving up. Waiting here and not on the request path is deliberate: at
-// startup there is nobody to tell, so exiting turns a brief dependency gap
-// into a restart loop (#1369).
-func authStartupWait(cfg *config.Config) time.Duration {
-	if cfg.AuthService.StartupWaitSeconds == 0 {
-		return 30 * time.Second
-	}
-	return time.Duration(cfg.AuthService.StartupWaitSeconds) * time.Second
 }
