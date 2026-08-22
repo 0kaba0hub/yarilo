@@ -992,7 +992,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	proto := string(s.opts.Protocol)
 	sessionsGauge.WithLabelValues(proto).Inc()
-	biProxy(authRd, authConn, backendRd, backendConn)
+	biProxy(authRd, authConn, backendRd, backendConn, func() { backendConn.Close() })
 	sessionsGauge.WithLabelValues(proto).Dec()
 	log.Info("login: disconnect", "user", pre.username)
 }
@@ -1785,20 +1785,53 @@ func writeProtoAuthOK(conn net.Conn, p Protocol, tag, caps string) {
 }
 
 // biProxy copies data bidirectionally until either side closes.
-func biProxy(clientRd io.Reader, clientW io.Writer, backendRd io.Reader, backendW io.Writer) {
-	var wg sync.WaitGroup
-	wg.Add(2)
+// clientGoneGrace is how long the backend leg may still deliver data after the
+// client has gone, before it is closed outright.
+//
+// Short on purpose: what can legitimately arrive after the client's last byte
+// is a reply already in flight, not a new conversation. Anything longer is a
+// session nobody is on either end of.
+const clientGoneGrace = 5 * time.Second
+
+// biProxy carries one authenticated session in both directions and returns
+// when the session is over.
+//
+// "Over" has to include "the client is gone", and that is what it did not
+// cover. The client-to-backend copy ends on the client's EOF and half-closes
+// the backend leg; a backend that answers that ends the other copy on its own,
+// which is what IMAP backends do through their read timeout. ManageSieve has
+// no such timeout, so the second copy blocked on a socket nobody would ever
+// write to again -- the proxy never returned, its deferred cleanups never ran,
+// and the session record lived on in every director until the pod restarted
+// (#1404). Six of them accumulated per smoke suite, and they are what the
+// kill-confirm waits on (#1359).
+//
+// The mirror of #1366/#1367: there a kick closed the backend leg and the
+// client half kept the proxy alive; here the client is gone and the backend
+// half does.
+func biProxy(clientRd io.Reader, clientW io.Writer, backendRd io.Reader, backendW io.Writer, closeBackend func()) {
+	backendDone := make(chan struct{})
 	go func() {
-		defer wg.Done()
-		io.Copy(backendW, clientRd) //nolint:errcheck
-		halfClose(backendW)
-	}()
-	go func() {
-		defer wg.Done()
+		defer close(backendDone)
 		io.Copy(clientW, backendRd) //nolint:errcheck
 		halfClose(clientW)
 	}()
-	wg.Wait()
+
+	io.Copy(backendW, clientRd) //nolint:errcheck
+	halfClose(backendW)
+
+	// The client is gone. Wait briefly for whatever the backend still owes,
+	// then take the leg down rather than hold a session for a conversation
+	// that cannot continue.
+	select {
+	case <-backendDone:
+		return
+	case <-time.After(clientGoneGrace):
+	}
+	if closeBackend != nil {
+		closeBackend()
+	}
+	<-backendDone
 }
 
 func halfClose(w io.Writer) {

@@ -20,7 +20,7 @@ func proxiedPair(t *testing.T, id, user string) (*liveSession, net.Conn, <-chan 
 
 	done := make(chan struct{})
 	go func() {
-		biProxy(clientSide, clientSide, backendSide, backendSide)
+		biProxy(clientSide, clientSide, backendSide, backendSide, func() { backendSide.Close() })
 		close(done)
 	}()
 	return &liveSession{id: id, user: user, backendConn: backendSide, clientConn: clientSide}, clientEnd, done
