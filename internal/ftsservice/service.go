@@ -192,17 +192,10 @@ func (s *Service) Close() error {
 	defer s.mu.Unlock()
 	var firstErr error
 	for _, h := range s.users {
-		if err := h.ui.Close(); err != nil && firstErr == nil {
+		if err := closeHandle(h); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		if h.box != nil {
-			h.box.Close() //nolint:errcheck
-		}
-		if h.idx != nil {
-			h.idx.Close() //nolint:errcheck
-		}
 	}
-	_ = closeHandle // shutdown closes in place so it can report the first error
 	s.users = map[string]*userHandle{}
 	return firstErr
 }
@@ -310,7 +303,14 @@ func (s *Service) sweepIdleHandles(idle time.Duration) {
 	s.mu.Unlock()
 
 	for _, c := range due {
-		closeHandle(c.h)
+		// Closed outside the lock, and the entry is already gone from the map:
+		// a caller arriving now opens a fresh handle while this one is still
+		// closing. That is safe only because the engine tolerates two opens of
+		// the same index within one process -- Xapian's lock is a POSIX fcntl
+		// lock, which does not conflict between descriptors of one process.
+		// An engine that locks per handle would need the close to finish
+		// first, and this is the line that says so.
+		closeHandle(c.h) //nolint:errcheck
 		ftsHandlesEvicted.Inc()
 		// Logged rather than inferred from the absence of errors: this is the
 		// moment another backend can take over the user's index.
@@ -320,10 +320,13 @@ func (s *Service) sweepIdleHandles(idle time.Duration) {
 }
 
 // closeHandle is the one place a handle is torn down, so the sweeper and
-// shutdown cannot drift apart in what they release.
-func closeHandle(h *userHandle) {
+// shutdown cannot drift apart in what they release. Returns the index's close
+// error, which is the only one shutdown reports; the mailbox and index handles
+// are best-effort on the way out either way.
+func closeHandle(h *userHandle) error {
+	var err error
 	if h.ui != nil {
-		h.ui.Close() //nolint:errcheck
+		err = h.ui.Close()
 	}
 	if h.box != nil {
 		h.box.Close() //nolint:errcheck
@@ -331,6 +334,7 @@ func closeHandle(h *userHandle) {
 	if h.idx != nil {
 		h.idx.Close() //nolint:errcheck
 	}
+	return err
 }
 
 // mailboxFor selects the backend matching the user's storage driver, falling
