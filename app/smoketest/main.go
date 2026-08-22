@@ -919,8 +919,17 @@ func checkManageSieve() error {
 		return fmt.Errorf("DELETESCRIPT failed: %q", line)
 	}
 
-	// LOGOUT
+	// LOGOUT, and read the answer before closing. Writing it and dropping the
+	// socket leaves the server mid-reply, which is the shape that used to leak
+	// a session per run: the client is gone while the backend leg is still
+	// live (#1404). A check that leaves its own droppings behind cannot tell
+	// them from the ones it is meant to catch.
 	fmt.Fprintf(conn, "LOGOUT\r\n")
+	if line, err := readLine(conn); err != nil {
+		return fmt.Errorf("LOGOUT response: %w", err)
+	} else if !strings.HasPrefix(line, "OK") && !strings.HasPrefix(line, "BYE") {
+		return fmt.Errorf("LOGOUT failed: %q", line)
+	}
 	return nil
 }
 
