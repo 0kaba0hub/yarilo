@@ -8,9 +8,11 @@ package client
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -115,6 +117,49 @@ type Client struct {
 // handshake. tlsCfg may be nil for plain (non-TLS) connections.
 func Dial(addr string, tlsCfg *tls.Config) (*Client, error) {
 	return New(addr, tlsCfg, Options{})
+}
+
+// DialWaiting is Dial with a bounded wait for the service to come up.
+//
+// The two contracts differ and this is the startup one. A process starting
+// while auth is rolling has nobody to tell: exiting turns a few seconds of
+// dependency downtime into a restart loop, so it waits (#1369). On a REQUEST
+// the opposite holds -- there is a client waiting for an answer, and a fast
+// refusal beats a hang -- which is why the resolver call sites deliberately do
+// not use this.
+//
+// A wait of zero or less is a plain Dial, so an operator can turn the waiting
+// off without a second code path.
+func DialWaiting(ctx context.Context, addr string, tlsCfg *tls.Config, wait time.Duration) (*Client, error) {
+	c, err := Dial(addr, tlsCfg)
+	if err == nil || wait <= 0 {
+		return c, err
+	}
+	deadline := time.Now().Add(wait)
+	// Said once, at the start of waiting: a line per attempt would bury the
+	// startup log of a pod that came up a second early.
+	slog.Warn("auth: service not reachable yet, waiting", "addr", addr, "wait", wait, "err", err)
+	for delay := 100 * time.Millisecond; ; {
+		if time.Now().After(deadline) {
+			// Loud, and naming the bound: a process that gives up after
+			// waiting must say what it waited for, or the next reader sees
+			// only the same dial error as before and assumes nothing changed.
+			return nil, fmt.Errorf("auth/client: %s not reachable after %s: %w", addr, wait, err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+		if delay < 2*time.Second {
+			delay *= 2
+		}
+		c, err = Dial(addr, tlsCfg)
+		if err == nil {
+			slog.Info("auth: service reachable, continuing startup", "addr", addr)
+			return c, nil
+		}
+	}
 }
 
 // New is Dial with explicit Options.

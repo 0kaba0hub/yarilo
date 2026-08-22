@@ -749,6 +749,7 @@ data:
       {{- if .Values.components.auth.masterListen }}
       master_listen: {{ .Values.components.auth.masterListen | quote }}
       master_addr: {{ printf "%s-auth.%s.svc.cluster.local:%s" (include "yarilo.fullname" .) .Release.Namespace (trimPrefix ":" .Values.components.auth.masterListen) | quote }}
+      auth_startup_wait: {{ .Values.components.auth.startup_wait | default 30 | int64 }}
       {{- end }}
       {{- if .Values.components.auth.saslListen }}
       sasl_listen: {{ .Values.components.auth.saslListen | quote }}
