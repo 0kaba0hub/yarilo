@@ -41,6 +41,17 @@ var (
 		Help:      "Ring events dropped because this build does not know the kind (label: kind).",
 	}, []string{"kind"})
 
+	// clientCommandUnknown counts commands from login pods this build does not
+	// know, labelled by verb. The mirror of ringEventUnknown on the other
+	// seam: during a rollout a newer pod talks to an older director, and what
+	// it asks for silently not happening is the failure worth seeing (#1393).
+	clientCommandUnknown = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "director",
+		Name:      "client_command_unknown_total",
+		Help:      "Commands from login pods dropped because this build does not know the verb (label: command).",
+	}, []string{"command"})
+
 	// joinAccepted / joinRejected count ring DIRECTOR-JOIN outcomes (#750).
 	// Rejected includes: no ring secret configured, malformed proof, and
 	// HMAC mismatch — the counter alone doesn't distinguish which; the

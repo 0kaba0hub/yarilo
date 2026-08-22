@@ -829,6 +829,16 @@ type LoginConfig struct {
 	// LookupHoldBackoffMs is the delay (milliseconds) between LOOKUP hold
 	// retries. 0 = default (150).
 	LookupHoldBackoffMs int `koanf:"lookup_hold_backoff_ms"`
+	// SessionSyncInterval is how often (seconds) a login proxy sends the
+	// director the full list of sessions it is running, so a director that
+	// missed a SESSION-CLOSE stops counting a session nobody has.
+	//
+	// Announcing state as increments alone means one lost event is wrong
+	// forever: nothing ever says "this is all of it". The reconciliation is
+	// what makes the count self-correcting, and the interval is how long a
+	// wrong count may last (#1393). 0 = default (30); negative = only on
+	// (re)connect.
+	SessionSyncInterval int `koanf:"session_sync_interval"`
 	// SessionGracePeriod is how long (seconds) a login proxy keeps serving
 	// in-flight sessions after SIGTERM. Must fit within the pod
 	// terminationGracePeriodSeconds. 0 = default (30).

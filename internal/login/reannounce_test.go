@@ -3,8 +3,10 @@ package login
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -23,7 +25,7 @@ func newCountingDirector(t *testing.T) *countingDirector {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	d := &countingDirector{ln: ln, lines: make(chan string, 64)}
+	d := &countingDirector{ln: ln, lines: make(chan string, 4096)}
 	t.Cleanup(func() { ln.Close() })
 	go func() {
 		for {
@@ -48,10 +50,9 @@ func (d *countingDirector) serve(conn net.Conn) {
 		}
 		line = strings.TrimRight(line, "\n")
 		if strings.HasPrefix(line, "SESSION-") {
-			select {
-			case d.lines <- line:
-			default:
-			}
+			// Blocking on purpose: dropping a line here would make a test
+			// about completeness measure the test's own buffer.
+			d.lines <- line
 			_, _ = conn.Write([]byte("OK\n"))
 		}
 	}
@@ -129,4 +130,92 @@ func TestSessionCloseUsesTheCurrentWatch(t *testing.T) {
 
 	s.announceSessionClose("s9")
 	d.await(t, "SESSION-CLOSE\ts9")
+}
+
+// #1393, the race the reconciliation invites: a session that opens between the
+// snapshot and the write would have its SESSION-OPEN arrive first and then be
+// erased by a list that was taken before it existed. The snapshot and the
+// write are therefore serialised against registration.
+//
+// Driven by opening sessions from several goroutines while syncs run: every
+// SESSION-OPEN must be followed by a list that contains it.
+func TestSyncNeverOmitsASessionItAnnouncedBefore(t *testing.T) {
+	d := newCountingDirector(t)
+	s := New(Options{DirectorAddr: d.ln.Addr().String(), LocalIP: "127.0.0.1", Protocol: ProtocolIMAP})
+	s.sessions = map[string][]*liveSession{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Watch(ctx)
+	waitForWatch(t, s)
+
+	// Sessions appear while reconciliations run.
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("s%02d", i)
+			sess := &liveSession{id: id, user: "u@example.com", backendIP: "10.0.0.5", proto: "imap"}
+			s.announceMu.Lock()
+			s.sessMu.Lock()
+			s.sessions["u@example.com"] = append(s.sessions["u@example.com"], sess)
+			s.sessMu.Unlock()
+			s.announceSessionLocked(sess)
+			s.announceMu.Unlock()
+		}(i)
+		wg.Add(1)
+		go func() { defer wg.Done(); s.syncSessions() }()
+	}
+	wg.Wait()
+
+	// Replay what the director saw: a list must never omit an id it was told
+	// about earlier on the same connection.
+	announced := map[string]bool{}
+	inList := map[string]bool{}
+	collecting := false
+	for {
+		select {
+		case line := <-d.lines:
+			switch {
+			case strings.HasPrefix(line, "SESSION-OPEN\t"):
+				announced[strings.Split(line, "\t")[1]] = true
+				if collecting {
+					// Opened mid-list: the list may or may not carry it, and
+					// either is correct -- it is announced separately.
+					inList[strings.Split(line, "\t")[1]] = true
+				}
+			case line == "SESSION-SYNC-START":
+				collecting, inList = true, map[string]bool{}
+			case strings.HasPrefix(line, "SESSION-SYNC\t"):
+				for _, id := range strings.Split(line, "\t")[1:] {
+					inList[id] = true
+				}
+			case line == "SESSION-SYNC-END":
+				collecting = false
+				for id := range announced {
+					if !inList[id] {
+						t.Fatalf("session %q was announced and then left out of a full list: the director would erase it", id)
+					}
+				}
+			}
+		default:
+			return
+		}
+	}
+}
+
+func waitForWatch(t *testing.T, s *Server) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		s.watchMu.RLock()
+		wc := s.watch
+		s.watchMu.RUnlock()
+		if wc != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no watch connection was established")
 }

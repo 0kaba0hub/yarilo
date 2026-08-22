@@ -43,6 +43,13 @@ login:
   ## 0 = built-in default.
   lookupHoldMax: 0
   lookupHoldBackoffMs: 0
+  ## How often (seconds) a login proxy sends the director the full list of
+  ## sessions it is running, so a director that missed a SESSION-CLOSE stops
+  ## counting a session nobody has. Announcing opens and closes alone leaves a
+  ## lost event wrong forever; this is how long a wrong count may last. The
+  ## list is also sent whenever a director connection is established.
+  ## 0 = built-in default (30); negative = only on connect.
+  sessionSyncIntervalSeconds: 0
   ## Graceful drain (#857): seconds the login proxy keeps serving in-flight
   ## sessions after SIGTERM before closing them. Must fit within
   ## gracefulShutdown.terminationGracePeriodSeconds. 0 = default (30).

@@ -1027,6 +1027,7 @@ data:
       session_grace_period: {{ .Values.login.sessionGracePeriodSeconds | default 0 }}
       transient_retries: {{ .Values.login.transientRetries | default 0 }}
       transient_relogin_cap: {{ .Values.login.transientReloginCap | default 0 }}
+      session_sync_interval: {{ .Values.login.sessionSyncIntervalSeconds | default 0 }}
     {{- if .Values.components.saslLogin.enabled }}
     sasl_login:
       listen: {{ printf ":%d" (int .Values.components.saslLogin.containerPort) | quote }}

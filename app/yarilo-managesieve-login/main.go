@@ -130,6 +130,7 @@ func main() {
 		WardenConns:         cfg.WardenService.Conns,
 		DialRetries:         cfg.General.StartupDialRetries,
 		LookupHoldMax:       cfg.Login.LookupHoldMax,
+		SessionSyncInterval: time.Duration(cfg.Login.SessionSyncInterval) * time.Second,
 		TransientRetries:    cfg.Login.TransientRetries,
 		TransientReloginCap: cfg.Login.TransientReloginCap,
 		LookupHoldBackoff:   time.Duration(cfg.Login.LookupHoldBackoffMs) * time.Millisecond,
