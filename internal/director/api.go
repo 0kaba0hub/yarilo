@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -210,7 +211,38 @@ func (s *Server) apiDump(w http.ResponseWriter, _ *http.Request) {
 	for i, u := range users {
 		us[i] = uDTO{u.Hash, u.Host, u.Weak, u.ExpiresAt.Unix()}
 	}
-	apiJSON(w, map[string]any{"backends": bs, "users": us, "peers": s.ListPeers()})
+	// Session records, one line each rather than a count per backend. A count
+	// cannot answer the question a phantom raises -- whose record is this --
+	// and the answer was previously reachable only by restarting a pod and
+	// seeing what disappeared, which destroys the state being diagnosed
+	// (#1393).
+	type sDTO struct {
+		ID    string `json:"id"`
+		User  string `json:"user"`
+		Host  string `json:"backend"`
+		Proto string `json:"proto,omitempty"`
+		// Local is true for a session this director owns, i.e. one whose login
+		// connection is attached here. A replica belongs to another director's
+		// run and is only counted, never kicked, from here.
+		Local bool `json:"local"`
+		// Origin names the director run a replica came from, in the same form
+		// the purge logs use (field:port, incarnation included), so a dump and
+		// a "purged session replicas of ..." line can be compared without
+		// translating between two spellings.
+		Origin string `json:"origin,omitempty"`
+	}
+	s.sessRecMu.RLock()
+	ss := make([]sDTO, 0, len(s.sessById))
+	for _, rec := range s.sessById {
+		ss = append(ss, sDTO{
+			ID: rec.id, User: rec.user, Host: rec.backend, Proto: rec.proto,
+			Local: rec.cl != nil, Origin: rec.origin,
+		})
+	}
+	s.sessRecMu.RUnlock()
+	sort.Slice(ss, func(i, j int) bool { return ss[i].ID < ss[j].ID })
+
+	apiJSON(w, map[string]any{"backends": bs, "users": us, "peers": s.ListPeers(), "sessions": ss})
 }
 
 func (s *Server) apiMap(w http.ResponseWriter, r *http.Request) {
