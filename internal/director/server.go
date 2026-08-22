@@ -1594,20 +1594,28 @@ func (s *Server) kickStaleSessions(hash uint32, oldHost string) {
 // (#804) — a login pod dropping without a clean SESSION-CLOSE must not leave its
 // sessions counted forever on every replica.
 func (s *Server) removeClientSessions(c *client) {
+	type closed struct{ id, user string }
+	var gone []closed
 	s.sessRecMu.Lock()
-	var closedIDs []string
 	for id, rec := range s.sessById {
 		if rec.cl == c {
 			delete(s.sessById, id)
 			delete(s.sessByBE[rec.backend], id)
-			closedIDs = append(closedIDs, id)
+			gone = append(gone, closed{id: id, user: rec.user})
 		}
 	}
 	s.sessRecMu.Unlock()
-	for _, id := range closedIDs {
-		s.membership.originate("SESSION-CLOSE", id)
+	for _, g := range gone {
+		s.membership.originate("SESSION-CLOSE", g.id)
+		// The kill-confirm is armed here too, as it is in handleSessionClose
+		// and in the reconciliation. A login pod whose connection dies mid-kill
+		// takes its sessions with it, and that IS the user reaching zero -- but
+		// without this the confirm was never told, and the kill waited out its
+		// timeout instead. The same shape as #1359: the count reached zero and
+		// nobody said so.
+		s.noteSessionClosed(g.user)
 	}
-	if len(closedIDs) > 0 {
+	if len(gone) > 0 {
 		s.updateMetrics()
 	}
 }
