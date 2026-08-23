@@ -23,6 +23,7 @@ type fakeMaster struct {
 	conns       int
 	noops       int
 	users       int
+	sessions    int // SESSION calls served
 	dieAfter    int // close the connection after this many lookups (0 = never)
 	silentNOOPs int // this many NOOPs go unanswered, as a dead peer's would
 }
@@ -82,6 +83,11 @@ func (m *fakeMaster) handle(conn net.Conn) {
 				return // gone without a word, as a dead peer is
 			}
 			fmt.Fprintf(conn, "OK\t%s\n", id)
+		case "SESSION":
+			m.mu.Lock()
+			m.sessions++
+			m.mu.Unlock()
+			fmt.Fprintf(conn, "OK\t%s\ttoken=token-1\n", id)
 		case "USER":
 			m.mu.Lock()
 			m.users++
@@ -261,5 +267,27 @@ func TestPoolSizeZeroDialsPerLookup(t *testing.T) {
 	}
 	if conns, _, users := m.counts(); conns != 3 || users != 3 {
 		t.Errorf("connections/lookups = %d/%d, want 3/3: size 0 must not pool", conns, users)
+	}
+}
+
+// The pool serves every master call, not just the lookup. LMTP delivery issues
+// a session token and reads a director tag on the same connection it used to
+// dial for (#1423), so a pool that only knew Userdb would have left the
+// session holding its own connection anyway.
+func TestPoolServesEveryMasterCall(t *testing.T) {
+	m := newFakeMaster(t)
+	p := NewPool(m.addr(), nil, 1, time.Minute)
+	defer p.Close() //nolint:errcheck
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := p.Userdb(ctx, "u@example.com"); err != nil {
+		t.Fatalf("userdb: %v", err)
+	}
+	if _, err := p.IssueSession(ctx, "u@example.com", "sid-1", "10.0.0.1"); err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	if conns, _, _ := m.counts(); conns != 1 {
+		t.Errorf("two different calls opened %d connections, want 1", conns)
 	}
 }

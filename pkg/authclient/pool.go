@@ -77,36 +77,60 @@ func NewPool(addr string, tlsCfg *tls.Config, size int, idleTimeout time.Duratio
 
 // Userdb resolves username, reusing a pooled connection when one is available.
 func (p *Pool) Userdb(ctx context.Context, username string) (*protocol.UserInfo, error) {
+	var ui *protocol.UserInfo
+	err := p.do(ctx, func(c *Client) error {
+		var err error
+		ui, err = c.Userdb(ctx, username)
+		return err
+	})
+	return ui, err
+}
+
+// IssueSession issues a session token, reusing a pooled connection when one is
+// available. Same contract as Userdb: the call travels to a connection rather
+// than a connection being opened for the call.
+func (p *Pool) IssueSession(ctx context.Context, username, sid, ip string) (string, error) {
+	var tok string
+	err := p.do(ctx, func(c *Client) error {
+		var err error
+		tok, err = c.IssueSession(ctx, username, sid, ip)
+		return err
+	})
+	return tok, err
+}
+
+// do runs fn on a pooled connection, or on a fresh one when there is no pool.
+func (p *Pool) do(ctx context.Context, fn func(*Client) error) error {
 	select {
 	case <-p.closed:
-		return nil, ErrClosed
+		return ErrClosed
 	default:
 	}
 
-	// No pool configured: the old shape, one connection per lookup.
+	// No pool configured: the old shape, one connection per call.
 	if p.idle == nil {
 		c, err := DialContext(ctx, p.addr, p.tlsCfg)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer c.Close() //nolint:errcheck
-		return c.Userdb(ctx, username)
+		return fn(c)
 	}
 
 	var slot *poolSlot
 	select {
 	case <-p.closed:
-		return nil, ErrClosed
+		return ErrClosed
 	case <-ctx.Done():
-		return nil, waitFailure(ctx.Err())
+		return waitFailure(ctx.Err())
 	case slot = <-p.idle:
 	}
 	defer func() { p.idle <- slot }()
 
 	if err := p.prepare(ctx, slot); err != nil {
-		return nil, err
+		return err
 	}
-	ui, err := slot.c.Userdb(ctx, username)
+	err := fn(slot.c)
 	if err != nil && isConnectionError(err) {
 		// The client redials once on a transport failure of its own. Reaching
 		// here means that failed too, so the connection is not reusable --
@@ -115,10 +139,10 @@ func (p *Pool) Userdb(ctx context.Context, username string) (*protocol.UserInfo,
 		// into "this request hangs", which is the answer we spent #1339 and
 		// #1402 making sure a client does not get.
 		slot.drop()
-		return nil, err
+		return err
 	}
 	slot.lastUsed = time.Now()
-	return ui, err
+	return err
 }
 
 // prepare makes the slot usable: fresh connection, evicted if too old, probed

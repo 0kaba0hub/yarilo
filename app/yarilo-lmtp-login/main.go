@@ -17,6 +17,7 @@ import (
 
 	"github.com/yarilomail/yarilo/internal/lmtplogin"
 	"github.com/yarilomail/yarilo/internal/telemetry"
+	"github.com/yarilomail/yarilo/pkg/authclient"
 	"github.com/yarilomail/yarilo/pkg/build"
 	"github.com/yarilomail/yarilo/pkg/config"
 	"github.com/yarilomail/yarilo/pkg/logging"
@@ -85,6 +86,16 @@ func main() {
 		}
 	}
 
+	// One pool for the process, shared by every delivery: the session token and
+	// the director-tag lookup used to open a connection per LMTP session
+	// (#1423).
+	var authMasterPool *authclient.Pool
+	if cfg.AuthService.MasterAddr != "" {
+		authMasterPool = authclient.NewPool(cfg.AuthService.MasterAddr, intTLS,
+			cfg.AuthClient.PoolSizeOrDefault(), cfg.AuthClient.PoolIdleTimeout())
+		defer authMasterPool.Close() //nolint:errcheck
+	}
+
 	opts := lmtplogin.Options{
 		Hostname:         hostname,
 		BackendAddr:      lmtpCfg.BackendAddr,
@@ -95,6 +106,7 @@ func main() {
 		BackendPort:      lmtpCfg.BackendPort,
 		LocalIP:          os.Getenv("POD_IP"),
 		AuthMasterAddr:   cfg.AuthService.MasterAddr,
+		AuthMasterPool:   authMasterPool,
 		AuthMasterTLS:    intTLS,
 		WardenAddr:       cfg.WardenService.ClientAddr(),
 		WardenTLS:        intTLS,
