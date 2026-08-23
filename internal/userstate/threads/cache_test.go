@@ -127,3 +127,49 @@ func TestForgetDropsAnAccount(t *testing.T) {
 		t.Errorf("cached = %d after Forget, want 0", c.Len())
 	}
 }
+
+// The setting says "negative = never cache, pays the fold on every delivery",
+// and it has to mean that. It promised the opposite twice over before this: a
+// negative idle became the default period in NewCache, and even past that,
+// eviction was off while entries kept accumulating -- "never cache" would have
+// read as "hold every account until restart", the leak the bound exists to
+// prevent (#1396).
+//
+// An operator reaching for this is usually trying to give memory back on a hot
+// node, or to take the cache out of a freshness question. Both are the exact
+// opposite of what the old behaviour delivered.
+func TestNeverCacheKeepsNothing(t *testing.T) {
+	c := NewCache(-1)
+	path := filepath.Join(t.TempDir(), FileName)
+
+	for i := 0; i < 3; i++ {
+		if _, err := c.Get("u@example.com", path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := c.Folds(); got != 3 {
+		t.Errorf("folds = %d for three reads with caching off, want 3", got)
+	}
+	if got := c.Len(); got != 0 {
+		t.Errorf("held accounts = %d with caching off, want 0", got)
+	}
+}
+
+// Zero still means the built-in period, which is the other half of the
+// contract and the one every deployment uses.
+func TestZeroIdleSelectsTheDefault(t *testing.T) {
+	c := NewCache(0)
+	path := filepath.Join(t.TempDir(), FileName)
+	if _, err := c.Get("u@example.com", path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Get("u@example.com", path); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Folds(); got != 1 {
+		t.Errorf("folds = %d with the default idle, want 1", got)
+	}
+	if got := c.Len(); got != 1 {
+		t.Errorf("held accounts = %d, want 1", got)
+	}
+}

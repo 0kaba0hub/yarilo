@@ -36,6 +36,7 @@ type Config struct {
 	LocksService       LocksServiceConfig           `koanf:"locks_service"`
 	FTS                FTSConfig                    `koanf:"fts"`
 	AuthClient         AuthClientConfig             `koanf:"auth_client"`
+	Threading          ThreadingConfig              `koanf:"threading"`
 	LocksClient        LocksClientConfig            `koanf:"locks_client"`
 	Storage            StorageConfig                `koanf:"storage"`
 	Namespaces         []NamespaceConfig            `koanf:"namespaces"`
@@ -958,6 +959,37 @@ func (c AuthServiceConfig) ClientAddr() string {
 // service. Empty Mode disables cross-process locking — single-process tests
 // and CLI dev runs. Production k8s sets Mode=remote with one or more
 // Endpoints pointing at the yarilo-locks ClusterIP Service.
+// ThreadingConfig controls conversation threading: which messages a delivery
+// records as belonging together.
+type ThreadingConfig struct {
+	// Enabled turns on the delivery-time write of the threading sidecar.
+	//
+	// Off by default while the arc is being built: the sidecar costs work on
+	// every delivery, and until the read paths (Thread/get, Thread/changes,
+	// IMAP THREAD) are wired there is nothing to spend it on. An operator can
+	// turn it on to exercise it; the default flips when the readers land.
+	Enabled bool `koanf:"threading_enabled"`
+	// ThreadingCacheIdle is how long a process keeps an account's folded
+	// sidecar after its last delivery. Folding costs O(account) -- 37ms at a
+	// hundred thousand messages -- so it is cached; bounded by idleness rather
+	// than by process lifetime, because a cache of every account ever
+	// delivered to holds their maps until restart (#1396). 0 = default (300s),
+	// negative = never cache.
+	ThreadingCacheIdle int `koanf:"threading_cache_idle"`
+}
+
+// CacheIdle reports the fold cache's idle period.
+func (c ThreadingConfig) CacheIdle() time.Duration {
+	switch {
+	case c.ThreadingCacheIdle == 0:
+		return 300 * time.Second
+	case c.ThreadingCacheIdle < 0:
+		return -1
+	default:
+		return time.Duration(c.ThreadingCacheIdle) * time.Second
+	}
+}
+
 // AuthClientConfig tunes how components talk to the yarilo-auth MASTER
 // listener. One section rather than a pair of knobs in every consumer: the
 // pooling behaviour is a property of the client, not of whoever happens to

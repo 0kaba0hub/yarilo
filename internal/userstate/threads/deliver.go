@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"net/mail"
+	"path/filepath"
 	"strings"
 
 	"github.com/yarilomail/yarilo/internal/threading"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // Recorder places a delivered message in a conversation and records it.
@@ -147,4 +149,14 @@ func firstOf(v string) string {
 		return ""
 	}
 	return ids[0]
+}
+
+// PathFor is where an account's threading sidecar lives: beside its other
+// per-account control files.
+func PathFor(ui *mailbox.UserInfo) string {
+	root := mailbox.ControlRoot(ui)
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, FileName)
 }

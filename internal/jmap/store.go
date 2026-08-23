@@ -85,14 +85,7 @@ const subsFile = "subscriptions"
 // MailPath, falling back to Home. IMAP resolves it the same way, and reading a
 // different root would show a user a different subscription list per protocol.
 func controlRoot(info *mailbox.UserInfo) string {
-	switch {
-	case info.ControlDir != "":
-		return info.ControlDir
-	case info.MailPath != "":
-		return info.MailPath
-	default:
-		return info.Home
-	}
+	return mailbox.ControlRoot(info)
 }
 
 // mailboxFor selects the backend matching the user's storage driver, falling

@@ -34,6 +34,7 @@ import (
 	submproxy "github.com/yarilomail/yarilo/internal/submission/proxy"
 	"github.com/yarilomail/yarilo/internal/telemetry"
 	"github.com/yarilomail/yarilo/internal/userstate/acl"
+	"github.com/yarilomail/yarilo/internal/userstate/threads"
 	authclient "github.com/yarilomail/yarilo/pkg/authclient"
 	"github.com/yarilomail/yarilo/pkg/config"
 	"github.com/yarilomail/yarilo/pkg/dict"
@@ -427,6 +428,15 @@ func New(cfg *config.Config) (*Server, error) {
 			}
 			lmtpTLS = t
 		}
+		// One recorder for the process: it owns the fold cache, and a second
+		// one would fold the same account twice and race its own writes.
+		// Nil when threading is off, which is what leaves the account behaving
+		// exactly as it does today.
+		var threadRecorder *threads.Recorder
+		if cfg.Threading.Enabled {
+			threadRecorder = threads.NewRecorder(threads.NewCache(cfg.Threading.CacheIdle()))
+		}
+
 		lmtpStorageCfg := cfg.Storage
 		lmtpACLGlobal, err := acl.NewGlobal(cfg.ACL.Global)
 		if err != nil {
@@ -446,6 +456,7 @@ func New(cfg *config.Config) (*Server, error) {
 			QuotaPolicy:          cfg.Quota.QuotaPolicy(),
 			QuotaWarner:          quotaWarner,
 			QuotaClone:           quotaClone,
+			Threads:              threadRecorder,
 			FTSClient:            ftsClient,
 			FTSAutoindex:         cfg.FTS.Autoindex,
 			FTSMaxRecent:         cfg.FTS.AutoindexMaxRecentMsgs,
