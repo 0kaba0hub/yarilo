@@ -1,18 +1,19 @@
 name: Trivy — vulnerability & malware scan
 
+## A clock and a button. NOT on every merge: we live on patch versions, so a
+## push trigger fired on essentially every merge, and a scan's findings change
+## when a CVE is published, not when we commit -- the risk is time-based, so
+## the trigger is a clock.
+##
+## The named trade-off: a dependency bump (go.sum) changes what a scan finds
+## before any CVE is published, and the weekly clock leaves up to seven days
+## before that shows up. Acceptable at our patch cadence, and the reason the
+## manual run stays: the answer to "a CVE just landed in something we ship" or
+## "we are cutting a release in an hour" has to be "scan now", not "wait until
+## Sunday".
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "app/**"
-      - "internal/**"
-      - "pkg/**"
-      - "go.mod"
-      - "go.sum"
-      - "docker/Dockerfile"
   schedule:
-    - cron: "0 6 * * 1"  # every Monday at 06:00 UTC
+    - cron: "0 6 * * 0"  # every Sunday at 06:00 UTC
   workflow_dispatch:
 
 env:
