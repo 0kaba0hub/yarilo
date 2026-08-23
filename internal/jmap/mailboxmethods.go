@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 
@@ -16,57 +15,57 @@ import (
 func (s *Server) mailboxRegistry(lazy *lazyStore, accountID string) jmapcore.Registry {
 	return jmapcore.Registry{
 		"Mailbox/get": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+			return s.withStore(lazy, accountID, func(h *userHandle) (any, *jmapcore.MethodError) {
 				return s.mailboxGet(ctx, h, accountID, args)
 			})
 		}},
 		"Mailbox/query": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+			return s.withStore(lazy, accountID, func(h *userHandle) (any, *jmapcore.MethodError) {
 				return s.mailboxQuery(ctx, h, accountID, args)
 			})
 		}},
 		"Thread/get": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+			return s.withStore(lazy, accountID, func(h *userHandle) (any, *jmapcore.MethodError) {
 				return s.threadGet(ctx, h, accountID, args)
 			})
 		}},
 		"Email/query": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+			return s.withStore(lazy, accountID, func(h *userHandle) (any, *jmapcore.MethodError) {
 				return s.emailQuery(ctx, h, accountID, args)
 			})
 		}},
 		"Email/get": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+			return s.withStore(lazy, accountID, func(h *userHandle) (any, *jmapcore.MethodError) {
 				return s.emailGet(ctx, h, accountID, args)
 			})
 		}},
 		"Mailbox/changes": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+			return s.withStore(lazy, accountID, func(h *userHandle) (any, *jmapcore.MethodError) {
 				return s.mailboxChanges(ctx, h, accountID, args)
 			})
 		}},
 		"Email/changes": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+			return s.withStore(lazy, accountID, func(h *userHandle) (any, *jmapcore.MethodError) {
 				return s.emailChanges(ctx, h, accountID, args)
 			})
 		}},
 		"Mailbox/queryChanges": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+			return s.withStore(lazy, accountID, func(h *userHandle) (any, *jmapcore.MethodError) {
 				return s.mailboxQueryChanges(ctx, h, accountID, args)
 			})
 		}},
 		"Email/queryChanges": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+			return s.withStore(lazy, accountID, func(h *userHandle) (any, *jmapcore.MethodError) {
 				return s.emailQueryChanges(ctx, h, accountID, args)
 			})
 		}},
 		"Email/set": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+			return s.withStore(lazy, accountID, func(h *userHandle) (any, *jmapcore.MethodError) {
 				return s.emailSet(ctx, h, accountID, args)
 			})
 		}},
 		"SearchSnippet/get": {Capability: jmapcore.CapMail, Fn: func(ctx context.Context, args json.RawMessage) (any, *jmapcore.MethodError) {
-			return s.withStore(lazy, func(h *userHandle) (any, *jmapcore.MethodError) {
+			return s.withStore(lazy, accountID, func(h *userHandle) (any, *jmapcore.MethodError) {
 				return s.searchSnippet(ctx, h, accountID, args)
 			})
 		}},
@@ -76,11 +75,16 @@ func (s *Server) mailboxRegistry(lazy *lazyStore, accountID string) jmapcore.Reg
 // withStore opens the user's mail on first use and turns a failure into a
 // method-level error. The batch keeps its shape: the calls that need no store
 // still answer, and each call that does gets told why it could not.
-func (s *Server) withStore(lazy *lazyStore, fn func(*userHandle) (any, *jmapcore.MethodError)) (any, *jmapcore.MethodError) {
+//
+// Classified through storeFailure, never here. Opening the store resolves the
+// user against yarilo-auth, so this is the seam a dependency outage arrives
+// at first -- and a second, hand-written serverFail beside the one classifier
+// is how an outage kept reaching clients as "this server is broken" after the
+// classifier had already been taught to recognise it (#1402).
+func (s *Server) withStore(lazy *lazyStore, accountID string, fn func(*userHandle) (any, *jmapcore.MethodError)) (any, *jmapcore.MethodError) {
 	h, err := lazy.get()
 	if err != nil {
-		slog.Warn("jmap: mail store unavailable", "err", err)
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail, Description: "mail store unavailable"}
+		return nil, storeFailure("mail store", accountID, err)
 	}
 	return fn(h)
 }
