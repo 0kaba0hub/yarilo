@@ -45,20 +45,21 @@ var deliverCallSeq atomic.Uint64
 // travels back because the full-text hook needs its GUID: the index is keyed by
 // it (#1183), and a reference built from the name alone is refused by the
 // service -- silently, on a fire-and-forget path (#1206 found it).
-func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r io.ReadSeeker, size int64, locker locks.Locker, username, from string, flags []string) (uint32, mailbox.Folder, error) {
+func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r io.ReadSeeker, size int64, locker locks.Locker, username, from string, flags []string) (uint32, mailbox.Folder, [16]byte, error) {
 	tDeliver := time.Now()
+	var noGUID [16]byte
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
-		return 0, mailbox.Folder{}, fmt.Errorf("lmtp: seek: %w", err)
+		return 0, mailbox.Folder{}, noGUID, fmt.Errorf("lmtp: seek: %w", err)
 	}
 	data, _ := io.ReadAll(r)
 
 	f, err := idx.OpenFolder(folder, 0)
 	if err != nil {
-		return 0, mailbox.Folder{}, fmt.Errorf("lmtp: open index: %w", err)
+		return 0, mailbox.Folder{}, noGUID, fmt.Errorf("lmtp: open index: %w", err)
 	}
 	uid, err := idx.AllocateUID(f.ID)
 	if err != nil {
-		return 0, *f, fmt.Errorf("lmtp: allocate UID: %w", err)
+		return 0, *f, noGUID, fmt.Errorf("lmtp: allocate UID: %w", err)
 	}
 	// Breadcrumb for the non-atomic AllocateUID -> Save -> AppendMessage window:
 	// AllocateUID commits and releases the folder lock immediately, so any other
@@ -71,12 +72,12 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 	slog.Debug("lmtp: uid allocated", "user", username, "folder", folder, "uid", uid, "call_id", callID)
 	modseq, err := idx.NextModSeq(f.ID)
 	if err != nil {
-		return 0, *f, fmt.Errorf("lmtp: modseq: %w", err)
+		return 0, *f, noGUID, fmt.Errorf("lmtp: modseq: %w", err)
 	}
 	tSave := time.Now()
 	filename, vsize, guid, err := box.Save(folder, bytes.NewReader(data), uid, size, flags, [16]byte{})
 	if err != nil {
-		return 0, *f, fmt.Errorf("lmtp: save: %w", err)
+		return 0, *f, noGUID, fmt.Errorf("lmtp: save: %w", err)
 	}
 	tIndex := time.Now()
 	slog.Debug("lmtp: body saved, committing index", "user", username, "folder", folder, "uid", uid,
@@ -94,7 +95,7 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		slog.Warn("lmtp: index append failed, rolling back save",
 			"user", username, "folder", folder, "uid", uid, "call_id", callID, "err", err)
 		_ = box.Remove(folder, filename)
-		return 0, *f, fmt.Errorf("lmtp: index append: %w", err)
+		return 0, *f, noGUID, fmt.Errorf("lmtp: index append: %w", err)
 	}
 	slog.Debug("lmtp: uid committed", "user", username, "folder", folder, "uid", uid, "call_id", callID)
 	slog.Debug("lmtp: deliver timing",
@@ -104,7 +105,7 @@ func deliverOne(box mailbox.UserMailbox, idx mailbox.UserIndex, folder string, r
 		"total_ms", time.Since(tDeliver).Milliseconds())
 	emitMailboxEvent(locker, username, folder, locks.EventDelivered, uid)
 	slog.Info("lmtp: delivered", "from", from, "to", username, "folder", folder, "uid", uid, "file", filename, "size", size)
-	return uid, *f, nil
+	return uid, *f, guid, nil
 }
 
 // emitMailboxEvent is a best-effort fire-and-forget publish. Errors are

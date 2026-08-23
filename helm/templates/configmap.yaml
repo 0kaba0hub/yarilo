@@ -912,6 +912,20 @@ data:
       ## default (300s); negative never evicts.
       auth_client_pool_idle_timeout: {{ .Values.components.auth.client.pool_idle_timeout | default 0 | int64 }}
 
+    ## Conversation threading: which delivered messages are recorded as
+    ## belonging together (#1425).
+    threading:
+      ## Off while the arc is being built: the sidecar costs work on every
+      ## delivery, and until the read paths exist there is nothing to spend it
+      ## on. An account with threading off behaves exactly as it does today --
+      ## every message its own conversation.
+      threading_enabled: {{ .Values.components.backend.threading.enabled | default false }}
+      ## Seconds a process keeps an account's folded sidecar after its last
+      ## delivery. Folding costs O(account) -- 37ms at a hundred thousand
+      ## messages -- so it is cached, and bounded by idleness so an account
+      ## nobody writes to gives its memory back. 0 = default (300).
+      threading_cache_idle: {{ .Values.components.backend.threading.cache_idle | default 0 | int64 }}
+
     director_service:
       listen: {{ printf ":%d" (int .Values.components.director.directorPort) | quote }}
       shutdown:

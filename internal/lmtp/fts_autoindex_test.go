@@ -76,7 +76,7 @@ func TestAutoindexCarriesTheFolderGUID(t *testing.T) {
 	t.Cleanup(func() { ui.Close() }) //nolint:errcheck
 
 	raw := "From: x@y\r\nSubject: probe\r\n\r\nbody\r\n"
-	uid, folder, err := deliverOne(box, ui, "INBOX", bytes.NewReader([]byte(raw)), int64(len(raw)), nil, info.Username, "x@y", nil)
+	uid, folder, _, err := deliverOne(box, ui, "INBOX", bytes.NewReader([]byte(raw)), int64(len(raw)), nil, info.Username, "x@y", nil)
 	if err != nil {
 		t.Fatalf("deliverOne: %v", err)
 	}

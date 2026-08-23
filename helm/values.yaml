@@ -293,6 +293,24 @@ components:
   ## blocks below. quota-status stays a SEPARATE Deployment (global-read, served
   ## to the external Postfix MTA — it writes no per-user state).
   backend:
+    ## threading — which delivered messages are recorded as belonging to one
+    ## conversation (#1425). Written on the delivery path, into a per-account
+    ## sidecar beside the other control files.
+    threading:
+      ## false while the arc is being built: the sidecar costs work on every
+      ## delivery, and until Thread/get, Thread/changes and IMAP THREAD are
+      ## wired there is nothing reading it. An account with this off behaves
+      ## exactly as it does today: every message is its own conversation, which
+      ## is also how an account looks before the migration step reaches it.
+      enabled: false
+      ## Seconds a process keeps an account's folded sidecar after its last
+      ## delivery. Folding is O(account) -- 0.4ms at a thousand messages, 37ms
+      ## at a hundred thousand -- so it is cached rather than repeated per
+      ## message; bounded by idleness so an account nobody delivers to gives
+      ## its memory back. 0 = built-in default (300); negative = never cache,
+      ## which pays the fold on every delivery.
+      cache_idle: 0
+
     ## coLocated: true renders the merged StatefulSet and suppresses the legacy
     ## per-protocol backend Deployments. This is the model behind a director.
     coLocated: true

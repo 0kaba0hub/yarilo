@@ -22,6 +22,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/quotawarn"
 	"github.com/yarilomail/yarilo/internal/sieve"
 	"github.com/yarilomail/yarilo/internal/userstate/acl"
+	"github.com/yarilomail/yarilo/internal/userstate/threads"
 	"github.com/yarilomail/yarilo/pkg/config"
 	"github.com/yarilomail/yarilo/pkg/dict"
 	"github.com/yarilomail/yarilo/pkg/fts"
@@ -48,6 +49,11 @@ type Options struct {
 	Router UserRouter
 	// BackendPort is the LMTP port on backend pods. Default: 24.
 	BackendPort int
+
+	// Threads records which conversation a delivered message belongs to.
+	// Nil disables threading: the account keeps behaving as it does before
+	// the migration step reaches it -- every message its own thread (#1425).
+	Threads *threads.Recorder
 
 	// Locker is the cross-process write coordinator. Non-nil emits a
 	// `delivered` EVENT after each delivery so IMAP IDLE on other pods
@@ -773,12 +779,13 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 					slog.Warn("lmtp: create folder", "folder", d.Folder, "err", err)
 				}
 			}
-			uid, folder, err := deliverOne(tBox, tIdx, rel, bytes.NewReader(deliverMsg), int64(len(deliverMsg)), s.opts.Locker, username, s.from, d.Flags)
+			uid, folder, guid, err := deliverOne(tBox, tIdx, rel, bytes.NewReader(deliverMsg), int64(len(deliverMsg)), s.opts.Locker, username, s.from, d.Flags)
 			closeTarget()
 			if err != nil {
 				deliverErr = err
 				break
 			}
+			s.recordThread(userInfo, username, guid, deliverMsg)
 			s.ftsAutoindex(username, folder, uid)
 		}
 		rcptBox.Close() //nolint:errcheck
@@ -795,6 +802,59 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 	}
 	return nil
 }
+
+// recordThread places the delivered message in a conversation.
+//
+// The lock spans the WHOLE sequence -- load, decide, append, note -- and not
+// just the write, because the placement is computed FROM the state that was
+// loaded. Two deliveries that each read the state before either wrote would
+// both see "nothing to join" and mint two thread ids for one conversation:
+// a split, and one no later delivery repairs.
+//
+// Synchronous, unlike the FTS hook, and for the opposite reason. Indexing late
+// means a message is unsearchable for a moment; threading late means it is in
+// the wrong conversation until something rebuilds the sidecar. But a FAILURE
+// is not fatal: mail is authoritative and this file is derived, so a delivery
+// is never refused over it -- it is logged, and the migration step is the
+// repair.
+func (s *session) recordThread(ui *mailbox.UserInfo, username string, guid [16]byte, raw []byte) {
+	if s.opts.Threads == nil || guid == ([16]byte{}) {
+		return
+	}
+	path := threads.PathFor(ui)
+	if path == "" {
+		return
+	}
+	rec := func(context.Context) error {
+		_, err := s.opts.Threads.Record(username, path, hex.EncodeToString(guid[:]), raw)
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), threadLockTimeout)
+	defer cancel()
+	var err error
+	if s.opts.Locker != nil {
+		err = locks.WithLock(ctx, s.opts.Locker, locks.ThreadsKey(username),
+			fmt.Sprintf("yarilo-lmtp/%d", os.Getpid()), threadLockTTL, threadLockRenew, rec)
+	} else {
+		// No lock service wired (single-process dev runs), as the other stores
+		// do: the file is still consistent, only uncoordinated across pods.
+		err = rec(ctx)
+	}
+	if err != nil {
+		slog.Warn("lmtp: message delivered but not threaded",
+			"user", username, "err", err,
+			"hint", "the conversation is rebuilt by the migration step; mail is unaffected")
+	}
+}
+
+// The account's thread lock: bounded like the other delivery-path locks. A
+// delivery would rather be slow than blocked, and a lock nobody releases must
+// not hold a recipient for ever.
+const (
+	threadLockTimeout = 10 * time.Second
+	threadLockTTL     = 15 * time.Second
+	threadLockRenew   = 5 * time.Second
+)
 
 // ftsAutoindex is the delivery-time FTS hook: fire-and-forget.
 func (s *session) ftsAutoindex(username string, folder mailbox.Folder, uid uint32) {
