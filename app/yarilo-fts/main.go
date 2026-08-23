@@ -115,7 +115,7 @@ func main() {
 		PrefetchDepth:     fc.PrefetchDepth,
 		PrefetchMaxBytes:  fc.PrefetchMaxBytes,
 		Index:             file.New(file.WithNoCreate()),
-		ResolveUser:       userResolver(fc.AuthMasterAddr, resolver, authTLS, authPool),
+		ResolveUser:       userResolver(fc.AuthMasterAddr, resolver, authPool),
 		Chain:             chain,
 		Build: buildmail.Options{
 			HeaderIncludes:       fc.HeaderIncludes,
@@ -185,7 +185,7 @@ func main() {
 // userResolver prefers the yarilo-auth master userdb (per-user storage
 // identity: home, mail location, INDEX= overrides); without an address it
 // falls back to the resolver's template defaults.
-func userResolver(masterAddr string, resolver *mailbox.Resolver, authTLS *tls.Config, pool *authclient.Pool) func(string) (*mailbox.UserInfo, error) {
+func userResolver(masterAddr string, resolver *mailbox.Resolver, pool *authclient.Pool) func(string) (*mailbox.UserInfo, error) {
 	if masterAddr == "" {
 		return func(u string) (*mailbox.UserInfo, error) {
 			return resolver.UserInfo(u, ""), nil

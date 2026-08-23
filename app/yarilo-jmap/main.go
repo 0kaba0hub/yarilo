@@ -229,7 +229,7 @@ func buildStorage(cfg *config.Config, intTLS *tls.Config) (*jmap.Storage, error)
 			return backend.BuildMailboxByDriver(driver, cfg.Storage, locker)
 		},
 		Index:              file.New(idxOpts...),
-		ResolveUser:        userResolver(cfg.JMAPService.AuthMasterAddr, resolver, intTLS, authPool),
+		ResolveUser:        userResolver(cfg.JMAPService.AuthMasterAddr, resolver, authPool),
 		Locker:             locker,
 		SpecialUseDefaults: cfg.Protocol.IMAP.SpecialUseDefaults,
 	}, nil
@@ -238,7 +238,7 @@ func buildStorage(cfg *config.Config, intTLS *tls.Config) (*jmap.Storage, error)
 // userResolver prefers the yarilo-auth master userdb, which carries the
 // per-user storage identity (home, mail location, INDEX= overrides). Without an
 // address it falls back to the resolver's template defaults.
-func userResolver(masterAddr string, resolver *mailbox.Resolver, authTLS *tls.Config, pool *authclient.Pool) func(string) (*mailbox.UserInfo, error) {
+func userResolver(masterAddr string, resolver *mailbox.Resolver, pool *authclient.Pool) func(string) (*mailbox.UserInfo, error) {
 	if masterAddr == "" {
 		return func(u string) (*mailbox.UserInfo, error) {
 			return resolver.UserInfo(u, ""), nil
