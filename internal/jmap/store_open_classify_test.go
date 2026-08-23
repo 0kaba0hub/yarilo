@@ -87,7 +87,11 @@ func TestNoHandWrittenDependencyAnswers(t *testing.T) {
 		// A folder with no GUID cannot be searched and retrying will not give
 		// it one; and the busy/lagging arms are already classified by hand
 		// because they are conditions of ours, not failures of a dependency.
-		"ftsquery.go": "conditions of this service, classified deliberately: no-GUID is permanent, busy/lagging already answer serverUnavailable",
+		// Exactly three deliberate conditions remain there, none of them a
+		// dependency failure: a folder with no GUID (permanent), the busy and
+		// lagging arms (ours, already answering serverUnavailable), and a
+		// caller's own cancellation. Everything else goes to storeFailure.
+		"ftsquery.go": "conditions of this service only: no-GUID is permanent; busy/lagging and cancellation are ours and already classified",
 	}
 
 	files, err := filepath.Glob("*.go")

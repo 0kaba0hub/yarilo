@@ -68,7 +68,7 @@ func (s *Server) emailQuery(ctx context.Context, h *userHandle, accountID string
 	}
 	// Every folder is resolved before any message is read: the lookups run
 	// against one another rather than one per pass through the loop below.
-	if merr := s.prepareScope(ctx, h, eval, scope, req.Filter); merr != nil {
+	if merr := s.prepareScope(ctx, h, accountID, eval, scope, req.Filter); merr != nil {
 		return nil, merr
 	}
 

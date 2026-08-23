@@ -472,7 +472,7 @@ func (s *Server) checkQueryFolders(scope *queryScope, f *jmapcore.EmailFilter) *
 // Concurrency is bounded here rather than left to the pool: an exhausted pool
 // answers with an error after its wait, so more goroutines than connections
 // would turn load into refusals.
-func (s *Server) prepareScope(ctx context.Context, h *userHandle, eval filterEvaluator, scope *queryScope, f *jmapcore.EmailFilter) *jmapcore.MethodError {
+func (s *Server) prepareScope(ctx context.Context, h *userHandle, accountID string, eval filterEvaluator, scope *queryScope, f *jmapcore.EmailFilter) *jmapcore.MethodError {
 	width := 1
 	if s.opts.FTS != nil {
 		width = s.opts.FTS.requestConcurrency()
@@ -511,7 +511,7 @@ func (s *Server) prepareScope(ctx context.Context, h *userHandle, eval filterEva
 			// answer is not itself a finding.
 			continue
 		}
-		return queryPrepareError(scope.folders[i].name, err)
+		return queryPrepareError(accountID, scope.folders[i].name, err)
 	}
 	// Any cancellation, including a plain one. Reaching here means no folder
 	// reported a real failure, so a cancelled context is the caller's own --
@@ -526,7 +526,7 @@ func (s *Server) prepareScope(ctx context.Context, h *userHandle, eval filterEva
 
 // queryPrepareError maps a failure to the type that tells the client what to
 // do with it: retry later, fix the request, or neither.
-func queryPrepareError(folder string, err error) *jmapcore.MethodError {
+func queryPrepareError(accountID, folder string, err error) *jmapcore.MethodError {
 	var noGUID *errFolderWithoutGUID
 	switch {
 	case errors.Is(err, errPoolBusy), errors.Is(err, errIndexLagging):
@@ -539,18 +539,13 @@ func queryPrepareError(folder string, err error) *jmapcore.MethodError {
 		// see which folder lacks an identity, let alone exclude it.
 		slog.Error("jmap: folder cannot be searched", "folder", folder, "err", err)
 		return &jmapcore.MethodError{Type: jmapcore.ErrServerFail, Description: err.Error()}
-	case errors.Is(err, ftsproto.ErrUnavailable):
-		// The FTS service could not reach a dependency of its own. Since
-		// #1409 that crosses the wire, so this arm can tell it apart from an
-		// index that is broken -- which it could not before, and answered
-		// both as defects.
-		slog.Warn("jmap: full-text search unavailable", "folder", folder, "err", err)
-		return &jmapcore.MethodError{
-			Type:        jmapcore.ErrServerUnavailable,
-			Description: "full-text search is temporarily unavailable, try again",
-		}
 	default:
-		slog.Warn("jmap: Email/query prepare failed", "folder", folder, "err", err)
-		return &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		// Everything that is not a deliberate condition of this service goes
+		// to the one classifier: an FTS outage (which crosses the wire since
+		// #1409) and a lock service under the index reads are the same
+		// dependency failures the other methods answer, and a second answer
+		// written here is how five of them drifted apart in the first place
+		// (#1413).
+		return storeFailure("Email/query prepare of "+folder, accountID, err)
 	}
 }
