@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -250,7 +249,7 @@ func buildSidecar(box mailbox.UserMailbox, idx mailbox.UserIndex, names []string
 				continue
 			}
 			st.Messages++
-			p := threads.PlacementFor(state, hex.EncodeToString(m.GUID[:]), head)
+			p := threads.PlacementFor(state, mailbox.FormatObjectID(m.GUID), head)
 			// Written even on a dry run, and deliberately: Append is what
 			// applies a placement to the state, so skipping it leaves every
 			// later message seeing "nothing to join" and the run reporting

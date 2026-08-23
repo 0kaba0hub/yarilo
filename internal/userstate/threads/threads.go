@@ -47,6 +47,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // FileName is the sidecar's name in the user's control directory.
@@ -62,7 +63,26 @@ const (
 
 // State is the folded contents of the log: what the account knows about its
 // conversations right now.
+//
+// # Why the lock is here and not around it
+//
+// Writers are serialised ACROSS processes by the account's thread lock, which
+// is where cross-process consistency belongs. What remains is a race inside
+// one process: a reader (Thread/get) walking these maps while a delivery
+// applies a placement to them.
+//
+// The distributed lock is the wrong currency for that -- a reader would pay a
+// network round trip to the lock service per request and queue behind LMTP,
+// making a JMAP read as slow as the writes it has nothing to do with. A
+// snapshot is the other wrong answer: copying the account per request is the
+// O(account) cost the fold cache exists to avoid, moved onto the read path.
+//
+// So: an RWMutex, held for nanoseconds. Readers take it shared, the memory
+// half of Append takes it exclusively -- and because Append applies to memory
+// only after the file write succeeded, that block is indivisible: a reader
+// never sees a message placed without the alias that placed it.
 type State struct {
+	mu        sync.RWMutex
 	byMessage map[string]string
 	bySubject map[string]string
 	byGUID    map[string]string
@@ -137,6 +157,8 @@ func (s *State) resolve(id string) string {
 
 // ThreadOfMessage implements threading.Known.
 func (s *State) ThreadOfMessage(messageID string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	id, ok := s.byMessage[messageID]
 	if !ok {
 		return "", false
@@ -146,6 +168,8 @@ func (s *State) ThreadOfMessage(messageID string) (string, bool) {
 
 // ThreadOfSubject implements threading.Known.
 func (s *State) ThreadOfSubject(key string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	id, ok := s.bySubject[key]
 	if !ok {
 		return "", false
@@ -155,6 +179,12 @@ func (s *State) ThreadOfSubject(key string) (string, bool) {
 
 // ThreadOfGUID answers what Email.threadId and Thread/get report.
 func (s *State) ThreadOfGUID(guid string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.threadOfGUID(guid)
+}
+
+func (s *State) threadOfGUID(guid string) (string, bool) {
 	id, ok := s.byGUID[guid]
 	if !ok {
 		return "", false
@@ -165,6 +195,12 @@ func (s *State) ThreadOfGUID(guid string) (string, bool) {
 // GUIDsOfThread lists the messages in a conversation, following aliases so a
 // merged thread answers with everything that joined it.
 func (s *State) GUIDsOfThread(threadID string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.guidsOfThread(threadID)
+}
+
+func (s *State) guidsOfThread(threadID string) []string {
 	want := s.resolve(threadID)
 	var out []string
 	for guid, id := range s.byGUID {
@@ -178,6 +214,12 @@ func (s *State) GUIDsOfThread(threadID string) []string {
 
 // Threads lists every conversation that still exists, merged ones excluded.
 func (s *State) Threads() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.threads()
+}
+
+func (s *State) threads() []string {
 	seen := map[string]bool{}
 	for _, id := range s.byGUID {
 		seen[s.resolve(id)] = true
@@ -260,7 +302,10 @@ func Append(path string, s *State, p Placement) error {
 	}
 
 	// Apply after the write succeeded, so an in-memory state never claims a
-	// placement the file does not carry.
+	// placement the file does not carry -- and all at once, so a reader sees
+	// the placement with its alias or neither.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.byGUID[p.GUID] = p.ThreadID
 	if p.MessageID != "" {
 		s.byMessage[p.MessageID] = p.ThreadID
@@ -302,6 +347,8 @@ func flatten(s string) string {
 // tmp+rename, so a reader either sees the old file or the new one. The caller
 // holds the account's thread lock, as for Append.
 func Compact(path string, s *State) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var recs []string
 	for guid, id := range s.byGUID {
 		recs = append(recs, record(recGUID, guid, s.resolve(id)))
@@ -372,3 +419,30 @@ func record(typ, key, val string) string {
 	writeRec(&b, typ, key, val)
 	return b.String()
 }
+
+// Read runs fn while holding the state still.
+//
+// One request, one state. A reader that took the lock per lookup could answer
+// from two states -- the thread of a message read before a merge, its member
+// list read after -- and the client would receive a conversation that never
+// existed. The hold is nanoseconds: the write side is a few map assignments,
+// already off the file I/O.
+func (s *State) Read(fn func(View)) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	fn(View{s: s})
+}
+
+// View is the account's conversations, held still for the duration of one
+// Read. Its methods do not lock: the lock is the Read around them.
+type View struct{ s *State }
+
+// ThreadOf reports the conversation a message belongs to.
+func (v View) ThreadOf(guid string) (string, bool) { return v.s.threadOfGUID(guid) }
+
+// Members lists the messages of a conversation, following merges so an id a
+// client cached still answers with the conversation it became.
+func (v View) Members(threadID string) []string { return v.s.guidsOfThread(threadID) }
+
+// Threads lists every conversation the account has.
+func (v View) Threads() []string { return v.s.threads() }

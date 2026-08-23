@@ -88,7 +88,7 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 	email := jmapcore.Email{
 		ID:         emailID(m),
 		BlobID:     emailID(m),
-		ThreadID:   emailID(m), // one message per thread until threading lands
+		ThreadID:   h.threadOf(emailID(m)),
 		MailboxIDs: map[string]bool{ref.mailboxID: true},
 		Keywords:   keywordsOf(m),
 		Size:       m.Size,
