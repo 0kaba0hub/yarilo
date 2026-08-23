@@ -33,7 +33,7 @@ func (s *Server) threadGet(_ context.Context, h *userHandle, accountID string, a
 	}
 	found, err := s.findMessages(h, want)
 	if err != nil {
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		return nil, storeFailure("Thread/get", accountID, err)
 	}
 	props := propsOfGet(req)
 	resp := jmapcore.GetResponse[any]{

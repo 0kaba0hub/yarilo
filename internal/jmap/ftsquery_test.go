@@ -20,6 +20,7 @@ import (
 	"github.com/yarilomail/yarilo/pkg/fts"
 	"github.com/yarilomail/yarilo/pkg/ftsproto"
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -502,7 +503,7 @@ func TestFolderWithoutGUIDRefusesRatherThanSkips(t *testing.T) {
 		t.Errorf("the service was asked about a folder with no identity: %v", stub.asked)
 	}
 
-	merr := queryPrepareError("Broken", err)
+	merr := queryPrepareError("acc-1", "Broken", err)
 	if merr.Type != jmapcore.ErrServerFail {
 		t.Errorf("type = %s, want serverFail", merr.Type)
 	}
@@ -522,9 +523,18 @@ func TestPrepareErrorsCarryTheirRetryability(t *testing.T) {
 		{"an exhausted pool", errPoolBusy, jmapcore.ErrServerUnavailable},
 		{"a lagging index", errIndexLagging, jmapcore.ErrServerUnavailable},
 		{"a broken lookup", errors.New("engine down"), jmapcore.ErrServerFail},
+		// The dependency arms now come from the one classifier, so they are
+		// asserted here too: this is the seam a client's answer is built at,
+		// and it must tell an outage from a defect (#1413).
+		{"the fts service could not reach its own dependency",
+			fmt.Errorf("ftsproto: server: userdb unreachable: %w", ftsproto.ErrUnavailable),
+			jmapcore.ErrServerUnavailable},
+		{"the lock service is being redeployed",
+			fmt.Errorf("fileindex: read: %w", locks.ErrUnavailable),
+			jmapcore.ErrServerUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := queryPrepareError("F", tc.err).Type; got != tc.want {
+			if got := queryPrepareError("acc-1", "F", tc.err).Type; got != tc.want {
 				t.Errorf("type = %s, want %s", got, tc.want)
 			}
 		})
@@ -647,7 +657,7 @@ func TestCallerCancellationIsNotSilentlyNoFilter(t *testing.T) {
 
 	text := "needle"
 	scope := &queryScope{folders: []scopeFolder{{name: "INBOX", id: 1, guid: "abcd"}}}
-	merr := s.prepareScope(ctx, nil, s.newFTSEvaluator(&userHandle{info: &mailbox.UserInfo{Username: testUser}}),
+	merr := s.prepareScope(ctx, nil, "acc-1", s.newFTSEvaluator(&userHandle{info: &mailbox.UserInfo{Username: testUser}}),
 		scope, &jmapcore.EmailFilter{Text: &text})
 
 	if merr == nil {

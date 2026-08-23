@@ -68,7 +68,7 @@ func (s *Server) emailQuery(ctx context.Context, h *userHandle, accountID string
 	}
 	// Every folder is resolved before any message is read: the lookups run
 	// against one another rather than one per pass through the loop below.
-	if merr := s.prepareScope(ctx, h, eval, scope, req.Filter); merr != nil {
+	if merr := s.prepareScope(ctx, h, accountID, eval, scope, req.Filter); merr != nil {
 		return nil, merr
 	}
 
@@ -76,8 +76,7 @@ func (s *Server) emailQuery(ctx context.Context, h *userHandle, accountID string
 	for _, f := range scope.folders {
 		metas, err := mailbox.ReadMessages(h.idx, f.id, mailbox.SeqSet{{From: 1, To: 0}})
 		if err != nil {
-			slog.Warn("jmap: Email/query read failed", "folder", f.name, "err", err)
-			return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+			return nil, storeFailure("Email/query read of "+f.name, accountID, err)
 		}
 		for _, m := range metas {
 			if !eval.match(m, f, scope, req.Filter) {

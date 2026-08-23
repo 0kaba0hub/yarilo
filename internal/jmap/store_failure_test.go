@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/yarilomail/yarilo/pkg/authclient"
+	"github.com/yarilomail/yarilo/pkg/ftsproto"
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
 	"github.com/yarilomail/yarilo/pkg/locks"
 )
@@ -23,6 +24,11 @@ func TestStoreFailureClassifiesEveryDependencyOutage(t *testing.T) {
 		{
 			name: "auth unreachable",
 			err:  fmt.Errorf("jmap: userdb u@example.com: %w", fmt.Errorf("authclient: dial: %w: %w", authclient.ErrUnavailable, errors.New("connection refused"))),
+			want: jmapcore.ErrServerUnavailable,
+		},
+		{
+			name: "the fts service could not reach its own dependency",
+			err:  fmt.Errorf("jmap: query prepare: %w", ftsproto.ErrUnavailable),
 			want: jmapcore.ErrServerUnavailable,
 		},
 		{
