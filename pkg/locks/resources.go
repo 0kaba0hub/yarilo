@@ -53,6 +53,15 @@ func DeliverKey(user, folder string) string { return "deliver:" + user + ":" + f
 // writes.
 func SieveScriptsKey(user string) string { return "sieve:" + user }
 
+// ThreadsKey returns the lock key for a user's threading sidecar (GUID →
+// thread, and the joins that produce it).
+//
+// Per user rather than per folder: a conversation spans folders, and a message
+// moved from INBOX to Archive stays in the thread it was in. A per-folder key
+// would let two deliveries into different folders assign two thread ids to one
+// conversation.
+func ThreadsKey(user string) string { return "threads:" + user }
+
 // SubscriptionsKey returns the lock key for a user's mailbox-subscription
 // file (LIST-EXTENDED §SELECT SUBSCRIBED / RETURN SUBSCRIBED). Independent
 // of mailbox keys — subscribe is metadata, never racing with mail writes.
