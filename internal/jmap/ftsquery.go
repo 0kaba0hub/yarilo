@@ -539,6 +539,16 @@ func queryPrepareError(folder string, err error) *jmapcore.MethodError {
 		// see which folder lacks an identity, let alone exclude it.
 		slog.Error("jmap: folder cannot be searched", "folder", folder, "err", err)
 		return &jmapcore.MethodError{Type: jmapcore.ErrServerFail, Description: err.Error()}
+	case errors.Is(err, ftsproto.ErrUnavailable):
+		// The FTS service could not reach a dependency of its own. Since
+		// #1409 that crosses the wire, so this arm can tell it apart from an
+		// index that is broken -- which it could not before, and answered
+		// both as defects.
+		slog.Warn("jmap: full-text search unavailable", "folder", folder, "err", err)
+		return &jmapcore.MethodError{
+			Type:        jmapcore.ErrServerUnavailable,
+			Description: "full-text search is temporarily unavailable, try again",
+		}
 	default:
 		slog.Warn("jmap: Email/query prepare failed", "folder", folder, "err", err)
 		return &jmapcore.MethodError{Type: jmapcore.ErrServerFail}

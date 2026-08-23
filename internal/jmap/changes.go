@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/yarilomail/yarilo/pkg/authclient"
+	"github.com/yarilomail/yarilo/pkg/ftsproto"
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -219,10 +220,17 @@ func cannotCalculate(why string) *jmapcore.MethodError {
 // serverFail says "something went wrong here", which a client treats as final
 // and reports to its user (#1339).
 func storeFailure(what, accountID string, err error) *jmapcore.MethodError {
-	// Two dependencies, one answer: the lock service and the auth master are
-	// both reached over the network on this path, and either being restarted
-	// is a wait, not a defect on this server (#1402).
-	if errors.Is(err, locks.ErrUnavailable) || errors.Is(err, authclient.ErrUnavailable) {
+	// Every dependency reached over the network on these paths answers the
+	// same way: being restarted is a wait, not a defect on this server. The
+	// lock service sits under every index read, the auth master under every
+	// resolution, and the FTS service under every text search (#1402, #1409).
+	//
+	// Three names is the limit of this shape. If a fourth dependency needs
+	// recognising, give them a marker interface instead -- the same trigger
+	// recorded in ftsproto's refusal builder.
+	if errors.Is(err, locks.ErrUnavailable) ||
+		errors.Is(err, authclient.ErrUnavailable) ||
+		errors.Is(err, ftsproto.ErrUnavailable) {
 		slog.Warn("jmap: "+what+" unavailable", "account", accountID, "err", err)
 		return &jmapcore.MethodError{
 			Type:        jmapcore.ErrServerUnavailable,

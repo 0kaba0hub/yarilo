@@ -49,8 +49,7 @@ func (s *Server) emailSet(_ context.Context, h *userHandle, accountID string, ar
 	// rather than applied over a change the client has not seen.
 	state, serr := s.emailState(h)
 	if serr != nil {
-		slog.Warn("jmap: Email/set state failed", "account", accountID, "err", serr)
-		return nil, &jmapcore.MethodError{Type: jmapcore.ErrServerFail}
+		return nil, storeFailure("Email/set state", accountID, serr)
 	}
 	if req.IfInState != nil && *req.IfInState != state {
 		return nil, &jmapcore.MethodError{
