@@ -210,17 +210,24 @@ func Append(path string, s *State, p Placement) error {
 	if p.ThreadID == "" {
 		return fmt.Errorf("threads: placement for %s has no thread", p.GUID)
 	}
+	// Aliases first, and the asymmetry is the reason. A crash mid-write can
+	// truncate the tail; whichever records are lost, the survivors must be the
+	// safe half. An alias with no G record is a thread pointing at a thread --
+	// harmless, it names a conversation that simply has one fewer message. A G
+	// record with no alias is a merge that did not happen: the two halves of
+	// one conversation stay apart, permanently. So the dangerous record goes
+	// last.
 	var b strings.Builder
-	writeRec(&b, recGUID, p.GUID, p.ThreadID)
+	for _, old := range p.MergedFrom {
+		writeRec(&b, recAlias, old, p.ThreadID)
+	}
 	if p.MessageID != "" {
 		writeRec(&b, recMessage, p.MessageID, p.ThreadID)
 	}
 	if p.SubjectKey != "" {
 		writeRec(&b, recSubject, p.SubjectKey, p.ThreadID)
 	}
-	for _, old := range p.MergedFrom {
-		writeRec(&b, recAlias, old, p.ThreadID)
-	}
+	writeRec(&b, recGUID, p.GUID, p.ThreadID)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("threads: mkdir: %w", err)
@@ -323,10 +330,22 @@ func Compact(path string, s *State) error {
 		os.Remove(tmp) //nolint:errcheck
 		return fmt.Errorf("threads: rename %s: %w", tmp, err)
 	}
-	// The aliases are gone from the file, so they must go from the state too:
-	// a state that still folds them would resolve through entries no longer on
-	// disk, and a later Compact would write a different file from the same
-	// history.
+	// The file now carries resolved values, so the live state must too --
+	// BOTH halves. Dropping the aliases while leaving the maps pointing at
+	// swallowed threads is worse than doing nothing: the next delivery
+	// computed from this state would place a reply into a thread that no
+	// longer exists, splitting a conversation that had already been merged.
+	// That is the permanent wrong answer this whole design exists to avoid,
+	// and it would be introduced by the tidying step.
+	for k, id := range s.byGUID {
+		s.byGUID[k] = s.resolve(id)
+	}
+	for k, id := range s.byMessage {
+		s.byMessage[k] = s.resolve(id)
+	}
+	for k, id := range s.bySubject {
+		s.bySubject[k] = s.resolve(id)
+	}
 	for old := range s.aliasOf {
 		delete(s.aliasOf, old)
 	}

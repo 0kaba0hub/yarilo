@@ -128,6 +128,14 @@ func TestCompactionKeepsEveryAnswer(t *testing.T) {
 		if !ok || got != want {
 			t.Errorf("after compaction %s reports %q, was %q", guid, got, want)
 		}
+		// The LIVE state, which is the one the next delivery threads from.
+		// Compaction folds the aliases away; a state that dropped them while
+		// still pointing at a swallowed thread would place the next reply into
+		// a thread that no longer exists -- splitting a conversation that had
+		// already been merged, from the tidying step itself.
+		if live, ok := st.ThreadOfGUID(guid); !ok || live != want {
+			t.Errorf("the live state after compaction reports %q for %s, want %q", live, guid, want)
+		}
 	}
 	if id, ok := after.ThreadOfMessage("b@x"); !ok || id != "T1" {
 		t.Errorf("the merged thread's message reports %q/%v, want T1/true", id, ok)
@@ -163,6 +171,38 @@ func TestCompactionIsByteIdentical(t *testing.T) {
 	}
 	if a, b := build(), build(); a != b {
 		t.Errorf("two compactions of the same history differ:\n%s\n---\n%s", a, b)
+	}
+}
+
+// The order records are written in decides which half survives a crash
+// mid-append. Whichever tail is lost, the survivors must be the safe ones: an
+// alias with no G record names a conversation with one fewer message, while a
+// G record with no alias is a merge that did not happen -- two halves of one
+// conversation, apart permanently.
+func TestTheAliasIsWrittenBeforeTheMessageItMerges(t *testing.T) {
+	path := storePath(t)
+	st, _ := Load(path)
+	mustAppend(t, path, st, Placement{GUID: "g1", ThreadID: "T1"})
+	mustAppend(t, path, st, Placement{GUID: "g2", ThreadID: "T2"})
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAppend(t, path, st, Placement{GUID: "g3", MessageID: "late@x", ThreadID: "T1", MergedFrom: []string{"T2"}})
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	appended := string(after[len(before):])
+	aliasAt := strings.Index(appended, "A\t")
+	guidAt := strings.Index(appended, "G\tg3")
+	if aliasAt < 0 || guidAt < 0 {
+		t.Fatalf("the append is missing a record:\n%s", appended)
+	}
+	if aliasAt > guidAt {
+		t.Errorf("the G record precedes its alias, so a torn tail loses the merge and splits the thread:\n%s", appended)
 	}
 }
 
