@@ -107,7 +107,10 @@ func TestEmittedStatesAreVersionedDescriptions(t *testing.T) {
 		{"mailbox", mailboxState(list), jmapcore.KindMailbox},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if !strings.HasPrefix(tc.state, "1-") {
+			// A version, not THIS version: the format grows, and a test that
+			// pins the number turns every bump into an unrelated failure while
+			// proving nothing more than the prefix does.
+			if !versionPrefixed(tc.state) {
 				t.Errorf("state %q carries no format version", tc.state)
 			}
 			desc, err := jmapcore.ParseDescription(tc.state, tc.kind)
@@ -130,4 +133,20 @@ func openHandleForTest(t *testing.T, s *Server) *userHandle {
 	}
 	t.Cleanup(func() { h.close() })
 	return h
+}
+
+// versionPrefixed reports whether a state string carries a numeric format
+// version, which is what makes an unknown layout answerable with
+// cannotCalculateChanges instead of a confident misreading.
+func versionPrefixed(state string) bool {
+	dash := strings.IndexByte(state, '-')
+	if dash <= 0 {
+		return false
+	}
+	for i := 0; i < dash; i++ {
+		if state[i] < '0' || state[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

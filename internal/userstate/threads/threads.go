@@ -82,7 +82,10 @@ const (
 // only after the file write succeeded, that block is indivisible: a reader
 // never sees a message placed without the alias that placed it.
 type State struct {
-	mu        sync.RWMutex
+	mu sync.RWMutex
+	// records is how many log records this state folded, and therefore the
+	// account's threading state string.
+	records   int
 	byMessage map[string]string
 	bySubject map[string]string
 	byGUID    map[string]string
@@ -132,6 +135,7 @@ func Load(path string) (*State, error) {
 		case recAlias:
 			st.aliasOf[key] = val
 		}
+		st.records++
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("threads: read %s: %w", path, err)
@@ -306,6 +310,7 @@ func Append(path string, s *State, p Placement) error {
 	// the placement with its alias or neither.
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.records += recordsIn(p)
 	s.byGUID[p.GUID] = p.ThreadID
 	if p.MessageID != "" {
 		s.byMessage[p.MessageID] = p.ThreadID
@@ -323,6 +328,19 @@ func Append(path string, s *State, p Placement) error {
 // TAB inside a Message-ID or a subject key would shift the fields, and this
 // file is read by position. Message-IDs do not legally contain one, and a
 // subject key that does is a malformed header, not a record shape.
+// recordsIn counts the records one placement writes, so the in-memory state
+// stays at the same position as the file it just extended.
+func recordsIn(p Placement) int {
+	n := 1 // the G record
+	if p.MessageID != "" {
+		n++
+	}
+	if p.SubjectKey != "" {
+		n++
+	}
+	return n + len(p.MergedFrom)
+}
+
 func writeRec(b *strings.Builder, typ, key, val string) {
 	b.WriteString(typ)
 	b.WriteByte('\t')
@@ -446,3 +464,126 @@ func (v View) Members(threadID string) []string { return v.s.guidsOfThread(threa
 
 // Threads lists every conversation the account has.
 func (v View) Threads() []string { return v.s.threads() }
+
+// Changes is what happened to an account's conversations between two states.
+type Changes struct {
+	// Created are conversations that did not exist at the old state.
+	Created []string
+	// Updated are conversations that gained a message, or absorbed another.
+	Updated []string
+	// Destroyed are conversations that were merged into another and no longer
+	// exist under their own id. RFC 8621 expects a client to learn this: a
+	// merge RENAMES the thread of every message that was in the swallowed one,
+	// and a client that never hears about it holds an id nothing answers for.
+	Destroyed []string
+	// Head is the state to report back, and the one to ask from next time.
+	Head int
+}
+
+// Head is the account's current threading state: how many records its log
+// carries.
+//
+// The log IS the change journal here, unlike the Email state, which is derived
+// from folder markers because no journal of message changes exists. That is
+// why this state is a position rather than a description: the records between
+// two positions are exactly what happened.
+func (s *State) Head() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.records
+}
+
+// ChangesSince replays the log from a position and reports what changed.
+//
+// Read from the file rather than from a folded state, because a fold has
+// forgotten the order things happened in -- and that order is the answer. It
+// streams: a client asking "what changed since a moment ago" reads the tail,
+// not the account.
+func ChangesSince(path string, since int) (Changes, error) {
+	ch := Changes{Head: since}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No sidecar: nothing has ever happened, which is the honest answer
+			// for an account the migration step has not reached.
+			ch.Head = 0
+			return ch, nil
+		}
+		return ch, fmt.Errorf("threads: open %s: %w", path, err)
+	}
+	defer f.Close() //nolint:errcheck
+
+	// Threads seen before the requested position: a conversation that already
+	// existed is updated by a later record, not created by it.
+	known := map[string]bool{}
+	created := map[string]bool{}
+	updated := map[string]bool{}
+	destroyed := map[string]bool{}
+
+	n := 0
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		fields := strings.Split(sc.Text(), "\t")
+		if len(fields) != 3 {
+			continue
+		}
+		n++
+		typ, key, val := fields[0], fields[1], fields[2]
+		if n <= since {
+			if typ == recGUID {
+				known[val] = true
+			}
+			if typ == recAlias {
+				// A thread that was already merged away before the client's
+				// state is not news to it.
+				known[key] = false
+				delete(known, key)
+			}
+			continue
+		}
+		switch typ {
+		case recGUID:
+			if known[val] || created[val] {
+				updated[val] = true
+			} else {
+				created[val] = true
+			}
+			known[val] = true
+		case recAlias:
+			// key folded into val: the client loses one conversation and the
+			// other grew.
+			if created[key] {
+				// Created and swallowed within the window: the client never
+				// saw it, so it has nothing to forget.
+				delete(created, key)
+			} else {
+				destroyed[key] = true
+			}
+			delete(updated, key)
+			if !created[val] {
+				updated[val] = true
+			}
+			known[val] = true
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return ch, fmt.Errorf("threads: read %s: %w", path, err)
+	}
+	ch.Head = n
+	ch.Created = sortedKeys(created)
+	ch.Updated = sortedKeys(updated)
+	ch.Destroyed = sortedKeys(destroyed)
+	return ch, nil
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k, ok := range m {
+		if ok {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}

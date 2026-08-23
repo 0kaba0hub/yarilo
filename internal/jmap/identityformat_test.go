@@ -1,7 +1,6 @@
 package jmap
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
@@ -43,7 +42,7 @@ func TestMailboxStateIsNotAnObjectID(t *testing.T) {
 	if len(state) == 32 {
 		t.Errorf("state %q has an object id's shape", state)
 	}
-	if !strings.HasPrefix(state, "1-") {
+	if !versionPrefixed(state) {
 		t.Errorf("state %q carries no format version", state)
 	}
 	if _, err := jmapcore.ParseDescription(state, jmapcore.KindMailbox); err != nil {

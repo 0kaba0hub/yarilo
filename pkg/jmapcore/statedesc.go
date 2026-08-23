@@ -19,7 +19,11 @@ import (
 // let the client resync; the failure it must never have is a confident diff of
 // a layout it misread. That costs one byte now and is unaddable later, because
 // by then unversioned strings are already in clients' hands.
-const stateVersion = 1
+// Version 2 adds the trailing account-wide field (see Description.Extra). A
+// client holding a version-1 string gets cannotCalculateChanges once and
+// resyncs -- which is what the versioning is for, and why it was worth a byte
+// before anything shipped.
+const stateVersion = 2
 
 // Description kinds. Carried in the payload so an Email state handed to a
 // Mailbox method is refused rather than diffed as though it meant anything.
@@ -51,6 +55,18 @@ type StateEntry struct {
 type Description struct {
 	Kind    byte
 	Entries []StateEntry
+	// Extra carries account-wide positions that no folder owns.
+	//
+	// The threading sidecar is one: a merge renames the threadId of messages
+	// across folders while touching no folder's markers, so an Email state
+	// built from markers alone cannot see it -- and a client syncing Email
+	// objects would keep the old conversation for ever (RFC 8620 §5.2 requires
+	// the updated records; threadId is an Email property).
+	//
+	// A position rather than a digest, for the same reason the rest of this is
+	// a description: Foo/changes diffs two states, and a hash cannot be
+	// diffed.
+	Extra []uint64
 }
 
 // String renders the state a client sees.
@@ -61,6 +77,10 @@ func (d Description) String() string {
 	})
 	buf := make([]byte, 0, 16+len(entries)*24)
 	buf = append(buf, d.Kind)
+	buf = binary.AppendUvarint(buf, uint64(len(d.Extra)))
+	for _, x := range d.Extra {
+		buf = binary.AppendUvarint(buf, x)
+	}
 	buf = binary.AppendUvarint(buf, uint64(len(entries)))
 	for _, e := range entries {
 		buf = append(buf, e.Key[:]...)
@@ -103,6 +123,19 @@ func ParseDescription(s string, kind byte) (Description, error) {
 	}
 	out := Description{Kind: buf[0]}
 	rest := buf[1:]
+	extras, used := binary.Uvarint(rest)
+	if used <= 0 {
+		return Description{}, ErrStateFormat
+	}
+	rest = rest[used:]
+	for i := uint64(0); i < extras; i++ {
+		v, u := binary.Uvarint(rest)
+		if u <= 0 {
+			return Description{}, ErrStateFormat
+		}
+		out.Extra = append(out.Extra, v)
+		rest = rest[u:]
+	}
 	n, used := binary.Uvarint(rest)
 	if used <= 0 {
 		return Description{}, ErrStateFormat
