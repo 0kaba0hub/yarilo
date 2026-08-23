@@ -324,13 +324,7 @@ func (b *nsBundle) folderHome() string { return b.info.Home }
 // (yarilo-uidlist, subscriptions). When CONTROL= is configured this
 // differs from folderHome.
 func (b *nsBundle) folderControlRoot() string {
-	if b.info.ControlDir != "" {
-		return b.info.ControlDir
-	}
-	if b.info.MailPath != "" {
-		return b.info.MailPath
-	}
-	return b.info.Home
+	return mailbox.ControlRoot(b.info)
 }
 
 // lockOwner is the identifier shown in yarilo-locks BUSY reports for any lock
