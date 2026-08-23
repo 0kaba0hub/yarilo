@@ -3,6 +3,7 @@ package imap_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	imaplib "github.com/emersion/go-imap/v2"
@@ -61,7 +62,7 @@ func TestSearchDuringAnFTSOutageTellsTheClientToRetry(t *testing.T) {
 			}
 			// The code and the text have to agree: a permanent code beside
 			// "try again" tells a client two things, and it believes the code.
-			saysRetry := containsFold(string(imapErr.Text), "try again")
+			saysRetry := containsFold(imapErr.Text, "try again")
 			if want := tt.wantCode == imaplib.ResponseCodeUnavailable; saysRetry != want {
 				t.Errorf("text %q says retry = %v, but the code is %q", imapErr.Text, saysRetry, imapErr.Code)
 			}
@@ -70,20 +71,5 @@ func TestSearchDuringAnFTSOutageTellsTheClientToRetry(t *testing.T) {
 }
 
 func containsFold(hay, needle string) bool {
-	lower := func(s string) string {
-		b := []byte(s)
-		for i := range b {
-			if b[i] >= 'A' && b[i] <= 'Z' {
-				b[i] += 'a' - 'A'
-			}
-		}
-		return string(b)
-	}
-	h, n := lower(hay), lower(needle)
-	for i := 0; i+len(n) <= len(h); i++ {
-		if h[i:i+len(n)] == n {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(strings.ToLower(hay), strings.ToLower(needle))
 }
