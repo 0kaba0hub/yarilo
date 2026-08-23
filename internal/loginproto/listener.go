@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -116,6 +117,10 @@ type PreambleListener struct {
 	// MasterLookupTimeout bounds the userdb lookup below. Zero selects
 	// defaultMasterLookupTimeout.
 	MasterLookupTimeout time.Duration
+
+	// depMu guards the throttle for the dependency-unreachable log line.
+	depMu   sync.Mutex
+	depLast time.Time
 	// ExpectedService, when non-empty, must match the service in the VERIFY response.
 	ExpectedService string
 	// TLSConfig, when set, terminates internal mTLS on each accepted connection
@@ -171,7 +176,7 @@ func (l *PreambleListener) acceptLoop() {
 func (l *PreambleListener) doHandshake(c net.Conn) {
 	pc, err := l.handshake(c)
 	if err != nil {
-		slog.Debug("loginproto: preamble handshake failed", "remote", c.RemoteAddr(), "err", err)
+		l.noteHandshakeFailure(c, err)
 		c.Close()
 		return
 	}
@@ -223,6 +228,44 @@ func (l *PreambleListener) authClient() (*authclient.Client, error) {
 	}
 	l.authCl = cl
 	return cl, nil
+}
+
+// dependencyFailureLogEvery bounds the loud line to one per interval. An
+// unreachable dependency refuses every session that arrives, and a line per
+// session would bury the rest of the log exactly when it is being read. The
+// same shape as the ring's unknown-event throttle (#1390).
+const dependencyFailureLogEvery = time.Minute
+
+// noteHandshakeFailure reports a failed handshake at the level its cause
+// deserves.
+//
+// Most of them are debug for good reason: a peer that sent something we could
+// not parse, or a token that had expired, is routine, and at info it would be
+// noise nobody acts on. One of them is not routine -- the dependency behind us
+// being unreachable refuses every session on this backend, and at info the
+// operator saw sessions failing with nothing on this side to connect them to
+// (#1427).
+//
+// The two are told apart by the marker the auth client already carries for
+// exactly this distinction (#1408).
+func (l *PreambleListener) noteHandshakeFailure(c net.Conn, err error) {
+	if !errors.Is(err, masterclient.ErrUnavailable) {
+		slog.Debug("loginproto: preamble handshake failed", "remote", c.RemoteAddr(), "err", err)
+		return
+	}
+	l.depMu.Lock()
+	now := time.Now()
+	if !l.depLast.IsZero() && now.Sub(l.depLast) < dependencyFailureLogEvery {
+		l.depMu.Unlock()
+		// Still logged, so a debug run keeps every occurrence.
+		slog.Debug("loginproto: preamble handshake failed", "remote", c.RemoteAddr(), "err", err)
+		return
+	}
+	l.depLast = now
+	l.depMu.Unlock()
+	slog.Warn("loginproto: refusing sessions, a dependency is unreachable",
+		"service", l.ExpectedService, "remote", c.RemoteAddr(), "err", err,
+		"hint", "sessions on this backend are refused with UNAVAILABLE until it answers")
 }
 
 const preambleReadTimeout = 5 * time.Second
