@@ -92,6 +92,28 @@ var (
 		Name:      "connections_total",
 		Help:      "Total client-protocol connections accepted by yarilo-auth since start.",
 	})
+
+	// The master listener is a separate protocol with separate callers: the
+	// backends' userdb resolvers, not the login proxies. Reading the
+	// client-protocol counters for it answers a different question -- flat
+	// connections there prove the LOGIN path reuses its connection and say
+	// nothing about a resolver that dials per request (#1402).
+	masterConnectionsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "auth",
+		Name:      "master_connections_total",
+		Help:      "Total master-protocol connections accepted by yarilo-auth since start.",
+	})
+
+	// Counted against connections above: a caller that dials per request keeps
+	// the two curves together, and one that holds a connection flattens the
+	// first while this one climbs.
+	masterRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "yarilo",
+		Subsystem: "auth",
+		Name:      "master_requests_total",
+		Help:      "Master-protocol requests served by yarilo-auth, by verb.",
+	}, []string{"verb"})
 )
 
 // DriverName is the optional interface a Passdb implements to label its own
@@ -137,3 +159,11 @@ func resultLabel(r Result, err error) string {
 		return "fail"
 	}
 }
+
+// noteMasterConn counts one accepted master-protocol connection.
+func noteMasterConn() { masterConnectionsTotal.Inc() }
+
+// noteMasterRequest counts one master-protocol request. Only the verbs this
+// server implements are passed: the label is bounded by the switch that calls
+// it, so an unknown verb from a client cannot grow the label set.
+func noteMasterRequest(verb string) { masterRequestsTotal.WithLabelValues(verb).Inc() }
