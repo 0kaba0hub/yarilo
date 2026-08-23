@@ -54,6 +54,12 @@ func no(format string, args ...any) string {
 // outage inside yarilo-fts arrived at yarilo-imap as an ordinary string and
 // reached the client as a bare NO -- indistinguishable from an FTS that is
 // broken for good (#1409).
+//
+// Naming the two dependencies here means the protocol package knows who stands
+// behind it, which is honest for two and wrong for three. The trigger for
+// changing it: when a THIRD dependency needs recognising, replace the names
+// with a marker interface ("this was a dependency failure") so the wire
+// vocabulary stops tracking the service's imports.
 func noFor(err error) string {
 	if errors.Is(err, authclient.ErrUnavailable) || errors.Is(err, locks.ErrUnavailable) {
 		return refusal(CodeUnavailable, err.Error())
