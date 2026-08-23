@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	fileindex "github.com/yarilomail/yarilo/internal/storage/index/file"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
 	"github.com/yarilomail/yarilo/internal/userstate/threads"
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -218,6 +220,41 @@ func TestDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+// A dry run exists to give an operator numbers before they choose a window, so
+// it has to measure the mode the real run uses. It did not: skipping the append
+// also skipped the only thing that applies a placement to the state, so every
+// later message saw "nothing to join" and any mailbox reported zero
+// conversations. A probe that cannot say which mode it measured in is the trap
+// we have hit three times already.
+func TestDryRunReportsTheNumbersARealRunWouldProduce(t *testing.T) {
+	root := t.TempDir()
+	info := seedAccount(t, root, "alice@example.com")
+
+	dry := backfillOpts(root, false)
+	dry.DryRun = true
+	var dryStats threadStats
+	if err := runThreadBackfillInto(dry, &dryStats); err != nil {
+		t.Fatal(err)
+	}
+
+	var realStats threadStats
+	if err := runThreadBackfillInto(backfillOpts(root, false), &realStats); err != nil {
+		t.Fatal(err)
+	}
+
+	if dryStats.Threads != realStats.Threads || dryStats.Messages != realStats.Messages {
+		t.Errorf("dry run reported %d threads over %d messages; the real run produced %d over %d",
+			dryStats.Threads, dryStats.Messages, realStats.Threads, realStats.Messages)
+	}
+	if realStats.Threads == 0 {
+		t.Fatal("the real run found no conversations, so this comparison proves nothing")
+	}
+	// And it still leaves nothing behind, working file included.
+	if _, err := os.Stat(threads.PathFor(info) + ".rebuild"); !os.IsNotExist(err) {
+		t.Errorf("the dry run left its working file: %v", err)
+	}
+}
+
 // Every account under the root, not just the one that happens to sort first.
 func TestBackfillWalksEveryAccount(t *testing.T) {
 	root := t.TempDir()
@@ -297,4 +334,74 @@ func TestUnreadableMessagesDoNotStopTheRun(t *testing.T) {
 		t.Errorf("no sidecar was written: %v", err)
 	}
 	fmt.Fprintln(os.Stderr) // keep the log tail readable in -v runs
+}
+
+// recordingLocker satisfies locks.Locker and remembers what was held, so a
+// test can assert on the lock rather than on the code that takes it.
+type recordingLocker struct {
+	held    []string
+	holding map[string]bool
+}
+
+func newRecordingLocker() *recordingLocker {
+	return &recordingLocker{holding: map[string]bool{}}
+}
+
+func (l *recordingLocker) Lock(_ context.Context, resource, owner string, _ time.Duration) (locks.Lock, error) {
+	l.held = append(l.held, resource)
+	l.holding[resource] = true
+	return locks.Lock{ID: resource, Resource: resource, Owner: owner}, nil
+}
+
+func (l *recordingLocker) LockShared(ctx context.Context, resource, owner string, ttl time.Duration) (locks.Lock, error) {
+	return l.Lock(ctx, resource, owner, ttl)
+}
+func (l *recordingLocker) Unlock(_ context.Context, lockID string) error {
+	delete(l.holding, lockID)
+	return nil
+}
+func (l *recordingLocker) Renew(context.Context, string, time.Duration) error { return nil }
+func (l *recordingLocker) Subscribe(context.Context, string) (<-chan locks.Event, error) {
+	return nil, nil
+}
+func (l *recordingLocker) Emit(context.Context, string, locks.EventType, string) error { return nil }
+func (l *recordingLocker) HoldsResource(resource string) bool                          { return l.holding[resource] }
+func (l *recordingLocker) IncrementCounter(context.Context, string, int64) (int64, error) {
+	return 0, nil
+}
+func (l *recordingLocker) Close() error { return nil }
+
+// The rebuild writes into shared storage, so it goes under the account's
+// thread lock -- all of it, not just the install.
+//
+// The walk reads every message's headers and takes as long as the account is
+// big. A delivery landing during it appends to the live sidecar; installing a
+// file built before that delivery would erase it. Between runs that is what
+// --force guards, but inside one run only the lock does.
+func TestTheRebuildHoldsTheAccountLock(t *testing.T) {
+	root := t.TempDir()
+	info := seedAccount(t, root, "alice@example.com")
+	locker := newRecordingLocker()
+
+	var st threadStats
+	o := backfillOpts(root, false)
+	if err := threadUser(maildir.New(), fileindex.New(), &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"},
+		locker, o, info.Username, &st); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	want := locks.ThreadsKey(info.Username)
+	var found bool
+	for _, r := range locker.held {
+		if r == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("locks taken = %v, want the account's thread lock %q -- the rebuild wrote into shared storage without it",
+			locker.held, want)
+	}
+	if locker.holding[want] {
+		t.Error("the thread lock was not released when the account finished")
+	}
 }

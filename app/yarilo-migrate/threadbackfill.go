@@ -2,16 +2,19 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"sort"
+	"time"
 
 	indexfile "github.com/yarilomail/yarilo/internal/storage/index/file"
 	"github.com/yarilomail/yarilo/internal/storage/mailboxbuild"
 	"github.com/yarilomail/yarilo/internal/userstate/threads"
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -43,6 +46,14 @@ type threadStats struct {
 }
 
 func runThreadBackfill(o threadOpts) error {
+	var st threadStats
+	return runThreadBackfillInto(o, &st)
+}
+
+// runThreadBackfillInto is runThreadBackfill with the tally handed in, so a
+// test can read the numbers the run reported rather than parsing them back out
+// of a log line.
+func runThreadBackfillInto(o threadOpts, st *threadStats) error {
 	cfg, err := guidConfig(o.ConfigPath)
 	if err != nil {
 		return err
@@ -78,9 +89,8 @@ func runThreadBackfill(o threadOpts) error {
 	if err != nil {
 		return err
 	}
-	var st threadStats
 	for _, user := range users {
-		if err := threadUser(boxBE, idxBE, resolver, o, user, &st); err != nil {
+		if err := threadUser(boxBE, idxBE, resolver, locker, o, user, st); err != nil {
 			return fmt.Errorf("thread backfill %s: %w", user, err)
 		}
 	}
@@ -90,7 +100,41 @@ func runThreadBackfill(o threadOpts) error {
 	return nil
 }
 
-func threadUser(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolver *mailbox.Resolver, o threadOpts, user string, st *threadStats) error {
+// threadUser rebuilds one account, holding the account's thread lock across
+// the WHOLE sequence -- the skip check, the walk and the install.
+//
+// The walk is long: it reads every message's headers. A delivery that landed
+// during it has already appended to the live sidecar, and installing a file
+// built before that delivery would erase it. The lock is what makes "rebuild"
+// mean the account's history plus nothing lost, rather than the history as it
+// looked when the walk started.
+//
+// With no lock service (a stopped store, the case the warning above names)
+// there is nothing to hold, and the tool says so rather than pretending.
+func threadUser(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolver *mailbox.Resolver, locker locks.Locker, o threadOpts, user string, st *threadStats) error {
+	if locker == nil {
+		return threadUserLocked(boxBE, idxBE, resolver, o, user, st)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), backfillLockTimeout)
+	defer cancel()
+	return locks.WithLock(ctx, locker, locks.ThreadsKey(user),
+		fmt.Sprintf("yarilo-migrate/%d", os.Getpid()), backfillLockTTL, backfillLockRenew,
+		func(context.Context) error {
+			return threadUserLocked(boxBE, idxBE, resolver, o, user, st)
+		})
+}
+
+// The account's thread lock during a rebuild. The timeout bounds the whole
+// account rather than one write, because that is what is held; the TTL is
+// short with a renew loop under it, so a tool that dies mid-account releases
+// in seconds instead of blocking delivery until the TTL runs out.
+const (
+	backfillLockTimeout = 30 * time.Minute
+	backfillLockTTL     = 15 * time.Second
+	backfillLockRenew   = 5 * time.Second
+)
+
+func threadUserLocked(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolver *mailbox.Resolver, o threadOpts, user string, st *threadStats) error {
 	info, err := guidUserInfo(resolver, nil, guidOpts{
 		Offline: true, IndexTmpl: o.IndexTmpl, MailTmpl: o.MailTmpl,
 	}, user)
@@ -134,16 +178,22 @@ func threadUser(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolv
 		}
 	}
 
+	before := st.Messages
 	state, err := buildSidecar(box, idx, names, path, o, user, st)
 	if err != nil {
 		return err
 	}
+	messages := st.Messages - before
 
 	st.Users++
 	st.Threads += len(state.Threads())
 	if o.DryRun {
-		slog.Info("thread backfill: would build", "user", user,
-			"messages", st.Messages, "threads", len(state.Threads()), "path", path)
+		// The state is real, so these numbers are the ones a real run would
+		// produce. Only the install is skipped, and the working file goes with
+		// it: a dry run leaves nothing behind.
+		_ = os.Remove(path + ".rebuild")
+		slog.Info("thread backfill: would build", "user", user, "folders", len(names),
+			"messages", messages, "threads", len(state.Threads()), "path", path)
 		return nil
 	}
 	// Whole-file replacement: the account's threading is either the old file
@@ -152,7 +202,7 @@ func threadUser(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolv
 		return fmt.Errorf("install %s: %w", path, err)
 	}
 	slog.Info("thread backfill: built", "user", user, "folders", len(names),
-		"threads", len(state.Threads()), "path", path)
+		"messages", messages, "threads", len(state.Threads()), "path", path)
 	return nil
 }
 
@@ -201,9 +251,13 @@ func buildSidecar(box mailbox.UserMailbox, idx mailbox.UserIndex, names []string
 			}
 			st.Messages++
 			p := threads.PlacementFor(state, hex.EncodeToString(m.GUID[:]), head)
-			if o.DryRun {
-				continue
-			}
+			// Written even on a dry run, and deliberately: Append is what
+			// applies a placement to the state, so skipping it leaves every
+			// later message seeing "nothing to join" and the run reporting
+			// zero conversations for any mailbox. A dry run exists to give an
+			// operator numbers before choosing a window; numbers taken in a
+			// mode the real run never uses are worse than none. The file is
+			// temporary either way -- what a dry run skips is the install.
 			if aerr := threads.Append(tmp, state, p); aerr != nil {
 				return nil, fmt.Errorf("append %s: %w", name, aerr)
 			}
