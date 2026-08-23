@@ -43,13 +43,29 @@ func (r *Recorder) Record(user, path, guid string, raw []byte) (string, error) {
 	if guid == "" {
 		return "", fmt.Errorf("threads: delivery has no guid")
 	}
-	msg := parseHeaders(raw)
-	msg.MessageID = firstOf(msg.MessageID)
-
 	state, err := r.cache.Get(user, path)
 	if err != nil {
 		return "", err
 	}
+	p := PlacementFor(state, guid, raw)
+	if err := Append(path, state, p); err != nil {
+		return "", err
+	}
+	r.cache.Note(user, path)
+	return p.ThreadID, nil
+}
+
+// PlacementFor decides where one message belongs, given what the account
+// already knows.
+//
+// Shared by delivery and by the rebuild in yarilo-migrate, and that sharing is
+// the point: the rebuild must arrive at the SAME thread ids as the deliveries
+// it replays, or it is not a rebuild but a second opinion. Two implementations
+// that agree today would drift the first time either is touched.
+func PlacementFor(state *State, guid string, raw []byte) Placement {
+	msg := parseHeaders(raw)
+	msg.MessageID = firstOf(msg.MessageID)
+
 	placed := threading.Resolve(threading.Message{
 		MessageID:  msg.MessageID,
 		InReplyTo:  msg.InReplyTo,
@@ -59,19 +75,17 @@ func (r *Recorder) Record(user, path, guid string, raw []byte) (string, error) {
 
 	threadID := placed.ThreadID
 	if threadID == "" {
+		// Nothing to join: the conversation is named after this message. See
+		// Record for why it is the guid and not something random.
 		threadID = guid
 	}
-	if err := Append(path, state, Placement{
+	return Placement{
 		GUID:       guid,
 		MessageID:  msg.MessageID,
 		SubjectKey: placed.SubjectKey,
 		ThreadID:   threadID,
 		MergedFrom: placed.MergedFrom,
-	}); err != nil {
-		return "", err
 	}
-	r.cache.Note(user, path)
-	return threadID, nil
 }
 
 type headers struct {

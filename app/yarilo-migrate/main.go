@@ -48,6 +48,8 @@ var (
 	flagRoot      = flag.String("root", "", "override storage.maildir_root (--guid-backfill)")
 	flagHomeTmpl  = flag.String("home-template", "", "override storage.mail_home_template, e.g. %d/%u (--guid-backfill)")
 	flagUser      = flag.String("user", "", "restrict to one user@domain (--guid-backfill); default is every user under the root")
+	flagThreads   = flag.Bool("thread-backfill", false, "build the threading sidecar for existing accounts instead of converting")
+	flagForce     = flag.Bool("force", false, "rebuild a sidecar that already exists (--thread-backfill)")
 	flagOffline   = flag.Bool("offline", false, "resolve per-user paths from flags instead of userdb (--guid-backfill); for a stopped store")
 	flagIndexTmpl = flag.String("index-template", "", "offline stand-in for the userdb INDEX= override, e.g. %h/index (--offline)")
 	flagMailTmpl  = flag.String("mail-template", "", "offline stand-in for the userdb mail_path override, e.g. %h/maildir (--offline)")
@@ -76,6 +78,31 @@ func main() {
 			DryRun:     *flagDry,
 		}); err != nil {
 			slog.Error("guid backfill failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *flagThreads {
+		if *flagLocksConf == "" && (*flagDriver == "" || *flagRoot == "") {
+			fmt.Fprintln(os.Stderr,
+				"usage: yarilo-migrate --thread-backfill --config <yarilo.yaml> [--driver d] [--root path] [--home-template t] [--user u@d] [--force] [--dry-run]\n"+
+					"       without --config both --driver and --root are required")
+			os.Exit(1)
+		}
+		if err := runThreadBackfill(threadOpts{
+			ConfigPath: *flagLocksConf,
+			Driver:     *flagDriver,
+			Root:       *flagRoot,
+			Template:   *flagHomeTmpl,
+			User:       *flagUser,
+			Offline:    *flagOffline,
+			IndexTmpl:  *flagIndexTmpl,
+			MailTmpl:   *flagMailTmpl,
+			DryRun:     *flagDry,
+			Force:      *flagForce,
+		}); err != nil {
+			slog.Error("thread backfill failed", "err", err)
 			os.Exit(1)
 		}
 		return
