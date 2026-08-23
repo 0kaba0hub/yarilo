@@ -67,6 +67,43 @@ func TestAReplyJoinsTheConversation(t *testing.T) {
 	}
 }
 
+// Clients emit references in more than one shape, and a header that reads as
+// one malformed identifier costs a join. Safe in direction -- never a wrong
+// join -- but a lost one on a shape that is common in the wild.
+func TestReferencesAreReadInEveryShapeClientsSend(t *testing.T) {
+	tests := []struct {
+		name string
+		refs string
+	}{
+		{"space separated", "<a@x> <b@x>"},
+		{"comma and space", "<a@x>, <b@x>"},
+		{"comma, no space", "<a@x>,<b@x>"},
+		{"folded across lines", "<a@x>\r\n\t<b@x>"},
+		{"no brackets at all", "a@x b@x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec, path := recorder(t)
+			first, _ := rec.Record("u@example.com", path, "guid-a", rawMessage("a@x", "", "", "One"))
+			if _, err := rec.Record("u@example.com", path, "guid-b", rawMessage("b@x", "", "", "Two")); err != nil {
+				t.Fatal(err)
+			}
+			late, err := rec.Record("u@example.com", path, "guid-c",
+				rawMessage("c@x", "", tt.refs, "Re: One"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if late != first {
+				t.Errorf("the reply landed in %q, not in the conversation %q -- the references were not read", late, first)
+			}
+			st, _ := Load(path)
+			if got := st.Threads(); len(got) != 1 {
+				t.Errorf("threads = %v, want one: the merge did not happen", got)
+			}
+		})
+	}
+}
+
 // Folding is what the cache exists to avoid, so a second delivery to the same
 // account must not fold again. The recorder has to tell the cache about its own
 // write for that to hold -- and without that call the fold happens on every

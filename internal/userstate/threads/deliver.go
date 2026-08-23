@@ -97,16 +97,41 @@ func parseHeaders(raw []byte) headers {
 	}
 }
 
-// messageIDs splits a header that carries message identifiers. Angle brackets
-// and commas are stripped, so "<a@x>, <b@x>" and "<a@x> <b@x>" read alike --
-// clients emit both.
+// messageIDs splits a header that carries message identifiers.
+//
+// Split on the brackets rather than on whitespace, because clients emit
+// "<a@x>,<b@x>" with no space and whitespace-splitting turns that into one
+// token whose middle survives trimming: "a@x>,<b@x", an identifier that
+// matches nothing. The error is safe in direction -- a missed join, never a
+// wrong one -- but it is a join lost on a shape real clients send.
+//
+// A header with no brackets at all is still read: some clients omit them, and
+// the whitespace split is the right fallback there.
 func messageIDs(v string) []string {
 	if v == "" {
 		return nil
 	}
 	var out []string
+	if strings.Contains(v, "<") {
+		rest := v
+		for {
+			open := strings.Index(rest, "<")
+			if open < 0 {
+				break
+			}
+			close := strings.Index(rest[open:], ">")
+			if close < 0 {
+				break
+			}
+			if id := strings.TrimSpace(rest[open+1 : open+close]); id != "" {
+				out = append(out, id)
+			}
+			rest = rest[open+close+1:]
+		}
+		return out
+	}
 	for _, f := range strings.Fields(v) {
-		if id := strings.Trim(f, "<>,"); id != "" {
+		if id := strings.Trim(f, ","); id != "" {
 			out = append(out, id)
 		}
 	}

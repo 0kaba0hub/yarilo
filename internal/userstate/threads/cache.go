@@ -53,6 +53,19 @@ func NewCache(idle time.Duration) *Cache {
 // Get returns the folded sidecar at path, reusing the cached fold when the file
 // has not changed underneath it.
 //
+// # The boundary this has, and what it costs the next caller
+//
+// The returned *State is SHARED, and Append mutates it. Today every caller is
+// a delivery holding the account's ThreadsKey, so the mutations are
+// serialised and a shared pointer is free.
+//
+// A reader -- Thread/get, Thread/changes -- calling Get on the same cache
+// would be a reader racing a writer inside one process, with no lock between
+// them, because the writer's lock is held for the account and not for these
+// maps. Whoever adds the read path has to choose: take the same account lock
+// for the read, or hand readers a snapshot. Written here rather than
+// discovered there, since the code will look like it simply works.
+//
 // Freshness is decided by size and mtime rather than by trusting the cache: the
 // caller holds the account's thread lock, but a process that held the lock a
 // moment ago may have appended, and threading from a stale state assigns a
