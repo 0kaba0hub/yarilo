@@ -2,6 +2,7 @@ package loginproto
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -115,6 +116,70 @@ func TestSessionLookupsShareTheMasterConnection(t *testing.T) {
 	if got := m.count() - before; got != 3 {
 		t.Errorf("three unpooled lookups opened %d connections, want 3", got)
 	}
+}
+
+// The pool's own risk, in the shape #1410 reported from the other side: a
+// pooled connection whose peer accepts and then says nothing has no bound of
+// its own. The per-session dial used to supply one -- a vanished peer failed
+// the dial, and the dial had a timeout -- so this had to be replaced, not
+// inherited.
+//
+// Staged as the deadline row in #1408 is: a peer that answers the handshake
+// and then never answers a request.
+func TestASilentMasterFailsTheLookupInsteadOfHangingTheSession(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			// Greet, so the client considers the connection up, then go quiet.
+			fmt.Fprint(conn, "VERSION\tyarilo-auth-master\t1\t0\nDONE\n")
+			// Held open deliberately: closing would be an answer of a kind,
+			// and the case under test is silence.
+			defer conn.Close() //nolint:errcheck
+		}
+	}()
+
+	l := &PreambleListener{
+		MasterAddr:          ln.Addr().String(),
+		MasterPool:          masterclient.NewPool(ln.Addr().String(), nil, 1, time.Minute),
+		MasterLookupTimeout: 300 * time.Millisecond,
+	}
+	t.Cleanup(func() { l.MasterPool.Close() }) //nolint:errcheck
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, lerr := l.masterUserdb("u@example.com")
+		done <- lerr
+	}()
+
+	select {
+	case lerr := <-done:
+		if lerr == nil {
+			t.Fatal("a silent master answered the lookup")
+		}
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
+			t.Errorf("the lookup took %v: the bound is not the one configured", elapsed)
+		}
+		// And it reads as an outage, so the session's refusal says "try
+		// again" rather than "this server is broken".
+		if !errorsIsUnavailable(lerr) {
+			t.Errorf("a silent dependency is not reported as unavailable: %v", lerr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lookup never returned: a session handshake would hang on a silent master")
+	}
+}
+
+func errorsIsUnavailable(err error) bool {
+	return errors.Is(err, masterclient.ErrUnavailable)
 }
 
 // A protocol added later must not quietly go back to dialling per session. The

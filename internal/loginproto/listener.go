@@ -113,6 +113,9 @@ type PreambleListener struct {
 	// Nil keeps the per-session dial, which is what a standalone or test
 	// wiring without a pool gets.
 	MasterPool *masterclient.Pool
+	// MasterLookupTimeout bounds the userdb lookup below. Zero selects
+	// defaultMasterLookupTimeout.
+	MasterLookupTimeout time.Duration
 	// ExpectedService, when non-empty, must match the service in the VERIFY response.
 	ExpectedService string
 	// TLSConfig, when set, terminates internal mTLS on each accepted connection
@@ -224,11 +227,32 @@ func (l *PreambleListener) authClient() (*authclient.Client, error) {
 
 const preambleReadTimeout = 5 * time.Second
 
+// defaultMasterLookupTimeout bounds the session's userdb lookup.
+//
+// It exists because the connection is now long-lived. A per-session dial
+// carried its own bound: a peer that had gone away failed the dial, and the
+// dial had a timeout. A pooled connection to a peer that accepts and then says
+// nothing -- a node that vanished, a Service with no endpoints -- has no bound
+// at all, and the handshake would wait for the kernel to give up. That is
+// minutes, on every session landing on this backend (#1419, the same surface
+// as #1410 seen from the other side).
+//
+// Sized with preambleReadTimeout: both bound one step of the same handshake,
+// and a client waiting on a session setup would rather be refused than held.
+const defaultMasterLookupTimeout = 5 * time.Second
+
 // masterUserdb resolves the session's storage identity, through the pool when
 // there is one.
 func (l *PreambleListener) masterUserdb(username string) (*protocol.UserInfo, error) {
+	timeout := l.MasterLookupTimeout
+	if timeout <= 0 {
+		timeout = defaultMasterLookupTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	if l.MasterPool != nil {
-		ui, err := l.MasterPool.Userdb(context.Background(), username)
+		ui, err := l.MasterPool.Userdb(ctx, username)
 		if err != nil {
 			return nil, fmt.Errorf("userdb lookup: %w", err)
 		}
@@ -239,7 +263,7 @@ func (l *PreambleListener) masterUserdb(username string) (*protocol.UserInfo, er
 		return nil, fmt.Errorf("master dial: %w", err)
 	}
 	defer masterCl.Close() //nolint:errcheck
-	ui, err := masterCl.Userdb(context.Background(), username)
+	ui, err := masterCl.Userdb(ctx, username)
 	if err != nil {
 		return nil, fmt.Errorf("userdb lookup: %w", err)
 	}
