@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/yarilomail/yarilo/internal/auth/protocol"
@@ -421,14 +422,30 @@ func (c *Client) redial() error {
 }
 
 // isConnectionError reports whether err is a broken connection that warrants
-// a reconnect. Context cancellations and timeouts are excluded — they are
-// caller/server issues, not a dead socket.
+// a reconnect.
+//
+// "Timeout" is two different events on one socket, and treating them alike
+// wedged a client forever (#1410). Our own deadline elapsing says nothing
+// about the connection -- the next request may well use it -- so redialing
+// there would reconnect on every slow answer. The kernel giving up on
+// retransmission says the peer is gone; it also arrives as a timeout, and
+// excluding it left backend-api writing into a socket that no longer existed,
+// failing every userdb lookup with the same local port until the process was
+// restarted.
 func isConnectionError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// The caller walked away, or our request budget elapsed: neither is a dead
+	// socket. A deadline needs no case of its own -- it reaches the net.OpError
+	// test below and fails it on Timeout().
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+	// The kernel exhausted its retransmissions. The connection is gone whatever
+	// the socket still says.
+	if errors.Is(err, syscall.ETIMEDOUT) {
+		return true
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
 		return true
