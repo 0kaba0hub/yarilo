@@ -971,6 +971,10 @@ type AuthClientConfig struct {
 	// connection-per-lookup behaviour -- so a rollback is a config change, not
 	// a release. The dial costs about seven times the lookup it carries
 	// (#1402), which is what the pool exists to stop paying per request.
+	//
+	// Raising it has a cost at shutdown: Pool.Close waits up to a second for
+	// each slot still serving a lookup, so the worst case is roughly this many
+	// seconds. Harmless at a handful; worth weighing before a large pool.
 	PoolSize int `koanf:"auth_client_pool_size"`
 	// PoolIdleTimeoutSecs closes a pooled connection that has gone unused,
 	// so a process that resolved nobody for an hour is not holding a

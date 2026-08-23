@@ -687,6 +687,9 @@ components:
       ## 0 = built-in default (4); NEGATIVE = a connection per lookup, i.e. the
       ## behaviour before pooling — the rollback, by config rather than by a
       ## release.
+      ## Raising it costs at shutdown: closing waits up to a second per slot
+      ## still serving a lookup, so a large pool of stuck lookups delays exit by
+      ## roughly its size in seconds.
       pool_size: 0
       ## Seconds before an unused pooled connection is closed, so a process
       ## that resolved nobody for an hour is not holding one. 0 = built-in

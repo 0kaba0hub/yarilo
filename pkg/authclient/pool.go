@@ -180,6 +180,10 @@ func (p *Pool) Close() error {
 				// closes with the process; waiting for it would hold shutdown
 				// on a request that may be blocked on a dependency that is
 				// itself down.
+				//
+				// Per slot, so a large pool of stuck lookups delays shutdown by
+				// roughly its size in seconds. Noted at auth_client_pool_size
+				// too, since that is where somebody would raise it.
 				err = errors.Join(err, fmt.Errorf("authclient: pool close: %d connection(s) still in use", cap(p.idle)-i))
 				return
 			}
