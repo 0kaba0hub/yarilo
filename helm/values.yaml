@@ -676,6 +676,28 @@ components:
     ## per-request dials never wait. 0 = built-in default (30); negative = do
     ## not wait at all.
     startup_wait: 30
+
+    ## client — how OTHER components talk to auth's MASTER listener (userdb
+    ## lookups from the jmap and fts resolvers), as opposed to the login pods
+    ## on the client protocol above.
+    client:
+      ## Master-protocol connections a process keeps open for userdb lookups.
+      ## The dial costs about seven times the lookup it carries, and arrives at
+      ## auth as a connection per lookup with a full handshake on its side too.
+      ## 0 = built-in default (4); NEGATIVE = a connection per lookup, i.e. the
+      ## behaviour before pooling — the rollback, by config rather than by a
+      ## release.
+      ## Raising it costs at shutdown: closing waits up to a second per slot
+      ## still serving a lookup, so a large pool of stuck lookups delays exit by
+      ## roughly its size in seconds.
+      pool_size: 0
+      ## Seconds before an unused pooled connection is closed, so a process
+      ## that resolved nobody for an hour is not holding one. 0 = built-in
+      ## default (300, matching fts handle_idle_timeout); negative = never
+      ## evict. A connection idle for a quarter of this is probed before it is
+      ## handed out, rather than discovering a dead peer by failing a lookup.
+      pool_idle_timeout: 0
+
     ## listen — client protocol (login pods speak here).
     listen: ":9100"
     ## addr — address login pods dial to reach yarilo-auth.

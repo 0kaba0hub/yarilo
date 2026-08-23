@@ -213,6 +213,21 @@ func (c *Client) Userdb(ctx context.Context, username string) (*protocol.UserInf
 	return c.parseUserResponse(line, id, username)
 }
 
+// Ping asks the master for a sign of life on this connection.
+//
+// ANY single-line reply counts, including a FAIL: a server too old to know
+// NOOP answers "unknown command", and a server that answers at all is exactly
+// what the probe is asking about. That makes the probe safe against a mixed
+// rollout with no ordering requirement -- the reply's content is not the
+// signal, its arrival is.
+func (c *Client) Ping(ctx context.Context) error {
+	if c.closed.Load() {
+		return ErrClosed
+	}
+	_, err := c.exchange(ctx, fmt.Sprintf("NOOP\t%s\n", c.allocID()))
+	return err
+}
+
 // PassdbLookup runs a PASS lookup. The master PASS handler still replies
 // `FAIL reason=PASS not implemented`, so this method always returns
 // [ErrNotImplemented]; the typed call surface is stable for when it lands.

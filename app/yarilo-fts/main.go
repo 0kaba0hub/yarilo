@@ -82,6 +82,12 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	// One pool per process, shared by every resolution: the dial costs about
+	// seven times the lookup it carries (#1402).
+	authPool := authclient.NewPool(fc.AuthMasterAddr, authTLS,
+		cfg.AuthClient.PoolSizeOrDefault(), cfg.AuthClient.PoolIdleTimeout())
+	defer authPool.Close() //nolint:errcheck
+
 	chain, err := language.NewMultiChain(languagesOr(fc.Languages, "en"), fc.LanguageFilters, fc.LanguageFiltersOverride,
 		fc.LanguageTokenMaxLen, fc.LanguageAddressMaxLen, fc.DetectionMinRunes)
 	if err != nil {
@@ -109,7 +115,7 @@ func main() {
 		PrefetchDepth:     fc.PrefetchDepth,
 		PrefetchMaxBytes:  fc.PrefetchMaxBytes,
 		Index:             file.New(file.WithNoCreate()),
-		ResolveUser:       userResolver(fc.AuthMasterAddr, resolver, authTLS),
+		ResolveUser:       userResolver(fc.AuthMasterAddr, resolver, authPool),
 		Chain:             chain,
 		Build: buildmail.Options{
 			HeaderIncludes:       fc.HeaderIncludes,
@@ -179,21 +185,16 @@ func main() {
 // userResolver prefers the yarilo-auth master userdb (per-user storage
 // identity: home, mail location, INDEX= overrides); without an address it
 // falls back to the resolver's template defaults.
-func userResolver(masterAddr string, resolver *mailbox.Resolver, authTLS *tls.Config) func(string) (*mailbox.UserInfo, error) {
+func userResolver(masterAddr string, resolver *mailbox.Resolver, pool *authclient.Pool) func(string) (*mailbox.UserInfo, error) {
 	if masterAddr == "" {
 		return func(u string) (*mailbox.UserInfo, error) {
 			return resolver.UserInfo(u, ""), nil
 		}
 	}
 	return func(u string) (*mailbox.UserInfo, error) {
-		cl, err := authclient.Dial(masterAddr, authTLS)
-		if err != nil {
-			return nil, fmt.Errorf("fts: master dial: %w", err)
-		}
-		defer cl.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		ui, err := cl.Userdb(ctx, u)
+		ui, err := pool.Userdb(ctx, u)
 		if err != nil {
 			return nil, fmt.Errorf("fts: userdb %s: %w", u, err)
 		}

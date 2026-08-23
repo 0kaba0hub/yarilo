@@ -27,8 +27,16 @@ func TestStartupSitesDialWithAWait(t *testing.T) {
 	// beats a hang -- for a dependency that can be down for minutes, waiting
 	// inside the request is worse than the error.
 	exempt := map[string]string{
-		"app/yarilo-jmap/main.go": "per-request user resolver: refuse fast, do not hang the request",
-		"app/yarilo-fts/main.go":  "per-request user resolver: refuse fast, do not hang the request",
+		// Both now resolve through authclient.Pool, which dials lazily on the
+		// first lookup and refuses fast on the rest -- the same answer as
+		// before, from a connection that is usually already there (#1402).
+		// Still exempt because the dial they make is on the request path, not
+		// at startup: waiting there would hang a client instead of telling it.
+		"app/yarilo-jmap/main.go": "per-request user resolver via the pool: refuse fast, do not hang the request",
+		"app/yarilo-fts/main.go":  "per-request user resolver via the pool: refuse fast, do not hang the request",
+		// A measuring tool, run by hand against a service the operator can see.
+		// Waiting for auth would hide the very thing it is there to time.
+		"app/auth-bench/main.go": "measurement tool: time the dial, do not wait for it",
 		// A one-shot operator command, run by a person who is watching. Waiting
 		// thirty seconds before saying "auth is down" helps nobody: the
 		// operator can see it, fix it and run the command again.
