@@ -35,7 +35,7 @@ func (s *Server) emailState(h *userHandle) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("jmap: list folders: %w", err)
 	}
-	desc := jmapcore.Description{Kind: jmapcore.KindEmail}
+	desc := jmapcore.Description{Kind: jmapcore.KindEmail, Extra: []uint64{h.threadPosition()}}
 	for _, e := range entries {
 		if !e.Selectable {
 			continue
@@ -147,8 +147,8 @@ type folderMark struct {
 
 type folderMarks []folderMark
 
-func (fm folderMarks) description() jmapcore.Description {
-	desc := jmapcore.Description{Kind: jmapcore.KindEmail}
+func (fm folderMarks) description(threadPos uint64) jmapcore.Description {
+	desc := jmapcore.Description{Kind: jmapcore.KindEmail, Extra: []uint64{threadPos}}
 	for _, f := range fm {
 		desc.Entries = append(desc.Entries, jmapcore.StateEntry{
 			Key: f.key, Fields: emailStateFields(f.folder),

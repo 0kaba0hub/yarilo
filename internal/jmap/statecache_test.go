@@ -159,8 +159,8 @@ func TestStateCacheInvalidatesWhenTheLogShrinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cold marks: %v", err)
 	}
-	if folded != coldMarks.description().String() {
+	if folded != coldMarks.description(0).String() {
 		t.Errorf("state after the fold = %q, a cold read says %q -- the cache was not invalidated",
-			folded, coldMarks.description().String())
+			folded, coldMarks.description(0).String())
 	}
 }

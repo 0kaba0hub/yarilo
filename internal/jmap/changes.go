@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sort"
 
+	"github.com/yarilomail/yarilo/internal/userstate/threads"
 	"github.com/yarilomail/yarilo/pkg/authclient"
 	"github.com/yarilomail/yarilo/pkg/ftsproto"
 	"github.com/yarilomail/yarilo/pkg/jmapcore"
@@ -39,7 +41,8 @@ func (s *Server) emailChanges(_ context.Context, h *userHandle, accountID string
 	if err != nil {
 		return nil, storeFailure("Email/changes state failed", accountID, err)
 	}
-	newState := folders.description().String()
+	threadPos := h.threadPosition()
+	newState := folders.description(threadPos).String()
 
 	resp := &jmapcore.ChangesResponse{
 		AccountID: accountID, OldState: req.SinceState, NewState: newState,
@@ -53,6 +56,17 @@ func (s *Server) emailChanges(_ context.Context, h *userHandle, accountID string
 	for _, e := range old.Entries {
 		oldByKey[e.Key] = e
 	}
+
+	// A merge renames the threadId of every message in the swallowed
+	// conversation, and touches no folder's markers -- so the diff below
+	// cannot see it, and a client syncing Email objects would keep the old
+	// conversation for ever. RFC 8620 §5.2 wants those records in updated, and
+	// threadId is an Email property (#1425).
+	renamed, merr2 := s.threadRenamed(h, old, threadPos, accountID)
+	if merr2 != nil {
+		return nil, merr2
+	}
+	resp.Updated = append(resp.Updated, renamed...)
 
 	for _, f := range folders {
 		prev, known := oldByKey[f.key]
@@ -305,4 +319,74 @@ func (s *Server) emailQueryChanges(_ context.Context, _ *userHandle, accountID s
 		return nil, merr
 	}
 	return nil, cannotCalculate("this server does not track query results; run the query again")
+}
+
+// threadPosition is the account's position in its threading log, carried in
+// the Email state so a merge is visible to a client syncing Email objects.
+//
+// Zero when threading is off or the sidecar has not been built: an account
+// that never moves this component behaves exactly as it did before threading,
+// which is the state of every account the migration step has not reached.
+func (h *userHandle) threadPosition() uint64 {
+	if h.threads == nil {
+		return 0
+	}
+	path := threads.PathFor(h.info)
+	if path == "" {
+		return 0
+	}
+	state, err := h.threads.Get(h.info.Username, path)
+	if err != nil {
+		return 0
+	}
+	return uint64(state.Head())
+}
+
+// threadRenamed lists the messages whose threadId changed since the client's
+// state, by replaying the merges recorded in the log tail.
+//
+// The members come from the CURRENT state rather than from the tail alone: a
+// message merged long ago and moved again since must still be named once, and
+// the surviving conversation is where all of them are now.
+func (s *Server) threadRenamed(h *userHandle, old jmapcore.Description, now uint64, accountID string) ([]string, *jmapcore.MethodError) {
+	if h.threads == nil || len(old.Extra) != 1 {
+		return nil, nil
+	}
+	since := old.Extra[0]
+	if since == now {
+		return nil, nil
+	}
+	if since > now {
+		// The log is shorter than the client's position: compacted, and the
+		// merges that would answer are folded away.
+		return nil, cannotCalculate("the threading history was compacted past that state")
+	}
+	path := threads.PathFor(h.info)
+	ch, err := threads.ChangesSince(path, int(since))
+	if err != nil {
+		return nil, storeFailure("Email/changes threads", accountID, err)
+	}
+	if len(ch.Destroyed) == 0 {
+		// New messages moved the position; they are already reported by the
+		// folder markers, so nothing to add.
+		return nil, nil
+	}
+	state, gerr := h.threads.Get(h.info.Username, path)
+	if gerr != nil {
+		return nil, storeFailure("Email/changes threads", accountID, gerr)
+	}
+	seen := map[string]bool{}
+	var out []string
+	state.Read(func(v threads.View) {
+		for _, dead := range ch.Destroyed {
+			for _, id := range v.Members(dead) {
+				if !seen[id] {
+					seen[id] = true
+					out = append(out, id)
+				}
+			}
+		}
+	})
+	sort.Strings(out)
+	return out, nil
 }

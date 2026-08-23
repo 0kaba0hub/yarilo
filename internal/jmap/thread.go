@@ -40,10 +40,14 @@ func (s *Server) threadGet(_ context.Context, h *userHandle, accountID string, a
 	if err != nil {
 		return nil, storeFailure("Thread/get", accountID, err)
 	}
+	state, serr := h.threadState()
+	if serr != nil {
+		return nil, storeFailure("Thread/get state", accountID, serr)
+	}
 	props := propsOfGet(req)
 	resp := jmapcore.GetResponse[any]{
 		AccountID: accountID,
-		State:     "0",
+		State:     state,
 		List:      []any{},
 		NotFound:  []string{},
 	}
@@ -126,4 +130,90 @@ func (h *userHandle) threadOf(emailID string) string {
 		return id
 	}
 	return emailID
+}
+
+// threadState is the account's conversation state: a position in the sidecar
+// log, versioned like the others.
+//
+// A position rather than a description of folders, because a conversation is
+// not owned by a folder -- and because the log already records what happened,
+// so the records between two positions ARE the answer. This is the one object
+// type whose changes need no diffing.
+func (h *userHandle) threadState() (string, error) {
+	if h.threads == nil {
+		return jmapcore.Description{Kind: jmapcore.KindThread, Extra: []uint64{0}}.String(), nil
+	}
+	path := threads.PathFor(h.info)
+	if path == "" {
+		return jmapcore.Description{Kind: jmapcore.KindThread, Extra: []uint64{0}}.String(), nil
+	}
+	state, err := h.threads.Get(h.info.Username, path)
+	if err != nil {
+		return "", err
+	}
+	return jmapcore.Description{Kind: jmapcore.KindThread, Extra: []uint64{uint64(state.Head())}}.String(), nil
+}
+
+// threadChanges implements Thread/changes (RFC 8621 §3.2).
+//
+// A merge is reported as the swallowed conversation DESTROYED and the
+// surviving one UPDATED. That is the client's only way to learn that an id it
+// holds names nothing any more -- a merge renames the thread of every message
+// that was in the swallowed one, and silence would leave the old conversation
+// in its list for ever.
+func (s *Server) threadChanges(_ context.Context, h *userHandle, accountID string, args json.RawMessage) (any, *jmapcore.MethodError) {
+	var req jmapcore.ChangesRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return nil, &jmapcore.MethodError{Type: jmapcore.ErrInvalidArguments, Description: err.Error()}
+	}
+	if merr := checkAccount(req.AccountID, accountID); merr != nil {
+		return nil, merr
+	}
+	desc, err := jmapcore.ParseDescription(req.SinceState, jmapcore.KindThread)
+	if err != nil || len(desc.Extra) != 1 {
+		// A state from another format version, or from another object type.
+		// The client resyncs rather than being handed a diff of a layout we
+		// misread.
+		return nil, cannotCalculate("that state was not issued by this server, or predates its format")
+	}
+	since := int(desc.Extra[0])
+
+	if h.threads == nil {
+		// Threading is off: nothing has changed and nothing ever will until it
+		// is on. Saying so beats refusing, which would send a client into a
+		// resync loop against an account that has no conversations to sync.
+		return jmapcore.ChangesResponse{
+			AccountID: accountID, OldState: req.SinceState, NewState: req.SinceState,
+			Created: []string{}, Updated: []string{}, Destroyed: []string{},
+		}, nil
+	}
+	path := threads.PathFor(h.info)
+	ch, cerr := threads.ChangesSince(path, since)
+	if cerr != nil {
+		return nil, storeFailure("Thread/changes", accountID, cerr)
+	}
+	if ch.Head < since {
+		// The log is shorter than the client's position: it was compacted, and
+		// the records that would answer are folded away.
+		return nil, cannotCalculate("the threading history was compacted past that state")
+	}
+	newState := jmapcore.Description{Kind: jmapcore.KindThread, Extra: []uint64{uint64(ch.Head)}}.String()
+	if merr := capChanges(req.MaxChanges, len(ch.Created)+len(ch.Updated)+len(ch.Destroyed)); merr != nil {
+		return nil, merr
+	}
+	return jmapcore.ChangesResponse{
+		AccountID: accountID,
+		OldState:  req.SinceState,
+		NewState:  newState,
+		Created:   nonNil(ch.Created),
+		Updated:   nonNil(ch.Updated),
+		Destroyed: nonNil(ch.Destroyed),
+	}, nil
+}
+
+func nonNil(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
 }

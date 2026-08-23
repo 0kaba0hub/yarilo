@@ -30,6 +30,10 @@ const stateVersion = 2
 const (
 	KindEmail   = 'e'
 	KindMailbox = 'm'
+	// KindThread states carry no per-folder entries at all: a conversation is
+	// not owned by a folder, and its history is the sidecar log, so the whole
+	// state is a position in it.
+	KindThread = 't'
 )
 
 var (
