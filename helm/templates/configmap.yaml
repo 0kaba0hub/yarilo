@@ -897,6 +897,21 @@ data:
       locks_client_startup_wait: {{ .Values.components.locks.client.startup_wait | default 30 | int64 }}
     {{- end }}
 
+    ## How components talk to the yarilo-auth MASTER listener (userdb lookups).
+    ## One section rather than a pair of knobs per consumer: pooling is a
+    ## property of the client, not of whoever calls it.
+    auth_client:
+      ## Master-protocol connections kept open per process for userdb lookups.
+      ## The dial costs about seven times the lookup it carries, so a pool is
+      ## the difference between paying it once and paying it per request.
+      ## Zero selects the default; NEGATIVE restores a connection per lookup,
+      ## which is the rollback for this behaviour without a release.
+      auth_client_pool_size: {{ .Values.components.auth.client.pool_size | default 0 | int64 }}
+      ## Closes a pooled connection that has gone unused, so a process that
+      ## resolved nobody for an hour is not holding one open. Zero selects the
+      ## default (300s); negative never evicts.
+      auth_client_pool_idle_timeout: {{ .Values.components.auth.client.pool_idle_timeout | default 0 | int64 }}
+
     director_service:
       listen: {{ printf ":%d" (int .Values.components.director.directorPort) | quote }}
       shutdown:

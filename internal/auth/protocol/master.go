@@ -186,6 +186,12 @@ func (s *MasterServer) handleConn(conn net.Conn) {
 			// Client version handshake, ignored (any 1.x accepted).
 		case "CPID":
 			// Client pid notice, informational, no reply.
+		case "NOOP":
+			// Liveness only: a pooled client probes a connection that has been
+			// quiet before handing it out, rather than discovering the peer is
+			// gone by failing a real lookup (#1402).
+			noteMasterRequest("NOOP")
+			fmt.Fprintf(conn, "OK\t%s\n", parseID(fields))
 		case "USER":
 			noteMasterRequest("USER")
 			s.handleUser(conn, fields)

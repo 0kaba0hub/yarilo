@@ -35,6 +35,7 @@ type Config struct {
 	LMTPLoginService   LMTPLoginServiceConfig       `koanf:"lmtp_login_service"`
 	LocksService       LocksServiceConfig           `koanf:"locks_service"`
 	FTS                FTSConfig                    `koanf:"fts"`
+	AuthClient         AuthClientConfig             `koanf:"auth_client"`
 	LocksClient        LocksClientConfig            `koanf:"locks_client"`
 	Storage            StorageConfig                `koanf:"storage"`
 	Namespaces         []NamespaceConfig            `koanf:"namespaces"`
@@ -957,6 +958,60 @@ func (c AuthServiceConfig) ClientAddr() string {
 // service. Empty Mode disables cross-process locking — single-process tests
 // and CLI dev runs. Production k8s sets Mode=remote with one or more
 // Endpoints pointing at the yarilo-locks ClusterIP Service.
+// AuthClientConfig tunes how components talk to the yarilo-auth MASTER
+// listener. One section rather than a pair of knobs in every consumer: the
+// pooling behaviour is a property of the client, not of whoever happens to
+// call it, and the master ADDRESS is already spelled four times across
+// sections (#994) without this making it worse.
+type AuthClientConfig struct {
+	// PoolSize is how many master-protocol connections a process keeps open
+	// for userdb lookups.
+	//
+	// Zero selects the default; negative disables pooling and restores the
+	// connection-per-lookup behaviour -- so a rollback is a config change, not
+	// a release. The dial costs about seven times the lookup it carries
+	// (#1402), which is what the pool exists to stop paying per request.
+	PoolSize int `koanf:"auth_client_pool_size"`
+	// PoolIdleTimeoutSecs closes a pooled connection that has gone unused,
+	// so a process that resolved nobody for an hour is not holding a
+	// connection to auth. Zero selects the default; negative disables
+	// eviction. The default matches fts_handle_idle_timeout and the
+	// reference's own cache timeout -- the same idea about an idle handle
+	// holding a resource somebody else would rather have.
+	PoolIdleTimeoutSecs int `koanf:"auth_client_pool_idle_timeout"`
+}
+
+// DefaultAuthPoolSize and DefaultAuthPoolIdleTimeout are the built-in pooling
+// defaults. The size is small on purpose: lookups are serialised per
+// connection and take under a millisecond, so a handful covers a busy backend
+// without holding connections auth has to keep accepting.
+const (
+	DefaultAuthPoolSize        = 4
+	DefaultAuthPoolIdleTimeout = 300 * time.Second
+)
+
+// PoolSizeOrDefault reports the pool size to use, with negative meaning "no
+// pool".
+func (c AuthClientConfig) PoolSizeOrDefault() int {
+	if c.PoolSize == 0 {
+		return DefaultAuthPoolSize
+	}
+	return c.PoolSize
+}
+
+// PoolIdleTimeout reports the eviction period, with negative meaning "never
+// evict".
+func (c AuthClientConfig) PoolIdleTimeout() time.Duration {
+	switch {
+	case c.PoolIdleTimeoutSecs == 0:
+		return DefaultAuthPoolIdleTimeout
+	case c.PoolIdleTimeoutSecs < 0:
+		return 0
+	default:
+		return time.Duration(c.PoolIdleTimeoutSecs) * time.Second
+	}
+}
+
 type LocksClientConfig struct {
 	Mode      string   `koanf:"mode"`      // remote | embedded | ""
 	Endpoints []string `koanf:"endpoints"` // remote: ["yarilo-locks.svc:9104", ...]

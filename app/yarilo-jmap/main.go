@@ -213,6 +213,11 @@ func buildStorage(cfg *config.Config, intTLS *tls.Config) (*jmap.Storage, error)
 		return nil, fmt.Errorf("jmap: locks_client is not configured; set mode remote (or embedded for a single-node dev run)")
 	}
 	resolver := backend.BuildResolver(cfg)
+	// One pool per process, shared by every request's resolution. JMAP opens
+	// the store per request, so without it every request that touches mail
+	// pays a dial that costs seven times the lookup (#1402).
+	authPool := authclient.NewPool(cfg.JMAPService.AuthMasterAddr, intTLS,
+		cfg.AuthClient.PoolSizeOrDefault(), cfg.AuthClient.PoolIdleTimeout())
 	// The index takes the locker too. OpenFolder is not purely a read: a folder
 	// with no index yet is created, migrated and log-compacted on open, and
 	// file.withDistLock runs those unguarded when no locker is wired. That
@@ -224,7 +229,7 @@ func buildStorage(cfg *config.Config, intTLS *tls.Config) (*jmap.Storage, error)
 			return backend.BuildMailboxByDriver(driver, cfg.Storage, locker)
 		},
 		Index:              file.New(idxOpts...),
-		ResolveUser:        userResolver(cfg.JMAPService.AuthMasterAddr, resolver, intTLS),
+		ResolveUser:        userResolver(cfg.JMAPService.AuthMasterAddr, resolver, intTLS, authPool),
 		Locker:             locker,
 		SpecialUseDefaults: cfg.Protocol.IMAP.SpecialUseDefaults,
 	}, nil
@@ -233,21 +238,16 @@ func buildStorage(cfg *config.Config, intTLS *tls.Config) (*jmap.Storage, error)
 // userResolver prefers the yarilo-auth master userdb, which carries the
 // per-user storage identity (home, mail location, INDEX= overrides). Without an
 // address it falls back to the resolver's template defaults.
-func userResolver(masterAddr string, resolver *mailbox.Resolver, authTLS *tls.Config) func(string) (*mailbox.UserInfo, error) {
+func userResolver(masterAddr string, resolver *mailbox.Resolver, authTLS *tls.Config, pool *authclient.Pool) func(string) (*mailbox.UserInfo, error) {
 	if masterAddr == "" {
 		return func(u string) (*mailbox.UserInfo, error) {
 			return resolver.UserInfo(u, ""), nil
 		}
 	}
 	return func(u string) (*mailbox.UserInfo, error) {
-		cl, err := authclient.Dial(masterAddr, authTLS)
-		if err != nil {
-			return nil, fmt.Errorf("jmap: master dial: %w", err)
-		}
-		defer cl.Close() //nolint:errcheck
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		ui, err := cl.Userdb(ctx, u)
+		ui, err := pool.Userdb(ctx, u)
 		if err != nil {
 			return nil, fmt.Errorf("jmap: userdb %s: %w", u, err)
 		}
