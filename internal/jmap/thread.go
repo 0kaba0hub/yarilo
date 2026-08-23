@@ -141,17 +141,28 @@ func (h *userHandle) threadOf(emailID string) string {
 // type whose changes need no diffing.
 func (h *userHandle) threadState() (string, error) {
 	if h.threads == nil {
-		return jmapcore.Description{Kind: jmapcore.KindThread, Extra: []uint64{0}}.String(), nil
+		return threadStateString(0, 0), nil
 	}
 	path := threads.PathFor(h.info)
 	if path == "" {
-		return jmapcore.Description{Kind: jmapcore.KindThread, Extra: []uint64{0}}.String(), nil
+		return threadStateString(0, 0), nil
 	}
 	state, err := h.threads.Get(h.info.Username, path)
 	if err != nil {
 		return "", err
 	}
-	return jmapcore.Description{Kind: jmapcore.KindThread, Extra: []uint64{uint64(state.Head())}}.String(), nil
+	return threadStateString(state.Generation(), uint64(state.Head())), nil
+}
+
+// threadStateString pairs the compaction generation with the position.
+//
+// The position alone is a number that stays valid across a compaction while
+// meaning something else entirely: a client on record 50 of a log that was
+// rewritten to 60 records would be handed records 51..60 of a different
+// history as "what changed". The generation is what turns that into a refusal
+// -- the same protection the format version gives across builds, per account.
+func threadStateString(generation, position uint64) string {
+	return jmapcore.Description{Kind: jmapcore.KindThread, Extra: []uint64{generation, position}}.String()
 }
 
 // threadChanges implements Thread/changes (RFC 8621 §3.2).
@@ -170,13 +181,13 @@ func (s *Server) threadChanges(_ context.Context, h *userHandle, accountID strin
 		return nil, merr
 	}
 	desc, err := jmapcore.ParseDescription(req.SinceState, jmapcore.KindThread)
-	if err != nil || len(desc.Extra) != 1 {
+	if err != nil || len(desc.Extra) != 2 {
 		// A state from another format version, or from another object type.
 		// The client resyncs rather than being handed a diff of a layout we
 		// misread.
 		return nil, cannotCalculate("that state was not issued by this server, or predates its format")
 	}
-	since := int(desc.Extra[0])
+	sinceGen, since := desc.Extra[0], int(desc.Extra[1])
 
 	if h.threads == nil {
 		// Threading is off: nothing has changed and nothing ever will until it
@@ -192,12 +203,13 @@ func (s *Server) threadChanges(_ context.Context, h *userHandle, accountID strin
 	if cerr != nil {
 		return nil, storeFailure("Thread/changes", accountID, cerr)
 	}
-	if ch.Head < since {
-		// The log is shorter than the client's position: it was compacted, and
-		// the records that would answer are folded away.
+	if ch.Generation != sinceGen || ch.Head < since {
+		// Either the log was rewritten since that state -- so the position
+		// names records of a history that no longer exists -- or it is shorter
+		// than the client's position outright.
 		return nil, cannotCalculate("the threading history was compacted past that state")
 	}
-	newState := jmapcore.Description{Kind: jmapcore.KindThread, Extra: []uint64{uint64(ch.Head)}}.String()
+	newState := threadStateString(ch.Generation, uint64(ch.Head))
 	if merr := capChanges(req.MaxChanges, len(ch.Created)+len(ch.Updated)+len(ch.Destroyed)); merr != nil {
 		return nil, merr
 	}

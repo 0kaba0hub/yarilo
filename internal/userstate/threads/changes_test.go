@@ -1,6 +1,7 @@
 package threads
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -109,4 +110,69 @@ func TestChangesSince(t *testing.T) {
 			t.Errorf("head = %d, want 0", ch.Head)
 		}
 	})
+}
+
+// Compaction rewrites the log, so a position from before it names records of a
+// history that no longer exists -- and the number stays valid, which is what
+// makes this dangerous rather than merely wrong. Before the generation
+// existed, this input produced a confident diff of unrelated records.
+func TestAPositionFromBeforeACompactionIsDetectable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	st, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Enough records that the compacted file is not shorter than the client's
+	// position: a shorter file is caught by the head check alone, and that
+	// case would hide the one under test.
+	for i := 0; i < 6; i++ {
+		mustAppend(t, path, st, Placement{
+			GUID:       fmt.Sprintf("g%d", i),
+			MessageID:  fmt.Sprintf("m%d@x", i),
+			SubjectKey: fmt.Sprintf("subject %d", i),
+			ThreadID:   fmt.Sprintf("g%d", i),
+		})
+	}
+	clientAt := 4
+	genBefore := st.Generation()
+
+	if err := Compact(path, st); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := ChangesSince(path, clientAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Head < clientAt {
+		t.Fatalf("the compacted file is shorter than the client's position (%d < %d): "+
+			"this run cannot show the generation doing anything", ch.Head, clientAt)
+	}
+	if ch.Generation == genBefore {
+		t.Errorf("generation = %d, unchanged by a compaction: a client's stale position would read as valid", ch.Generation)
+	}
+}
+
+// And a position from the current generation still answers, so the check does
+// not simply refuse everything after the first compaction.
+func TestAPositionFromTheCurrentGenerationStillAnswers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	st, _ := Load(path)
+	mustAppend(t, path, st, Placement{GUID: "g1", MessageID: "a@x", ThreadID: "g1"})
+	if err := Compact(path, st); err != nil {
+		t.Fatal(err)
+	}
+	at := st.Head()
+	gen := st.Generation()
+	mustAppend(t, path, st, Placement{GUID: "g2", MessageID: "b@x", ThreadID: "g2"})
+
+	ch, err := ChangesSince(path, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Generation != gen {
+		t.Errorf("generation = %d, want %d: an append must not look like a compaction", ch.Generation, gen)
+	}
+	if len(ch.Created) != 1 || ch.Created[0] != "g2" {
+		t.Errorf("created = %v, want [g2]", ch.Created)
+	}
 }

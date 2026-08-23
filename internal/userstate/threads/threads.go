@@ -46,8 +46,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // FileName is the sidecar's name in the user's control directory.
@@ -59,6 +61,16 @@ const (
 	recSubject = "S"
 	recGUID    = "G"
 	recAlias   = "A"
+	// recGen heads a compacted file: C<TAB><generation><TAB><unix-seconds>.
+	//
+	// Compaction rewrites the log, so a position in the old file means nothing
+	// in the new one -- and a client's position would still be a valid number,
+	// pointing at unrelated records. The generation is what makes that
+	// detectable instead of a confident diff of the wrong history.
+	//
+	// A build that predates this record skips it as an unknown type and counts
+	// it like any other, so positions stay comparable in both directions.
+	recGen = "C"
 )
 
 // State is the folded contents of the log: what the account knows about its
@@ -85,11 +97,13 @@ type State struct {
 	mu sync.RWMutex
 	// records is how many log records this state folded, and therefore the
 	// account's threading state string.
-	records   int
-	byMessage map[string]string
-	bySubject map[string]string
-	byGUID    map[string]string
-	aliasOf   map[string]string
+	records int
+	// generation counts compactions. A position is meaningful only within one.
+	generation uint64
+	byMessage  map[string]string
+	bySubject  map[string]string
+	byGUID     map[string]string
+	aliasOf    map[string]string
 }
 
 // Empty is the state of an account whose sidecar does not exist yet -- which
@@ -134,6 +148,10 @@ func Load(path string) (*State, error) {
 			st.byGUID[key] = val
 		case recAlias:
 			st.aliasOf[key] = val
+		case recGen:
+			if g, perr := strconv.ParseUint(key, 10, 64); perr == nil {
+				st.generation = g
+			}
 		}
 		st.records++
 	}
@@ -380,6 +398,10 @@ func Compact(path string, s *State) error {
 	// Sorted, so two processes compacting the same state produce byte-identical
 	// files -- the same rule the subscriptions file follows.
 	sort.Strings(recs)
+	// The generation header goes first and is not sorted with the rest: a
+	// reader has to know which history it is reading before it reads any of it.
+	gen := s.generation + 1
+	recs = append([]string{record(recGen, strconv.FormatUint(gen, 10), strconv.FormatInt(time.Now().Unix(), 10))}, recs...)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("threads: mkdir: %w", err)
@@ -429,6 +451,8 @@ func Compact(path string, s *State) error {
 	for old := range s.aliasOf {
 		delete(s.aliasOf, old)
 	}
+	s.generation = gen
+	s.records = len(recs)
 	return nil
 }
 
@@ -478,6 +502,18 @@ type Changes struct {
 	Destroyed []string
 	// Head is the state to report back, and the one to ask from next time.
 	Head int
+	// Generation is the compaction these positions belong to. A caller holding
+	// a position from another one must refuse rather than diff: the records it
+	// would read describe a file that no longer exists.
+	Generation uint64
+}
+
+// Generation is how many times this account's log has been compacted. A
+// position from another generation describes a file that no longer exists.
+func (s *State) Generation() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.generation
 }
 
 // Head is the account's current threading state: how many records its log
@@ -530,6 +566,12 @@ func ChangesSince(path string, since int) (Changes, error) {
 		}
 		n++
 		typ, key, val := fields[0], fields[1], fields[2]
+		if typ == recGen {
+			if g, perr := strconv.ParseUint(key, 10, 64); perr == nil {
+				ch.Generation = g
+			}
+			continue
+		}
 		if n <= since {
 			if typ == recGUID {
 				known[val] = true

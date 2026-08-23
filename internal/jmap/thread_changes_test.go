@@ -214,3 +214,35 @@ func TestThreadChangesRefusesAStateItDidNotIssue(t *testing.T) {
 		}
 	}
 }
+
+// RFC 8620 §5.2: a record created since the client's state belongs in created
+// and nowhere else. The overlap here is not hypothetical -- the late message
+// that merges two conversations is new to its folder AND a member of the
+// conversation whose thread was renamed, so it reaches both lists unless the
+// answer is deduplicated.
+func TestAMessageIsNeverBothCreatedAndUpdated(t *testing.T) {
+	ts := newThreadedServer(t)
+	ts.deliver(t, "Message-ID: <a@x>\r\nSubject: One\r\n\r\nbody\r\n")
+	ts.deliver(t, "Message-ID: <b@x>\r\nSubject: Two\r\n\r\nbody\r\n")
+	since := emailStateOf(t, ts.srv)
+
+	late := ts.deliver(t, "Message-ID: <c@x>\r\nReferences: <a@x> <b@x>\r\nSubject: Re: One\r\n\r\nbody\r\n")
+
+	payload := ts.call(t, "Email/changes", fmt.Sprintf(`{"accountId":%q,"sinceState":%q}`, testUser, since))
+	created := idList(t, payload, "created")
+	updated := idList(t, payload, "updated")
+
+	var isCreated, isUpdated bool
+	for _, id := range created {
+		isCreated = isCreated || id == late
+	}
+	for _, id := range updated {
+		isUpdated = isUpdated || id == late
+	}
+	if !isCreated {
+		t.Errorf("created = %v, want the new message %q", created, late)
+	}
+	if isUpdated {
+		t.Errorf("updated = %v also names %q, which was created since that state", updated, late)
+	}
+}
