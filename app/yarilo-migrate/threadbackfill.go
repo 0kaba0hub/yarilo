@@ -179,7 +179,7 @@ func threadUserLocked(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, 
 	}
 
 	before := st.Messages
-	state, err := buildSidecar(box, idx, names, path, o, user, st)
+	state, err := buildSidecar(box, idx, names, path, user, st)
 	if err != nil {
 		return err
 	}
@@ -215,7 +215,7 @@ func threadUserLocked(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, 
 // mailbox in whatever order the filesystem offered would produce different
 // thread ids from the same history -- and every client's cached conversation
 // would be wrong after a rerun.
-func buildSidecar(box mailbox.UserMailbox, idx mailbox.UserIndex, names []string, path string, o threadOpts, user string, st *threadStats) (*threads.State, error) {
+func buildSidecar(box mailbox.UserMailbox, idx mailbox.UserIndex, names []string, path, user string, st *threadStats) (*threads.State, error) {
 	ordered := append([]string(nil), names...)
 	sort.Strings(ordered)
 

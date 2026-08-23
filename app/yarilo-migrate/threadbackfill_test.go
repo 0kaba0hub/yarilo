@@ -154,7 +154,7 @@ func TestTheFolderOrderDoesNotDecideTheAnswer(t *testing.T) {
 
 		path := filepath.Join(t.TempDir(), "threads")
 		var st threadStats
-		if _, err := buildSidecar(box, ui, names, path, backfillOpts(root, true), info.Username, &st); err != nil {
+		if _, err := buildSidecar(box, ui, names, path, info.Username, &st); err != nil {
 			t.Fatalf("build: %v", err)
 		}
 		body, err := os.ReadFile(path + ".rebuild")
