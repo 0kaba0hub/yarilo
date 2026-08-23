@@ -36,6 +36,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/userstate/acl"
 	"github.com/yarilomail/yarilo/internal/userstate/specialuse"
 	"github.com/yarilomail/yarilo/internal/userstate/subs"
+	"github.com/yarilomail/yarilo/pkg/authclient"
 	"github.com/yarilomail/yarilo/pkg/dict"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -70,8 +71,11 @@ type Options struct {
 	PreambleTLS *tls.Config
 	// MasterAddr is the yarilo-auth master-protocol address used for userdb
 	// lookups after token verification.
-	MasterAddr         string
-	MasterTLS          *tls.Config
+	MasterAddr string
+	MasterTLS  *tls.Config
+	// MasterPool serves the session userdb lookup from a shared connection
+	// instead of dialling one per session (#1419).
+	MasterPool         *authclient.Pool
 	DisablePlainAuth   bool
 	IdleNotifyInterval time.Duration
 	MaxLineLength      int
@@ -400,6 +404,7 @@ func (s *Server) wrapProxy(ln net.Listener) net.Listener {
 			AuthTLS:         s.opts.AuthTLS,
 			MasterAddr:      s.opts.MasterAddr,
 			MasterTLS:       s.opts.MasterTLS,
+			MasterPool:      s.opts.MasterPool,
 			ExpectedService: "imap",
 			TLSConfig:       s.opts.PreambleTLS,
 		}

@@ -16,6 +16,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/auth/protocol"
 	"github.com/yarilomail/yarilo/internal/connlimit"
 	"github.com/yarilomail/yarilo/internal/loginproto"
+	"github.com/yarilomail/yarilo/pkg/authclient"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -42,8 +43,11 @@ type Options struct {
 	AuthTLS     *tls.Config
 	PreambleTLS *tls.Config // internal mTLS on the data path (#824)
 	// MasterAddr is the host:port of yarilo-auth master protocol for userdb lookups.
-	MasterAddr       string
-	MasterTLS        *tls.Config
+	MasterAddr string
+	MasterTLS  *tls.Config
+	// MasterPool serves the session userdb lookup from a shared connection
+	// instead of dialling one per session (#1419).
+	MasterPool       *authclient.Pool
 	DisablePlainAuth bool // reject USER/PASS without TLS
 	// POP3-specific behaviour
 	NoFlagUpdates  bool               // pop3_no_flag_updates: skip \Seen on RETR
@@ -140,6 +144,7 @@ func (s *Server) wrapListeners(ln net.Listener) net.Listener {
 			AuthTLS:         s.opts.AuthTLS,
 			MasterAddr:      s.opts.MasterAddr,
 			MasterTLS:       s.opts.MasterTLS,
+			MasterPool:      s.opts.MasterPool,
 			ExpectedService: "pop3",
 			TLSConfig:       s.opts.PreambleTLS,
 		}

@@ -208,6 +208,16 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		authTLS = t
 	}
+
+	// One master-protocol pool for the whole process, shared by every
+	// protocol's session handshake. Each handshake resolves the user's storage
+	// identity, and it used to dial for it: 2.6ms of connection for 0.3ms of
+	// lookup, on every session (#1419).
+	var masterPool *authclient.Pool
+	if masterAddr != "" {
+		masterPool = authclient.NewPool(masterAddr, authTLS,
+			cfg.AuthClient.PoolSizeOrDefault(), cfg.AuthClient.PoolIdleTimeout())
+	}
 	// mTLS server config for the login->backend data path: the PreambleListener
 	// verifies the login's client cert against the internal CA before reading
 	// the YARILO preamble.
@@ -275,6 +285,7 @@ func New(cfg *config.Config) (*Server, error) {
 			AuthTLS:            authTLS,
 			PreambleTLS:        internalServerTLS,
 			MasterAddr:         masterAddr,
+			MasterPool:         masterPool,
 			MasterTLS:          authTLS,
 			IdleNotifyInterval: time.Duration(p.IdleNotifyInterval) * time.Second,
 			MaxLineLength:      p.MaxLineLength,
@@ -355,6 +366,7 @@ func New(cfg *config.Config) (*Server, error) {
 			AuthTLS:            authTLS,
 			PreambleTLS:        internalServerTLS,
 			MasterAddr:         masterAddr,
+			MasterPool:         masterPool,
 			MasterTLS:          authTLS,
 			NoFlagUpdates:      p.NoFlagUpdates,
 			ReuseXUIDL:         p.ReuseXUIDL,
@@ -478,6 +490,7 @@ func New(cfg *config.Config) (*Server, error) {
 			AuthTLS:         authTLS,
 			PreambleTLS:     internalServerTLS,
 			MasterAddr:      masterAddr,
+			MasterPool:      masterPool,
 			MasterTLS:       authTLS,
 			SieveExtensions: cfg.Sieve.SieveExtensions,
 			ScriptsDriver:   cfg.Sieve.ScriptsDriver,
