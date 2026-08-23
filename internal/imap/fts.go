@@ -2,6 +2,7 @@ package imap
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -165,6 +166,15 @@ func (s *session) prepareFTSSearch(criteria *imaplib.SearchCriteria, msgs []*mai
 		if o.ReadFallback {
 			return nil, nil
 		}
+		// A dependency of the FTS service being restarted is a wait, and the
+		// code has to say so as well as the text: a bare NO reads the same as
+		// an FTS that is broken for good, so a client stops asking for
+		// something that works again in seconds (#1409).
+		if errors.Is(err, ftsproto.ErrUnavailable) {
+			return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo,
+				Code: imaplib.ResponseCodeUnavailable,
+				Text: "Full-text search is temporarily unavailable, try again"}
+		}
 		return nil, &imaplib.Error{Type: imaplib.StatusResponseTypeNo,
 			Text: "Full-text search unavailable"}
 	}
@@ -215,10 +225,16 @@ func (s *session) ftsCatchUp(user string, mbox fts.MailboxRef, msgs []*mailbox.M
 	if err == nil && last >= maxUID {
 		return false, nil
 	}
+	// Kept across the branches below: whichever call failed, the answer at the
+	// end has to say whether it failed because the service could not reach a
+	// dependency.
+	var serviceErr error
 	if err != nil {
+		serviceErr = err
 		slog.Warn("imap: fts status failed", "user", user, "err", err)
-	} else if err := o.Client.Prepend(user, mbox, maxUID); err != nil {
-		slog.Warn("imap: fts prepend failed", "user", user, "err", err)
+	} else if perr := o.Client.Prepend(user, mbox, maxUID); perr != nil {
+		serviceErr = perr
+		slog.Warn("imap: fts prepend failed", "user", user, "err", perr)
 	} else {
 		timeout := o.Timeout
 		if timeout <= 0 {
@@ -256,6 +272,7 @@ func (s *session) ftsCatchUp(user string, mbox fts.MailboxRef, msgs []*mailbox.M
 			time.Sleep(250 * time.Millisecond)
 			cur, _, serr := o.Client.Status(user, mbox)
 			if serr != nil {
+				serviceErr = serr
 				reason = "status error"
 				break
 			}
@@ -297,6 +314,15 @@ func (s *session) ftsCatchUp(user string, mbox fts.MailboxRef, msgs []*mailbox.M
 	}
 	if o.ReadFallback {
 		return true, nil
+	}
+	// The same seam: the text already says "try again later", but only a code
+	// makes that true for a client rather than advice it cannot act on. The
+	// status/prepend errors above reach here from the same service, so an
+	// outage inside it is answered as one.
+	if errors.Is(serviceErr, ftsproto.ErrUnavailable) {
+		return false, &imaplib.Error{Type: imaplib.StatusResponseTypeNo,
+			Code: imaplib.ResponseCodeUnavailable,
+			Text: "Full-text search is temporarily unavailable, try again"}
 	}
 	return false, &imaplib.Error{Type: imaplib.StatusResponseTypeNo,
 		Text: "Mailbox is still being indexed, try again later"}

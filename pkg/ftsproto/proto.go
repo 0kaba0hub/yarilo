@@ -11,7 +11,7 @@
 //	> STATUS\t<user>\t<folder>\t<guid>\t<uidvalidity>\n
 //	> RESCAN\t<user>\t<folder>\t<guid>\t<uidvalidity>\n
 //	> OPTIMIZE\t<user>\n
-//	< OK[\t<payload>]\n | NO\t<message>\n
+//	< OK[\t<payload>]\n | NO\t<message>\n | NO\t<code>\t<message>\n
 //
 // LOOKUP's payload is base64(JSON fts.Result); STATUS's payload is
 // "<lastuid>\t<checksum>". Fields never contain TAB/LF (usernames and folder
@@ -22,6 +22,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -46,6 +47,16 @@ const (
 
 	replyOK = "OK"
 	replyNO = "NO"
+
+	// CodeUnavailable rides inside a NO, in a field of its own, rather than as
+	// a reply verb of its own.
+	//
+	// That choice is what makes a mixed rollout safe without ordering: a
+	// reader that does not know the code sees a NO whose text happens to start
+	// with a word, which is exactly what it did before. IMAP carries
+	// [UNAVAILABLE] inside NO for the same reason, so this is the shape we
+	// already answer clients with, one floor up (#1409).
+	CodeUnavailable = "UNAVAILABLE"
 )
 
 // Service is the operation surface both the wire server and the embedded
@@ -181,10 +192,31 @@ func (r *Remote) call(fields ...string) (string, error) {
 	case replyOK:
 		return rest, nil
 	case replyNO:
-		return "", fmt.Errorf("ftsproto: server: %s", rest)
+		return "", refusalError(rest)
 	default:
 		return "", fmt.Errorf("ftsproto: unexpected reply %q", line)
 	}
+}
+
+// ErrUnavailable marks an FTS failure that was a dependency of the service
+// being unreachable, not the service refusing. Recovered from the wire so the
+// classification survives the process boundary: a sentinel wrapped inside
+// yarilo-fts does not, which is why an outage used to reach clients as a bare
+// NO (#1409).
+var ErrUnavailable = errors.New("ftsproto: service unavailable")
+
+// refusalError turns the text after NO into an error, recovering a code when
+// one is present.
+//
+// Tolerant in both directions, deliberately. No code is the older shape and
+// keeps its exact behaviour. An unknown code is TEXT, not a parse error: a
+// reader that rejected codes it had not been taught would break on the next
+// one added, which is the failure this form exists to avoid.
+func refusalError(rest string) error {
+	if code, text, ok := strings.Cut(rest, "\t"); ok && code == CodeUnavailable {
+		return fmt.Errorf("ftsproto: server: %s: %w", text, ErrUnavailable)
+	}
+	return fmt.Errorf("ftsproto: server: %s", rest)
 }
 
 func (r *Remote) Index(user string, m fts.MailboxRef, maxUID uint32, maxRecent int) error {
