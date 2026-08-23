@@ -6,6 +6,7 @@ import (
 
 	"github.com/yarilomail/yarilo/internal/userstate/specialuse"
 	"github.com/yarilomail/yarilo/internal/userstate/subs"
+	"github.com/yarilomail/yarilo/internal/userstate/threads"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -22,6 +23,10 @@ type Storage struct {
 	// differs from the global one, as the other services do.
 	MailboxByDriver func(driver string) mailbox.MailboxBackend
 	Locker          locks.Locker
+	// Threads is the shared fold cache for the account threading sidecars.
+	// Nil disables threading, and the account reads as it did before the
+	// feature: every message its own conversation (#1425).
+	Threads *threads.Cache
 	// SpecialUseDefaults maps folder name to its attribute, from
 	// protocol.imap.imap_special_use_defaults. Per-user overrides win.
 	SpecialUseDefaults map[string]string
@@ -32,6 +37,7 @@ type Storage struct {
 // invalidation story that nothing here can supply.
 type userHandle struct {
 	info       *mailbox.UserInfo
+	threads    *threads.Cache
 	box        mailbox.UserMailbox
 	idx        mailbox.UserIndex
 	subs       *subs.Store
@@ -71,6 +77,7 @@ func (s *Storage) open(username string) (*userHandle, error) {
 		box:  s.mailboxFor(info).OpenUser(info),
 		idx:  s.Index.OpenUser(info),
 	}
+	h.threads = s.Threads
 	h.subs = subs.New(controlRoot(info), subsFile, username, username, s.Locker)
 	h.specialUse = specialuse.New(info.Home, username, username, s.Locker, s.SpecialUseDefaults)
 	return h, nil
