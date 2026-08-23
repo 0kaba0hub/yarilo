@@ -24,6 +24,7 @@ import (
 	goSmtp "github.com/emersion/go-smtp"
 	proxyproto "github.com/pires/go-proxyproto"
 
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
 	"github.com/yarilomail/yarilo/internal/cluster/proto"
 	"github.com/yarilomail/yarilo/internal/lmtpreply"
 	"github.com/yarilomail/yarilo/internal/loginproto"
@@ -63,6 +64,10 @@ type Options struct {
 	// AuthMasterAddr is the yarilo-auth master-protocol address used to issue
 	// SESSION tokens. Required for token issuance.
 	AuthMasterAddr string
+	// AuthMasterPool, when set, serves the master calls below from shared
+	// connections instead of one per LMTP session (#1423). Nil keeps the
+	// per-session dial, which is what a standalone or test wiring gets.
+	AuthMasterPool *authclient.Pool
 	// AuthMasterTLS optionally wraps the auth master dialer with mTLS.
 	AuthMasterTLS *tls.Config
 
@@ -402,18 +407,37 @@ func (s *session) ensureAuthClient() (*authclient.Client, error) {
 }
 
 func (s *session) issueToken(username, wardenID string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), masterCallTimeout)
+	defer cancel()
+
+	if s.opts.AuthMasterPool != nil {
+		tok, err := s.opts.AuthMasterPool.IssueSession(ctx, username, wardenID, s.peerIP)
+		if err != nil {
+			return "", fmt.Errorf("lmtplogin/auth: IssueSession: %w", err)
+		}
+		return tok, nil
+	}
+
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
 	c, err := s.ensureAuthClient()
 	if err != nil {
 		return "", err
 	}
-	tok, err := c.IssueSession(context.Background(), username, wardenID, s.peerIP)
+	tok, err := c.IssueSession(ctx, username, wardenID, s.peerIP)
 	if err != nil {
 		return "", fmt.Errorf("lmtplogin/auth: IssueSession: %w", err)
 	}
 	return tok, nil
 }
+
+// masterCallTimeout bounds one master call.
+//
+// It matters more with a pool than without: a per-session dial carried its own
+// bound, while a pooled connection to a peer that accepts and then says nothing
+// has none, and a delivery would wait for the kernel to give up (#1421 met the
+// same thing on the session handshake).
+const masterCallTimeout = 5 * time.Second
 
 // resolveDirectorTag looks up the per-recipient director_tag userdb field so a
 // shared login fleet can route different users to different tag-pools. Falls
@@ -423,14 +447,23 @@ func (s *session) resolveDirectorTag(username string) string {
 	if s.opts.AuthMasterAddr == "" {
 		return ""
 	}
-	s.authMu.Lock()
-	c, err := s.ensureAuthClient()
-	s.authMu.Unlock()
-	if err != nil {
-		slog.Debug("lmtplogin: director_tag lookup: auth dial failed", "user", username, "err", err)
-		return ""
+	ctx, cancel := context.WithTimeout(context.Background(), masterCallTimeout)
+	defer cancel()
+
+	var ui *protocol.UserInfo
+	var err error
+	if s.opts.AuthMasterPool != nil {
+		ui, err = s.opts.AuthMasterPool.Userdb(ctx, username)
+	} else {
+		s.authMu.Lock()
+		c, derr := s.ensureAuthClient()
+		s.authMu.Unlock()
+		if derr != nil {
+			slog.Debug("lmtplogin: director_tag lookup: auth dial failed", "user", username, "err", derr)
+			return ""
+		}
+		ui, err = c.Userdb(ctx, username)
 	}
-	ui, err := c.Userdb(context.Background(), username)
 	if err != nil {
 		slog.Debug("lmtplogin: director_tag lookup failed", "user", username, "err", err)
 		return ""
