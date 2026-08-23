@@ -826,7 +826,7 @@ func (s *session) recordThread(ui *mailbox.UserInfo, username string, guid [16]b
 		return
 	}
 	rec := func(context.Context) error {
-		_, err := s.opts.Threads.Record(username, path, hex.EncodeToString(guid[:]), raw)
+		_, err := s.opts.Threads.Record(username, path, mailbox.FormatObjectID(guid), raw)
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), threadLockTimeout)

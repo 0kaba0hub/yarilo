@@ -113,10 +113,6 @@ func TestAReaderNeverSeesAPlacementWithoutItsMerge(t *testing.T) {
 	}()
 
 	for i := 0; i < 100; i++ {
-		st, lerr := Load(path)
-		if lerr != nil {
-			t.Fatal(lerr)
-		}
 		p := Placement{
 			GUID: fmt.Sprintf("g%d", i+3), MessageID: fmt.Sprintf("late%d@x", i),
 			ThreadID: "g1", MergedFrom: []string{"g2"},
@@ -124,7 +120,6 @@ func TestAReaderNeverSeesAPlacementWithoutItsMerge(t *testing.T) {
 		if aerr := Append(path, state, p); aerr != nil {
 			t.Fatal(aerr)
 		}
-		_ = st
 	}
 	close(stop)
 	wg.Wait()
