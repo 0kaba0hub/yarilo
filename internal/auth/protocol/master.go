@@ -158,6 +158,7 @@ func (s *MasterServer) Serve(ctx context.Context, ln net.Listener) error {
 // connection run serially; concurrency comes from opening multiple connections.
 func (s *MasterServer) handleConn(conn net.Conn) {
 	defer conn.Close()
+	noteMasterConn()
 	cuid := s.connUID.Add(1)
 	rd := bufio.NewReaderSize(conn, maxLine)
 
@@ -186,18 +187,27 @@ func (s *MasterServer) handleConn(conn net.Conn) {
 		case "CPID":
 			// Client pid notice, informational, no reply.
 		case "USER":
+			noteMasterRequest("USER")
 			s.handleUser(conn, fields)
 		case "SESSION":
+			noteMasterRequest("SESSION")
 			s.handleSession(conn, fields)
 		case "PASS":
 			// Declared in the wire surface; not yet implemented.
+			noteMasterRequest("PASS")
 			id := parseID(fields)
 			fmt.Fprintf(conn, "FAIL\t%s\treason=PASS not implemented (Phase AUTH-2)\n", id)
 		case "LIST":
+			noteMasterRequest("LIST")
 			s.handleList(conn, fields)
 		case "CACHE-FLUSH":
+			noteMasterRequest("CACHE-FLUSH")
 			s.handleCacheFlush(conn, fields)
 		default:
+			// Counted under one constant label, never under the verb the
+			// client sent: a label taken from the wire lets any caller grow
+			// the metric's cardinality without limit.
+			noteMasterRequest("unknown")
 			id := parseID(fields)
 			fmt.Fprintf(conn, "FAIL\t%s\treason=unknown command %q\n", id, fields[0])
 		}
