@@ -1,16 +1,13 @@
 name: Trivy — vulnerability & malware scan
 
-## Weekly, and on a minor release. NOT on every merge: we live on patch
-## versions, so a push trigger fired on essentially every merge while telling
-## us nothing new -- a scan's findings change when a CVE is published, not when
-## we commit. The schedule is the coverage; the minor tag is the gate in front
-## of a release that changes more than a patch.
+## Weekly, and only weekly. NOT on every merge: we live on patch versions, so a
+## push trigger fired on essentially every merge while telling us nothing new
+## -- a scan's findings change when a CVE is published, not when we commit. The
+## risk here is time-based, so the trigger is a clock, and one trigger is
+## easier to reason about than two.
 on:
-  push:
-    tags:
-      - "v*.*.0"
   schedule:
-    - cron: "0 6 * * 1"  # every Monday at 06:00 UTC
+    - cron: "0 6 * * 0"  # every Sunday at 06:00 UTC
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
