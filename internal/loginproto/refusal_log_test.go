@@ -2,6 +2,7 @@ package loginproto
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -80,6 +81,43 @@ func TestADependencyOutageIsLoudAndTheRestIsNot(t *testing.T) {
 				t.Error("nothing was logged at all")
 			}
 		})
+	}
+}
+
+// The record must carry each attribute once. pkg/logging puts "service" on
+// every record of the process, and this call site added a second copy: a
+// duplicate JSON key is legal to write and undefined to read -- encoding/json
+// keeps the last, strict parsers reject the whole object, and log pipelines
+// index whichever they happened to see (#1429). For the field naming the
+// service, that ambiguity is the worst place to have it.
+//
+// Asserted on the JSON handler with the process attribute attached, because
+// that is the shape a deployment emits; the text handler used elsewhere in
+// this file would show the duplicate too, but not the object a parser chokes
+// on.
+func TestTheWarningCarriesEachAttributeOnce(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})).With("service", "imap"))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	l := &PreambleListener{ExpectedService: "imap"}
+	l.noteHandshakeFailure(fakeConn{}, fmt.Errorf("userdb lookup: %w", masterclient.ErrUnavailable))
+
+	line := buf.String()
+	if got := strings.Count(line, `"service"`); got != 1 {
+		t.Errorf(`"service" appears %d times in one record, want 1: %s`, got, line)
+	}
+	// And it survives a strict reader: a duplicate key is exactly what makes
+	// this fail for some consumers and not others.
+	var into map[string]any
+	dec := json.NewDecoder(strings.NewReader(line))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&into); err != nil {
+		t.Fatalf("the record does not parse: %v -- %s", err, line)
+	}
+	if into["service"] != "imap" {
+		t.Errorf("service = %v, want imap", into["service"])
 	}
 }
 

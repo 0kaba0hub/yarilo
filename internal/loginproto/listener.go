@@ -263,8 +263,13 @@ func (l *PreambleListener) noteHandshakeFailure(c net.Conn, err error) {
 	}
 	l.depLast = now
 	l.depMu.Unlock()
+	// No "service" attribute here: pkg/logging attaches one to every record of
+	// the process, and a second copy in the same object is a duplicate JSON key
+	// -- legal to write, undefined to read. encoding/json keeps the last, strict
+	// parsers reject the object, and log pipelines index whichever they saw
+	// first (#1429).
 	slog.Warn("loginproto: refusing sessions, a dependency is unreachable",
-		"service", l.ExpectedService, "remote", c.RemoteAddr(), "err", err,
+		"remote", c.RemoteAddr(), "err", err,
 		"hint", "sessions on this backend are refused with UNAVAILABLE until it answers")
 }
 
