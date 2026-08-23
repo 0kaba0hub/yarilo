@@ -101,6 +101,15 @@ func TestResolvePlacesAMessage(t *testing.T) {
 			wantMerged: []string{"T2"},
 		},
 		{
+			// Two references into the SAME thread. Without the dedup the answer
+			// is "T1, merged from T1" -- an instruction to fold a thread into
+			// itself, which the caller would carry out in the sidecar.
+			name: "two references into one thread merge nothing",
+			msg: Message{MessageID: "twice@x", References: []string{"root@a", "reply@a"},
+				Subject: "Re: whatever"},
+			wantThread: "T1",
+		},
+		{
 			// Identity beats subject, always. A reply whose subject was
 			// rewritten still belongs where its References say.
 			name: "identity wins over a subject that points elsewhere",
