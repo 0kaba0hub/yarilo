@@ -181,11 +181,10 @@ func ApplyUserdb(ui *UserInfo, o UserdbOverrides) (locErr, driverErr error) {
 // ControlRoot is where a user's per-account control files live: the explicit
 // ControlDir when set, else the mail path, else the home.
 //
-// One spelling of the rule. It is currently written out in several places
-// (imap dispatch, jmap store, backend-api user context, userdbinfo); new
-// callers use this, and the existing ones are worth folding onto it -- four
-// copies of a path rule is how two of them end up disagreeing about where a
-// file lives, and then one service cannot see what another wrote.
+// One spelling of the rule. Three other copies remain (imap dispatch,
+// backend-api user context, userdbinfo) and are tracked in #1437: four copies
+// of a path rule is how two of them come to disagree silently, and then one
+// service cannot see what another wrote.
 func ControlRoot(ui *UserInfo) string {
 	if ui == nil {
 		return ""
