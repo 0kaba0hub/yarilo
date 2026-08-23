@@ -11,6 +11,7 @@ import (
 	"time"
 
 	authclient "github.com/yarilomail/yarilo/internal/auth/client"
+	"github.com/yarilomail/yarilo/internal/auth/protocol"
 	masterclient "github.com/yarilomail/yarilo/pkg/authclient"
 )
 
@@ -101,6 +102,17 @@ type PreambleListener struct {
 	// MasterAddr is the yarilo-auth master-protocol address for userdb lookup.
 	MasterAddr string
 	MasterTLS  *tls.Config
+	// MasterPool, when set, serves the userdb lookup below from a shared
+	// connection instead of dialling one per session.
+	//
+	// The dial was measured at 2.6ms against a 0.3ms lookup, paid on every
+	// session handshake -- the loudest consumer of the master listener, and
+	// invisible in the connection counts until the sockets were tied to their
+	// process, because it lives about a millisecond (#1419).
+	//
+	// Nil keeps the per-session dial, which is what a standalone or test
+	// wiring without a pool gets.
+	MasterPool *masterclient.Pool
 	// ExpectedService, when non-empty, must match the service in the VERIFY response.
 	ExpectedService string
 	// TLSConfig, when set, terminates internal mTLS on each accepted connection
@@ -212,6 +224,28 @@ func (l *PreambleListener) authClient() (*authclient.Client, error) {
 
 const preambleReadTimeout = 5 * time.Second
 
+// masterUserdb resolves the session's storage identity, through the pool when
+// there is one.
+func (l *PreambleListener) masterUserdb(username string) (*protocol.UserInfo, error) {
+	if l.MasterPool != nil {
+		ui, err := l.MasterPool.Userdb(context.Background(), username)
+		if err != nil {
+			return nil, fmt.Errorf("userdb lookup: %w", err)
+		}
+		return ui, nil
+	}
+	masterCl, err := masterclient.Dial(l.MasterAddr, l.MasterTLS)
+	if err != nil {
+		return nil, fmt.Errorf("master dial: %w", err)
+	}
+	defer masterCl.Close() //nolint:errcheck
+	ui, err := masterCl.Userdb(context.Background(), username)
+	if err != nil {
+		return nil, fmt.Errorf("userdb lookup: %w", err)
+	}
+	return ui, nil
+}
+
 func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 	c.SetDeadline(time.Now().Add(preambleReadTimeout)) //nolint:errcheck
 
@@ -254,15 +288,9 @@ func (l *PreambleListener) handshake(c net.Conn) (*PreambleConn, error) {
 	var quotaOverFlag string
 	var groups, quotaRules []string
 	if l.MasterAddr != "" {
-		masterCl, merr := masterclient.Dial(l.MasterAddr, l.MasterTLS)
+		ui, merr := l.masterUserdb(username)
 		if merr != nil {
-			return nil, fmt.Errorf("master dial: %w", merr)
-		}
-		defer masterCl.Close()
-
-		ui, merr := masterCl.Userdb(context.Background(), username)
-		if merr != nil {
-			return nil, fmt.Errorf("userdb lookup: %w", merr)
+			return nil, merr
 		}
 		if ui == nil {
 			return nil, fmt.Errorf("userdb lookup: user not found: %s", username)

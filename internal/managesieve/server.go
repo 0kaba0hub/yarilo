@@ -9,6 +9,7 @@ import (
 
 	"github.com/yarilomail/yarilo/internal/loginproto"
 	"github.com/yarilomail/yarilo/internal/sieve"
+	"github.com/yarilomail/yarilo/pkg/authclient"
 	"github.com/yarilomail/yarilo/pkg/config"
 	"github.com/yarilomail/yarilo/pkg/dict"
 	"github.com/yarilomail/yarilo/pkg/locks"
@@ -52,6 +53,9 @@ type Options struct {
 	MasterAddr string
 	// MasterTLS is the mTLS client config for the yarilo-auth master connection.
 	MasterTLS *tls.Config
+	// MasterPool serves the session userdb lookup from a shared connection
+	// instead of dialling one per session (#1419).
+	MasterPool *authclient.Pool
 }
 
 // New creates a ManageSieve server with the given options.
@@ -70,6 +74,7 @@ func (srv *Server) ServeManageSieve(ctx context.Context, ln net.Listener) error 
 			AuthTLS:         srv.opts.AuthTLS,
 			MasterAddr:      srv.opts.MasterAddr,
 			MasterTLS:       srv.opts.MasterTLS,
+			MasterPool:      srv.opts.MasterPool,
 			ExpectedService: "managesieve",
 			TLSConfig:       srv.opts.PreambleTLS,
 		}
