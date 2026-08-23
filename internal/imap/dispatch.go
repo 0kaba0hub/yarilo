@@ -283,15 +283,9 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		return nil, fmt.Errorf("mailbox init: %w", err)
 	}
 	idx := s.srv.opts.Index.OpenUser(ui)
-	// Subscriptions live in the control root: ControlDir when set, else
-	// MailPath, falling back to Home.
-	subsRoot := ui.Home
-	if ui.MailPath != "" {
-		subsRoot = ui.MailPath
-	}
-	if ui.ControlDir != "" {
-		subsRoot = ui.ControlDir
-	}
+	// Subscriptions live in the control root. One spelling of that rule, so
+	// this cannot drift from where the other services write (#1437).
+	subsRoot := mailbox.ControlRoot(ui)
 	store := subs.New(subsRoot, subsFile, ui.Username, owner, s.srv.opts.Locker)
 	// acl_defaults_from_inbox applies to personal/shared namespaces only.
 	defaultsFromInbox := s.srv.opts.ACLDefaultsFromInbox &&
