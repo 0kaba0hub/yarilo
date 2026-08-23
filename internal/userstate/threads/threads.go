@@ -210,6 +210,21 @@ func Append(path string, s *State, p Placement) error {
 	if p.ThreadID == "" {
 		return fmt.Errorf("threads: placement for %s has no thread", p.GUID)
 	}
+	// No fsync here, and that is a decision rather than an omission:
+	//
+	//  1. it does not remove the window, only narrows it -- an OS crash tears
+	//     between synced writes as readily as within one;
+	//  2. the real protection is the record ORDER below: whatever survives a
+	//     truncated tail is the harmless half;
+	//  3. this sidecar is DERIVED state. The migration step that builds it for
+	//     existing accounts is also the tool that rebuilds it, so a lost tail
+	//     is recoverable -- unlike mail, which is not.
+	//
+	// Paying an fsync per delivery for a rebuildable derived structure is the
+	// wrong trade. If a field case ever shows tails going missing
+	// systematically -- something other than a crash -- this comes back with a
+	// number behind it.
+	//
 	// Aliases first, and the asymmetry is the reason. A crash mid-write can
 	// truncate the tail; whichever records are lost, the survivors must be the
 	// safe half. An alias with no G record is a thread pointing at a thread --
