@@ -55,3 +55,12 @@ var metricSearchUnreadable = promauto.NewCounter(prometheus.CounterOpts{
 	Name: "imap_search_unreadable_messages_total",
 	Help: "Messages a SEARCH scan could not read, and therefore silently excluded from its answer.",
 })
+
+// metricThreadUnreadable is the same event on the THREAD path, where the
+// exclusion is even quieter: a SEARCH at least answers with a set the client
+// can compare against its own count, while a thread tree that is missing a
+// message looks exactly like a complete one.
+var metricThreadUnreadable = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "imap_thread_unreadable_messages_total",
+	Help: "Messages a THREAD scan could not read, and therefore silently excluded from its tree.",
+})

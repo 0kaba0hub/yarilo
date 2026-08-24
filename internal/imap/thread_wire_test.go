@@ -18,6 +18,13 @@ import (
 // claim under test is the whole path: headers on disk, criteria, algorithm,
 // and the parentheses on the wire.
 func threadServer(t *testing.T, raws []string) (net.Conn, *bufio.Reader) {
+	conn, rd, _ := threadServerIn(t, raws)
+	return conn, rd
+}
+
+// threadServerIn also hands back the storage root, so a row can break the
+// stored messages under the running session.
+func threadServerIn(t *testing.T, raws []string) (net.Conn, *bufio.Reader, string) {
 	t.Helper()
 	root := t.TempDir()
 	resolver := &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"}
@@ -70,7 +77,7 @@ func threadServer(t *testing.T, raws []string) (net.Conn, *bufio.Reader) {
 	readUntilTag(t, rd, "")
 	command(t, conn, rd, "a1", "LOGIN user@test.com testpass")
 	command(t, conn, rd, "a2", "SELECT INBOX")
-	return conn, rd
+	return conn, rd, root
 }
 
 func threadLine(t *testing.T, conn net.Conn, rd *bufio.Reader, cmd string) string {
