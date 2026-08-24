@@ -3,27 +3,10 @@ package imap_test
 import (
 	"strings"
 	"testing"
-
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 func threadUnreadableCount(t *testing.T) float64 {
-	t.Helper()
-	mfs, err := prometheus.DefaultGatherer.Gather()
-	if err != nil {
-		t.Fatalf("gather: %v", err)
-	}
-	for _, mf := range mfs {
-		if mf.GetName() != "imap_thread_unreadable_messages_total" {
-			continue
-		}
-		var out float64
-		for _, m := range mf.GetMetric() {
-			out += m.GetCounter().GetValue()
-		}
-		return out
-	}
-	return 0
+	return unreadableCount(t, "thread")
 }
 
 // A message THREAD cannot read is still in the reply -- as a conversation of

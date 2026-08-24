@@ -88,7 +88,7 @@ func (s *session) Thread(kind imapserver.NumKind, alg imaplib.ThreadAlgorithm, c
 	// hole in a thread reply: it leaves a smaller tree, which reads exactly
 	// like a correct answer about a smaller mailbox.
 	if len(unreadable) > 0 || len(detached) > 0 {
-		metricThreadUnreadable.Add(float64(len(unreadable) + len(detached)))
+		metricUnreadable.WithLabelValues("thread").Add(float64(len(unreadable) + len(detached)))
 		example := append(append([]uint32(nil), unreadable...), detached...)[0]
 		slog.Warn("imap: thread could not read some messages; the tree is wrong about them",
 			"user", s.userInfo.Username,

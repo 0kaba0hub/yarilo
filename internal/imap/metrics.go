@@ -47,20 +47,12 @@ var (
 	}, []string{"result"}) // scanned | skipped
 )
 
-// metricSearchUnreadable counts messages a SEARCH could not read while
-// scanning. Every one of them is a message the answer silently excluded: a
-// body criterion cannot match bytes nobody read, and the client is told
-// "no match" either way (#1283).
-var metricSearchUnreadable = promauto.NewCounter(prometheus.CounterOpts{
-	Name: "imap_search_unreadable_messages_total",
-	Help: "Messages a SEARCH scan could not read, and therefore silently excluded from its answer.",
-})
-
-// metricThreadUnreadable is the same event on the THREAD path, where the
-// exclusion is even quieter: a SEARCH at least answers with a set the client
-// can compare against its own count, while a thread tree that is missing a
-// message looks exactly like a complete one.
-var metricThreadUnreadable = promauto.NewCounter(prometheus.CounterOpts{
-	Name: "imap_thread_unreadable_messages_total",
-	Help: "Messages a THREAD scan could not read, and therefore silently excluded from its tree.",
-})
+// metricUnreadable counts messages a command could not read while scanning.
+// The event is one event -- the server answered with less than it knows, and
+// nothing in the answer says so (#1283) -- so it is one series with the
+// command as a label. An alert on it is one expression, not a sum of series
+// that someone must remember to extend when a third command starts scanning.
+var metricUnreadable = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "imap_unreadable_messages_total",
+	Help: "Messages a command's scan could not read, and therefore silently left out of its answer.",
+}, []string{"command"})
