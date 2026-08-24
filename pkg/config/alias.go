@@ -321,6 +321,16 @@ func protocolAliases(cfg *Config) []aliasedKey {
 		intAlias("protocol.lmtp.lmtp_user_concurrency_limit", "protocol.lmtp.user_concurrency_limit", &l.UserConcurrencyLimit, &l.UserConcurrencyLimitAlias),
 		listAlias("protocol.lmtp.lmtp_client_workarounds", "protocol.lmtp.client_workarounds", &l.ClientWorkarounds, &l.ClientWorkaroundsAlias),
 
+		// rate_limit's own keys carried no section prefix, unlike every other
+		// nested section (threading_enabled, sieve_max_actions). Renamed while
+		// the chart still did not expose them, which is what made it free.
+		boolAlias("protocol.lmtp.rate_limit.rate_limit_enabled", "protocol.lmtp.rate_limit.enabled",
+			&l.RateLimit.Enabled, &l.RateLimit.EnabledAlias),
+		intAlias("protocol.lmtp.rate_limit.rate_limit_per_recipient_burst", "protocol.lmtp.rate_limit.per_recipient_burst",
+			&l.RateLimit.PerRecipientBurst, &l.RateLimit.PerRecipientBurstAlias),
+		intAlias("protocol.lmtp.rate_limit.rate_limit_per_recipient_window_seconds", "protocol.lmtp.rate_limit.per_recipient_window_seconds",
+			&l.RateLimit.PerRecipientWindowSeconds, &l.RateLimit.PerRecipientWindowSecondsAlias),
+
 		listAlias("protocol.imap.imap_client_workarounds", "protocol.imap.client_workarounds", &im.ClientWorkarounds, &im.ClientWorkaroundsAlias),
 
 		strAlias("protocol.submission.submission_max_mail_size", "protocol.submission.max_message_size", &sub.MaxMsgSizeRaw, &sub.MaxMsgSizeRawAlias),

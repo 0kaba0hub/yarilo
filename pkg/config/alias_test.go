@@ -91,3 +91,76 @@ func TestExplicitZeroIsNotTreatedAsUnset(t *testing.T) {
 		t.Fatalf("a canonical 0 against an alias 32k loaded as %q", cfg.Storage.MailIndexLogRotateMinSizeRaw)
 	}
 }
+
+// The rate-limit keys were the one nested section whose keys carried no
+// section prefix, so they were renamed to match every other one
+// (threading_enabled, sieve_max_actions). The rename was free only because the
+// chart had never exposed them -- but a hand-written yarilo.yaml could, so the
+// old spellings are adopted rather than ignored.
+//
+// The four states a renamed key can be in, including the one that matters
+// most: an operator turning the limit OFF through the old spelling must still
+// have it off. A rename that quietly restores a default here would put a limit
+// back in front of a deployment that disabled it on purpose.
+func TestRateLimitKeyAliases(t *testing.T) {
+	const prefix = "protocol:\n  lmtp:\n    rate_limit:\n"
+	tests := []struct {
+		name        string
+		body        string
+		wantErr     string
+		wantEnabled bool
+		wantBurst   int
+	}{
+		{
+			name:        "canonical alone",
+			body:        prefix + "      rate_limit_enabled: false\n      rate_limit_per_recipient_burst: 5000\n",
+			wantEnabled: false,
+			wantBurst:   5000,
+		},
+		{
+			name:        "the old spelling is adopted",
+			body:        prefix + "      enabled: false\n      per_recipient_burst: 5000\n",
+			wantEnabled: false,
+			wantBurst:   5000,
+		},
+		{
+			name:        "both agreeing",
+			body:        prefix + "      rate_limit_per_recipient_burst: 5000\n      per_recipient_burst: 5000\n",
+			wantEnabled: true,
+			wantBurst:   5000,
+		},
+		{
+			name:    "both disagreeing is refused",
+			body:    prefix + "      rate_limit_per_recipient_burst: 5000\n      per_recipient_burst: 200\n",
+			wantErr: "both set to different values",
+		},
+		{
+			name:        "neither leaves the defaults",
+			body:        "protocol:\n  lmtp:\n    login_greeting: \"x\"\n",
+			wantEnabled: true,
+			wantBurst:   100,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadYAML(t, tc.body)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want one containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			rl := cfg.Protocol.LMTP.RateLimit
+			if rl.Enabled != tc.wantEnabled {
+				t.Errorf("enabled = %v, want %v", rl.Enabled, tc.wantEnabled)
+			}
+			if rl.PerRecipientBurst != tc.wantBurst {
+				t.Errorf("burst = %d, want %d", rl.PerRecipientBurst, tc.wantBurst)
+			}
+		})
+	}
+}

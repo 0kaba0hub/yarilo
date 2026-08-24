@@ -515,12 +515,17 @@ type LMTPProtocolConfig struct {
 // RCPT TO. Counters live in yarilo-locks, so the limit is cluster-wide.
 type LMTPRateLimitConfig struct {
 	// Enabled gates the entire check. Default: true.
-	Enabled bool `koanf:"enabled"`
+	Enabled bool `koanf:"rate_limit_enabled"`
 	// PerRecipientBurst is the max deliveries per (sender IP, recipient
 	// mailbox) pair inside one window; excess gets 421 4.7.0. Default: 100.
-	PerRecipientBurst int `koanf:"per_recipient_burst"`
+	PerRecipientBurst int `koanf:"rate_limit_per_recipient_burst"`
 	// PerRecipientWindowSeconds is the sliding window width. Default: 60.
-	PerRecipientWindowSeconds int `koanf:"per_recipient_window_seconds"`
+	PerRecipientWindowSeconds int `koanf:"rate_limit_per_recipient_window_seconds"`
+	// Pre-beta spellings without the section prefix, accepted as aliases and
+	// removed after beta.
+	EnabledAlias                   bool `koanf:"enabled"`
+	PerRecipientBurstAlias         int  `koanf:"per_recipient_burst"`
+	PerRecipientWindowSecondsAlias int  `koanf:"per_recipient_window_seconds"`
 }
 
 // LMTPProxyConfig holds LMTP proxy settings used on director nodes.

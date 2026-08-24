@@ -158,6 +158,13 @@ data:
           - {{ . | quote }}
           {{- end }}
         {{- end }}
+        rate_limit:
+          ## Not `| default true`: Helm's default treats false as empty, so
+          ## that spelling would ignore an operator turning the limit off.
+          ## See docs-internal/helm-notes.md.
+          rate_limit_enabled: {{ if hasKey .Values.protocol.lmtp.rate_limit "enabled" }}{{ .Values.protocol.lmtp.rate_limit.enabled }}{{ else }}true{{ end }}
+          rate_limit_per_recipient_burst: {{ .Values.protocol.lmtp.rate_limit.per_recipient_burst | default 100 | int64 }}
+          rate_limit_per_recipient_window_seconds: {{ .Values.protocol.lmtp.rate_limit.per_recipient_window_seconds | default 60 | int64 }}
       submission:
         hostname: {{ .Values.protocol.submission.hostname | quote }}
         submission_max_mail_size: {{ .Values.protocol.submission.max_message_size | quote }}
