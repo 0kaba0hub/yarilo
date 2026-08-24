@@ -2728,7 +2728,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	// a line per record. WARN because the answer the client is about to get is
 	// incomplete and nothing else says so.
 	if len(unreadable) > 0 {
-		metricSearchUnreadable.Add(float64(len(unreadable)))
+		metricUnreadable.WithLabelValues("search").Add(float64(len(unreadable)))
 		slog.Warn("imap: search could not read some messages; the result is incomplete",
 			"user", s.userInfo.Username,
 			"folder", s.folder.Name,

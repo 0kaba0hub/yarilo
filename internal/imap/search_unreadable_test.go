@@ -58,18 +58,29 @@ func TestSearchCountsMessagesItCouldNotRead(t *testing.T) {
 }
 
 func counterValue(t *testing.T) float64 {
+	return unreadableCount(t, "search")
+}
+
+// unreadableCount reads one command's share of the shared counter. The label
+// is part of the assertion: summing every series would let a count raised
+// under the wrong command's name satisfy a row about this one.
+func unreadableCount(t *testing.T, command string) float64 {
 	t.Helper()
 	mfs, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
 		t.Fatalf("gather: %v", err)
 	}
 	for _, mf := range mfs {
-		if mf.GetName() != "imap_search_unreadable_messages_total" {
+		if mf.GetName() != "imap_unreadable_messages_total" {
 			continue
 		}
 		var out float64
 		for _, m := range mf.GetMetric() {
-			out += m.GetCounter().GetValue()
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "command" && l.GetValue() == command {
+					out += m.GetCounter().GetValue()
+				}
+			}
 		}
 		return out
 	}
