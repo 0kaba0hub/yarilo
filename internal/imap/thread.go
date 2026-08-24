@@ -38,6 +38,33 @@ func (s *session) Thread(kind imapserver.NumKind, alg imaplib.ThreadAlgorithm, c
 	}
 	criteria = s.substituteSearchRes(criteria)
 
+	threaded, err := s.scanForOrdering(kind, criteria, "thread")
+	if err != nil {
+		return nil, err
+	}
+
+	switch alg {
+	case imaplib.ThreadReferences:
+		return imapthread.References(threaded), nil
+	case imaplib.ThreadOrderedSubject:
+		return imapthread.OrderedSubject(threaded), nil
+	default:
+		// The dispatcher refuses algorithms this server did not announce, so
+		// reaching here means the two disagree.
+		return nil, &imaplib.Error{
+			Type: imaplib.StatusResponseTypeBad,
+			Text: "Unsupported threading algorithm " + string(alg),
+		}
+	}
+}
+
+// scanForOrdering collects the searched messages with the headers that
+// ordering needs -- the shared front half of THREAD and SORT, so that the two
+// select the same messages and account for unreadable ones the same way.
+//
+// command names the caller on the shared counter and in the warning, which is
+// the only thing that differs between them.
+func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.SearchCriteria, command string) ([]imapthread.Message, error) {
 	msgs, err := readMessages(s.folderIdx(), s.folder.ID)
 	if err != nil {
 		return nil, err
@@ -49,7 +76,7 @@ func (s *session) Thread(kind imapserver.NumKind, alg imaplib.ThreadAlgorithm, c
 		detached    []uint32
 		lastReadErr error
 	)
-	threaded := make([]imapthread.Message, 0, len(msgs))
+	out := make([]imapthread.Message, 0, len(msgs))
 	for i, m := range msgs {
 		seqNum := uint32(i + 1)
 		matched, raw, readErr := s.matchMessage(seqNum, m, criteria, needsBody)
@@ -70,60 +97,53 @@ func (s *session) Thread(kind imapserver.NumKind, alg imaplib.ThreadAlgorithm, c
 		if kind == imapserver.NumKindUID {
 			num = m.UID
 		}
-		tm, headerErr := s.threadMessage(num, m, raw)
+		one, headerErr := s.threadMessage(num, m, raw)
 		if headerErr != nil {
 			// Kept, not dropped: the message exists and the client can fetch
-			// it, so removing it from the tree would be a second lie. It
-			// threads as a conversation of one, which is wrong about its
-			// ancestry -- hence the count.
+			// it, so removing it from the answer would be a second lie. What
+			// it loses is everything the ordering is based on -- ancestry for
+			// THREAD, subject and addresses for SORT -- hence the count.
 			detached = append(detached, m.UID)
 			lastReadErr = headerErr
 		}
-		threaded = append(threaded, tm)
+		out = append(out, one)
 	}
 
 	// Reported once per command with counts and one example, never per
-	// message, and at WARN because the tree the client is about to receive is
-	// incomplete and nothing in it says so. A missing message does not leave a
-	// hole in a thread reply: it leaves a smaller tree, which reads exactly
-	// like a correct answer about a smaller mailbox.
+	// message, and at WARN because the answer the client is about to receive
+	// is wrong about those messages and nothing in it says so.
 	if len(unreadable) > 0 || len(detached) > 0 {
-		metricUnreadable.WithLabelValues("thread").Add(float64(len(unreadable) + len(detached)))
+		metricUnreadable.WithLabelValues(command).Add(float64(len(unreadable) + len(detached)))
 		example := append(append([]uint32(nil), unreadable...), detached...)[0]
-		slog.Warn("imap: thread could not read some messages; the tree is wrong about them",
+		slog.Warn("imap: could not read some messages; the answer is wrong about them",
+			"command", command,
 			"user", s.userInfo.Username,
 			"folder", s.folder.Name,
 			// Excluded by a criterion that needed bytes nobody could read.
 			"excluded", len(unreadable),
-			// Threaded, but with no headers: a conversation of one.
+			// Answered, but with no headers behind them.
 			"detached", len(detached),
 			"records_scanned", len(msgs),
-			"threaded", len(threaded),
+			"answered", len(out),
 			"first_uid", example,
 			"err", lastReadErr,
 		)
 	}
-
-	switch alg {
-	case imaplib.ThreadReferences:
-		return imapthread.References(threaded), nil
-	case imaplib.ThreadOrderedSubject:
-		return imapthread.OrderedSubject(threaded), nil
-	default:
-		// The dispatcher refuses algorithms this server did not announce, so
-		// reaching here means the two disagree.
-		return nil, &imaplib.Error{
-			Type: imaplib.StatusResponseTypeBad,
-			Text: "Unsupported threading algorithm " + string(alg),
-		}
-	}
+	return out, nil
 }
 
 // threadMessage reads the headers threading needs. raw is whatever the match
 // already read, so a search that had to open the message does not open it
 // again.
 func (s *session) threadMessage(num uint32, m *mailbox.MessageMeta, raw []byte) (imapthread.Message, error) {
-	out := imapthread.Message{Num: num, Sent: m.InternalDate}
+	// ARRIVAL is the internal date, and DATE falls back to it when the Date
+	// header is missing or unparsable (§2.2).
+	out := imapthread.Message{
+		Num:     num,
+		Sent:    m.InternalDate,
+		Arrival: m.InternalDate,
+		Size:    int64(m.RFC822Size()),
+	}
 	if raw == nil {
 		var err error
 		if raw, err = s.readHeader(m); err != nil {
@@ -142,6 +162,11 @@ func (s *session) threadMessage(num uint32, m *mailbox.MessageMeta, raw []byte) 
 		return out, fmt.Errorf("imap/thread: parse header of uid %d: %w", m.UID, err)
 	}
 	out.MessageID = hdr.Header.Get("Message-Id")
+	// SORT keys, filled here because the header is already parsed: reading it
+	// again per command would double the cost of the only expensive step.
+	out.From = addrMailbox(hdr.Header.Get("From"))
+	out.To = addrMailbox(hdr.Header.Get("To"))
+	out.Cc = addrMailbox(hdr.Header.Get("Cc"))
 	out.Subject = decodeSubject(hdr.Header.Get("Subject"))
 	out.References = threadReferences(hdr.Header)
 	// §2.2: the sent date is the Date header in UTC, and the internal date
