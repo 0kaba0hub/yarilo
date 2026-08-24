@@ -630,12 +630,15 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 			} else {
 				slog.Info("lmtp: proxy delivered", "rcpt", rcpt, "size", len(proxyData))
 			}
-			status.SetStatus(rcpt, rerr)
+			setProxyStatus(status, rcpt, rerr)
 		}
 	}
 
 	// Local recipients: deliver directly.
 	for _, rcpt := range s.rcpts {
+		// Every exit below reports a status for this recipient, and every one
+		// of them is timed: see setStatus.
+		deliveryStart := time.Now()
 		deliverRcpt := rcpt
 		if !s.opts.Config.SaveToDetailMailbox {
 			deliverRcpt = stripDetail(rcpt)
@@ -661,7 +664,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				slog.Warn("lmtp: delivery rejected: message exceeds max mail size", "rcpt", rcpt, "user", username, "size", len(msg), "max", ms)
 				rcptBox.Close() //nolint:errcheck
 				rcptIdx.Close() //nolint:errcheck
-				status.SetStatus(rcpt, &goSmtp.SMTPError{
+				setStatus(status, rcpt, deliveryStart, &goSmtp.SMTPError{
 					Code: 552, EnhancedCode: goSmtp.EnhancedCode{5, 2, 3},
 					Message: fmt.Sprintf("Requested allocation size %d exceeds max mail size %d", len(msg), ms),
 				})
@@ -674,7 +677,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 					slog.Warn("lmtp: delivery rejected: too many messages in mailbox", "rcpt", rcpt, "user", username, "folder", folder)
 					rcptBox.Close() //nolint:errcheck
 					rcptIdx.Close() //nolint:errcheck
-					status.SetStatus(rcpt, &goSmtp.SMTPError{
+					setStatus(status, rcpt, deliveryStart, &goSmtp.SMTPError{
 						Code: 552, EnhancedCode: goSmtp.EnhancedCode{5, 2, 2},
 						Message: "Too many messages in the mailbox",
 					})
@@ -692,7 +695,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 						slog.Warn("lmtp: delivery rejected: mailbox full", "rcpt", rcpt, "user", username)
 						rcptBox.Close() //nolint:errcheck
 						rcptIdx.Close() //nolint:errcheck
-						status.SetStatus(rcpt, &goSmtp.SMTPError{
+						setStatus(status, rcpt, deliveryStart, &goSmtp.SMTPError{
 							Code: 452, EnhancedCode: goSmtp.EnhancedCode{4, 2, 2},
 							Message: s.quotaExceededMessage(),
 						})
@@ -752,13 +755,13 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				rcptIdx.Close() //nolint:errcheck
 				code, enh := sieveRejectCode(result.Reject)
 				slog.Info("lmtp: sieve rejected", "rcpt", rcpt, "reason", result.Reject.Reason)
-				status.SetStatus(rcpt, &goSmtp.SMTPError{Code: code, EnhancedCode: enh, Message: result.Reject.Reason})
+				setStatus(status, rcpt, deliveryStart, &goSmtp.SMTPError{Code: code, EnhancedCode: enh, Message: result.Reject.Reason})
 				continue
 			} else if len(result.Deliveries) == 0 {
 				rcptBox.Close() //nolint:errcheck
 				rcptIdx.Close() //nolint:errcheck
 				slog.Info("lmtp: sieve discard", "rcpt", rcpt)
-				status.SetStatus(rcpt, nil)
+				setStatus(status, rcpt, deliveryStart, nil)
 				continue
 			} else {
 				deliveries = result.Deliveries
@@ -798,7 +801,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 				deliverErr = &goSmtp.SMTPError{Code: 451, EnhancedCode: goSmtp.EnhancedCode{4, 2, 0}, Message: "Local delivery failed"}
 			}
 		}
-		status.SetStatus(rcpt, deliverErr)
+		setStatus(status, rcpt, deliveryStart, deliverErr)
 	}
 	return nil
 }
@@ -825,6 +828,11 @@ func (s *session) recordThread(ui *mailbox.UserInfo, username string, guid [16]b
 	if path == "" {
 		return
 	}
+	// Timed from here: the lock wait is part of what threading costs a
+	// delivery, and on a busy account it is most of it.
+	defer func(start time.Time) {
+		metricThreadRecordSeconds.Observe(time.Since(start).Seconds())
+	}(time.Now())
 	rec := func(context.Context) error {
 		_, err := s.opts.Threads.Record(username, path, mailbox.FormatObjectID(guid), raw)
 		return err
