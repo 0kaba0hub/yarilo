@@ -27,7 +27,21 @@ jobs:
       - name: Check for updates
         id: check
         run: |
-          UPDATES=$(go list -m -u all 2>/dev/null | grep '\[' || true)
+          # "all" reaches the TEST dependencies of our dependencies -- modules
+          # that are in the graph, are never built into anything we ship, and
+          # cannot be updated by the command this job then suggests. That noise
+          # is what made the first issue unactionable (#1447).
+          #
+          # -deps -test ./... is the honest set: what our binaries import, plus
+          # what OUR tests import. Someone else's test dependency is theirs.
+          MODS=$(go list -deps -test -f '{{with .Module}}{{.Path}}{{end}}' ./... \
+            | sort -u | grep -v '^$' | grep -v '^github.com/yarilomail/yarilo$')
+          if [ -z "$MODS" ]; then
+            echo "::error::could not list module dependencies; refusing to report 'no updates' from a check that checked nothing"
+            exit 1
+          fi
+          echo "checking $(echo "$MODS" | wc -l) modules"
+          UPDATES=$(go list -m -u $MODS 2>/dev/null | grep '\[' || true)
           if [ -z "$UPDATES" ]; then
             echo "has_updates=false" >> "$GITHUB_OUTPUT"
           else
@@ -61,5 +75,5 @@ jobs:
               repo: context.repo.repo,
               title: 'Go dependency updates available',
               labels: ['dependencies'],
-              body: `The following Go modules have newer versions available:\n\n\`\`\`\n${updates}\n\`\`\`\n\nTo update, run:\n\`\`\`sh\ngo get -u ./... && go mod tidy\n\`\`\``
+              body: `The following Go modules have newer versions available:\n\n\`\`\`\n${updates}\n\`\`\`\n\nTo update one, run:\n\`\`\`sh\ngo get <module>@latest && go mod tidy\n\`\`\`\n\nOnly modules yarilo builds or tests with are listed; test dependencies of dependencies are not ours to bump.`
             });
