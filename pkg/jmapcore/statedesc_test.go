@@ -22,7 +22,11 @@ func TestParseRefusesAnotherFormatVersion(t *testing.T) {
 		state string
 		want  error
 	}{
-		{"a newer version", "2-" + strings.SplitN(good, "-", 2)[1], ErrStateVersion},
+		{"a newer version", "3-" + strings.SplitN(good, "-", 2)[1], ErrStateVersion},
+		// Version 1 is a real predecessor, not a hypothetical: the format grew
+		// the account-wide field, and a client holding a v1 string must be told
+		// to resync rather than have its old layout guessed at.
+		{"the previous version", "1-" + strings.SplitN(good, "-", 2)[1], ErrStateVersion},
 		{"an older version", "0-" + strings.SplitN(good, "-", 2)[1], ErrStateVersion},
 		{"the placeholder shipped before this format", "0", ErrStateFormat},
 		{"a value a client invented", "hello", ErrStateFormat},

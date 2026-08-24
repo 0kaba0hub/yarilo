@@ -40,10 +40,14 @@ func (s *Server) threadGet(_ context.Context, h *userHandle, accountID string, a
 	if err != nil {
 		return nil, storeFailure("Thread/get", accountID, err)
 	}
+	state, serr := h.threadState()
+	if serr != nil {
+		return nil, storeFailure("Thread/get state", accountID, serr)
+	}
 	props := propsOfGet(req)
 	resp := jmapcore.GetResponse[any]{
 		AccountID: accountID,
-		State:     "0",
+		State:     state,
 		List:      []any{},
 		NotFound:  []string{},
 	}
@@ -126,4 +130,102 @@ func (h *userHandle) threadOf(emailID string) string {
 		return id
 	}
 	return emailID
+}
+
+// threadState is the account's conversation state: a position in the sidecar
+// log, versioned like the others.
+//
+// A position rather than a description of folders, because a conversation is
+// not owned by a folder -- and because the log already records what happened,
+// so the records between two positions ARE the answer. This is the one object
+// type whose changes need no diffing.
+func (h *userHandle) threadState() (string, error) {
+	if h.threads == nil {
+		return threadStateString(0, 0), nil
+	}
+	path := threads.PathFor(h.info)
+	if path == "" {
+		return threadStateString(0, 0), nil
+	}
+	state, err := h.threads.Get(h.info.Username, path)
+	if err != nil {
+		return "", err
+	}
+	return threadStateString(state.Generation(), uint64(state.Head())), nil
+}
+
+// threadStateString pairs the compaction generation with the position.
+//
+// The position alone is a number that stays valid across a compaction while
+// meaning something else entirely: a client on record 50 of a log that was
+// rewritten to 60 records would be handed records 51..60 of a different
+// history as "what changed". The generation is what turns that into a refusal
+// -- the same protection the format version gives across builds, per account.
+func threadStateString(generation, position uint64) string {
+	return jmapcore.Description{Kind: jmapcore.KindThread, Extra: []uint64{generation, position}}.String()
+}
+
+// threadChanges implements Thread/changes (RFC 8621 §3.2).
+//
+// A merge is reported as the swallowed conversation DESTROYED and the
+// surviving one UPDATED. That is the client's only way to learn that an id it
+// holds names nothing any more -- a merge renames the thread of every message
+// that was in the swallowed one, and silence would leave the old conversation
+// in its list for ever.
+func (s *Server) threadChanges(_ context.Context, h *userHandle, accountID string, args json.RawMessage) (any, *jmapcore.MethodError) {
+	var req jmapcore.ChangesRequest
+	if err := json.Unmarshal(args, &req); err != nil {
+		return nil, &jmapcore.MethodError{Type: jmapcore.ErrInvalidArguments, Description: err.Error()}
+	}
+	if merr := checkAccount(req.AccountID, accountID); merr != nil {
+		return nil, merr
+	}
+	desc, err := jmapcore.ParseDescription(req.SinceState, jmapcore.KindThread)
+	if err != nil || len(desc.Extra) != 2 {
+		// A state from another format version, or from another object type.
+		// The client resyncs rather than being handed a diff of a layout we
+		// misread.
+		return nil, cannotCalculate("that state was not issued by this server, or predates its format")
+	}
+	sinceGen, since := desc.Extra[0], int(desc.Extra[1])
+
+	if h.threads == nil {
+		// Threading is off: nothing has changed and nothing ever will until it
+		// is on. Saying so beats refusing, which would send a client into a
+		// resync loop against an account that has no conversations to sync.
+		return jmapcore.ChangesResponse{
+			AccountID: accountID, OldState: req.SinceState, NewState: req.SinceState,
+			Created: []string{}, Updated: []string{}, Destroyed: []string{},
+		}, nil
+	}
+	path := threads.PathFor(h.info)
+	ch, cerr := threads.ChangesSince(path, since)
+	if cerr != nil {
+		return nil, storeFailure("Thread/changes", accountID, cerr)
+	}
+	if ch.Generation != sinceGen || ch.Head < since {
+		// Either the log was rewritten since that state -- so the position
+		// names records of a history that no longer exists -- or it is shorter
+		// than the client's position outright.
+		return nil, cannotCalculate("the threading history was compacted past that state")
+	}
+	newState := threadStateString(ch.Generation, uint64(ch.Head))
+	if merr := capChanges(req.MaxChanges, len(ch.Created)+len(ch.Updated)+len(ch.Destroyed)); merr != nil {
+		return nil, merr
+	}
+	return jmapcore.ChangesResponse{
+		AccountID: accountID,
+		OldState:  req.SinceState,
+		NewState:  newState,
+		Created:   nonNil(ch.Created),
+		Updated:   nonNil(ch.Updated),
+		Destroyed: nonNil(ch.Destroyed),
+	}, nil
+}
+
+func nonNil(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
 }
