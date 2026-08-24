@@ -308,7 +308,10 @@ components:
       ## threading existed -- every message its own conversation, which is
       ## also how an account looks before the migration step reaches it.
       ## Existing sidecars stay on disk and are picked up again when it is
-      ## turned back on.
+      ## turned back on -- but messages delivered while it was off were never
+      ## recorded, and stay one conversation each until an operator runs
+      ## `yarilo-migrate --thread-backfill --force` for the account. Without
+      ## that, toggling the knob looks like conversations partly disappearing.
       enabled: true
       ## Seconds a process keeps an account's folded sidecar after its last
       ## delivery. Folding is O(account) -- 0.4ms at a thousand messages, 37ms
