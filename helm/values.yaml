@@ -297,12 +297,22 @@ components:
     ## conversation (#1425). Written on the delivery path, into a per-account
     ## sidecar beside the other control files.
     threading:
-      ## false while the arc is being built: the sidecar costs work on every
-      ## delivery, and until Thread/get, Thread/changes and IMAP THREAD are
-      ## wired there is nothing reading it. An account with this off behaves
-      ## exactly as it does today: every message is its own conversation, which
-      ## is also how an account looks before the migration step reaches it.
-      enabled: false
+      ## On by default since 2.3.246. Measured before the default moved
+      ## (#1425): the sidecar write costs ~1ms per delivery, and that figure
+      ## does not move with the driver or with the size of the account -- the
+      ## fold cache is what keeps it flat, so delivery does not pay
+      ## O(account) per message.
+      ##
+      ## Turning it off costs nothing and leaves nothing behind: an account
+      ## stops recording conversations and behaves exactly as it did before
+      ## threading existed -- every message its own conversation, which is
+      ## also how an account looks before the migration step reaches it.
+      ## Existing sidecars stay on disk and are picked up again when it is
+      ## turned back on -- but messages delivered while it was off were never
+      ## recorded, and stay one conversation each until an operator runs
+      ## `yarilo-migrate --thread-backfill --force` for the account. Without
+      ## that, toggling the knob looks like conversations partly disappearing.
+      enabled: true
       ## Seconds a process keeps an account's folded sidecar after its last
       ## delivery. Folding is O(account) -- 0.4ms at a thousand messages, 37ms
       ## at a hundred thousand -- so it is cached rather than repeated per
