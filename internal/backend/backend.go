@@ -199,6 +199,20 @@ func New(cfg *config.Config) (*Server, error) {
 	// ---- HAProxy shared nets ----
 	haproxyNets := parseCIDRs(cfg.General.HAProxy.HAProxyTrustedNetworks)
 	haproxyTimeout := time.Duration(cfg.General.HAProxy.Timeout) * time.Second
+	// One fold cache for the process, shared by every protocol that touches
+	// threading: the delivery that writes it and the reads that answer from
+	// it. A second cache would fold the same account twice and, worse, let a
+	// reader answer from a state the writer had already moved past.
+	//
+	// Nil when threading is off, which leaves every account behaving exactly
+	// as it does today: one message, one conversation.
+	var threadCache *threads.Cache
+	var threadRecorder *threads.Recorder
+	if cfg.Threading.Enabled {
+		threadCache = threads.NewCache(cfg.Threading.CacheIdle())
+		threadRecorder = threads.NewRecorder(threadCache)
+	}
+
 	authAddr := cfg.AuthService.ClientAddr()
 	masterAddr := cfg.AuthService.MasterAddr
 	var authTLS *tls.Config
@@ -278,6 +292,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Index:              idx,
 			Resolver:           resolver,
 			UserdbLookup:       ownerUserdbLookup(masterAddr, authTLS, resolver),
+			Threads:            threadCache,
 			Auth:               authChain,
 			ProxyProtocol:      primary.HAProxy,
 			HAProxyTimeout:     haproxyTimeout,
@@ -428,15 +443,6 @@ func New(cfg *config.Config) (*Server, error) {
 			}
 			lmtpTLS = t
 		}
-		// One recorder for the process: it owns the fold cache, and a second
-		// one would fold the same account twice and race its own writes.
-		// Nil when threading is off, which is what leaves the account behaving
-		// exactly as it does today.
-		var threadRecorder *threads.Recorder
-		if cfg.Threading.Enabled {
-			threadRecorder = threads.NewRecorder(threads.NewCache(cfg.Threading.CacheIdle()))
-		}
-
 		lmtpStorageCfg := cfg.Storage
 		lmtpACLGlobal, err := acl.NewGlobal(cfg.ACL.Global)
 		if err != nil {
