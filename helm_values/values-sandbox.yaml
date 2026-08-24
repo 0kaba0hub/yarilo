@@ -364,6 +364,15 @@ components:
     internalTLS:
       enabled: true
       secretName: yarilo-internal-tls
+    ## Run B of the threading QA window (#1425): the sidecar is written on
+    ## every delivery here, so the window can measure what that costs before
+    ## the chart default is decided. Committed rather than passed with --set:
+    ## the run has to be reproducible from this file, and a knob that lives
+    ## only in someone's shell history is not configuration.
+    ##
+    ## The chart default stays false until the window reports.
+    threading:
+      enabled: true
   warden:
     # #908 PR4: singleton lifted. Redis-backed state (penalties + sessions + kick
     # bus) is shared across replicas, so the sandbox runs 2 to exercise the
