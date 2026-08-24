@@ -63,6 +63,20 @@ func setStatus(status statusCollector, rcpt string, start time.Time, err error) 
 	status.SetStatus(rcpt, err)
 }
 
+// setProxyStatus reports a proxied recipient's outcome, deliberately WITHOUT
+// timing it.
+//
+// Proxied recipients are answered from one fan-out that covers all of them, so
+// there is no per-recipient duration to observe: timing here would record the
+// same wall clock once per recipient and call it N deliveries. That seam wants
+// its own measurement of the fan-out, which is a different question from what
+// a local delivery costs -- and until it has one, this function exists so the
+// exception is a named function rather than a bare call the guard has to
+// forgive.
+func setProxyStatus(status statusCollector, rcpt string, err error) {
+	status.SetStatus(rcpt, err)
+}
+
 // statusCollector is go-smtp's StatusCollector, named here so the timing
 // helper does not drag the SMTP package into this file.
 type statusCollector interface {

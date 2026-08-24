@@ -630,7 +630,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 			} else {
 				slog.Info("lmtp: proxy delivered", "rcpt", rcpt, "size", len(proxyData))
 			}
-			status.SetStatus(rcpt, rerr)
+			setProxyStatus(status, rcpt, rerr)
 		}
 	}
 
