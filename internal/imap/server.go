@@ -2960,6 +2960,16 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		})
 		defer envCache.Close()
 	}
+	// THREADID, like the envelope cache above, is resolved once per command:
+	// see threadIDs for why per-message reads are both costly and wrong.
+	var threadIDs map[uint32]string
+	if opts.ThreadID {
+		msgs := make([]*mailbox.MessageMeta, 0, len(fetchList))
+		for _, fe := range fetchList {
+			msgs = append(msgs, fe.msg)
+		}
+		threadIDs = s.threadIDs(msgs)
+	}
 	for _, fe := range fetchList {
 		m := fe.msg
 		// CHANGEDSINCE filter — skip messages whose modseq has not moved
@@ -3026,7 +3036,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			// is exactly true for an account the migration step has not
 			// reached -- and is what this answered for every message before
 			// threading existed.
-			mw.WriteThreadID(s.threadIDOf(m))
+			mw.WriteThreadID(threadIDs[m.UID])
 		}
 		if opts.Envelope && m.Filename != "" {
 			if env := envCache.Envelope(m); env != nil {
