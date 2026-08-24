@@ -69,7 +69,7 @@ require (
 
 replace github.com/foxcpp/go-sieve => github.com/0kaba0hub/go-sieve v0.0.0-20260713145935-39e12c5d4b1f
 
-replace github.com/emersion/go-imap/v2 => github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260824073707-a9cc81ef6232
+replace github.com/emersion/go-imap/v2 => github.com/0kaba0hub/go-imap/v2 v2.0.0-beta.8.0.20260824134213-1cee83c25ddb
 
 replace github.com/emersion/go-sasl => github.com/0kaba0hub/go-sasl v0.0.0-20260603191939-ef5a2942848f
 

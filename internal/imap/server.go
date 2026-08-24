@@ -337,6 +337,7 @@ func New(opts Options) *Server {
 		imaplib.CapQResync:          {},
 		// RFC 5256. Both algorithms are computed per command from headers,
 		// independently of the threading sidecar -- see session.Thread.
+		imaplib.CapSort: {}, // RFC 5256 -- SORT=DISPLAY (RFC 5957) is not implemented
 		imaplib.ThreadCap(imaplib.ThreadReferences):     {},
 		imaplib.ThreadCap(imaplib.ThreadOrderedSubject): {},
 	}

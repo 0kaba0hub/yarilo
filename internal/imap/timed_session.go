@@ -202,6 +202,12 @@ func (t *timedSession) Search(kind imapserver.NumKind, criteria *imaplib.SearchC
 	return v, t.classify(err)
 }
 
+func (t *timedSession) Sort(kind imapserver.NumKind, criteria []imaplib.SortCriterion, search *imaplib.SearchCriteria) ([]uint32, error) {
+	defer t.observe("Sort", time.Now())
+	v, err := t.s.Sort(kind, criteria, search)
+	return v, t.classify(err)
+}
+
 func (t *timedSession) Thread(kind imapserver.NumKind, alg imaplib.ThreadAlgorithm, criteria *imaplib.SearchCriteria) ([]imaplib.ThreadNode, error) {
 	defer t.observe("Thread", time.Now())
 	v, err := t.s.Thread(kind, alg, criteria)
