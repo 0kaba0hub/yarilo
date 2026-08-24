@@ -19,8 +19,27 @@ import (
 var metricCommandSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 	Name:    "imap_command_seconds",
 	Help:    "Server-side duration of one IMAP command, by command and storage driver. IDLE, NOTIFY and POLL wait on the client or the mailbox and are long by design; APPEND includes reading the message literal from the client, so a slow client shows up here as slow storage.",
-	Buckets: prometheus.ExponentialBuckets(0.0001, 4, 12), // 100us .. ~7min
+	Buckets: commandBuckets,
 }, []string{"command", "driver"})
+
+// commandBuckets is fine where the commands are and coarse where they are not.
+//
+// A single exponential series stepping by four put 6.4ms and 25.6ms in
+// neighbouring boundaries, so every command between them -- which is most of
+// them -- landed in one bucket, p50 and p99 alike. Asked to compare THREAD
+// (10.3ms) against SEARCH (4.5ms) it answered "both under 25.6ms": true, and
+// no help. A histogram that cannot separate two commands differing by 2x
+// cannot answer the question this one is read for (#1462).
+//
+// Doubling between 1ms and 128ms buys that resolution; the decade below and
+// the long tail above stay coarse, because nobody reads a quantile of IDLE.
+// Note the average (sum/count) was always exact -- it is the quantiles this
+// changes, and quantiles are what a tail investigation needs.
+var commandBuckets = []float64{
+	0.0001, 0.00025, 0.0005,
+	0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.128,
+	0.25, 0.5, 1, 5, 30, 120, 600,
+}
 
 // The maildir proactive scan, as a whole and as a decision.
 //
