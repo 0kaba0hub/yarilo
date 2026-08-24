@@ -335,6 +335,10 @@ func New(opts Options) *Server {
 		imaplib.CapNotify:           {}, // RFC 5465 — event notifications
 		imaplib.CapBinary:           {},
 		imaplib.CapQResync:          {},
+		// RFC 5256. Both algorithms are computed per command from headers,
+		// independently of the threading sidecar -- see session.Thread.
+		imaplib.ThreadCap(imaplib.ThreadReferences):     {},
+		imaplib.ThreadCap(imaplib.ThreadOrderedSubject): {},
 	}
 	if opts.MetadataDict != nil {
 		caps[imaplib.CapMetadata] = struct{}{}
@@ -2583,6 +2587,38 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 	return nil
 }
 
+// matchMessage answers whether one message satisfies the criteria, and hands
+// back the bytes it had to read so a caller that needs them again does not
+// read twice. SEARCH and THREAD share it: two matchers would let the same
+// criteria select two different sets of messages.
+//
+// A read failure is reported, never folded into "did not match". MatchMessage
+// answers TRUE for a BODY/TEXT criterion when it is given no message, so a
+// dropped error made every unreadable message match every body search (#1283)
+// -- a message nobody looked at is not a message that matched.
+func (s *session) matchMessage(seqNum uint32, m *mailbox.MessageMeta, criteria *imaplib.SearchCriteria, needRaw bool) (bool, []byte, error) {
+	var rawMsg []byte
+	if needRaw && m.Filename != "" {
+		rc, err := s.fetchSelected(m)
+		if err == nil {
+			rawMsg, err = io.ReadAll(rc)
+			rc.Close()
+		}
+		if err != nil {
+			return false, nil, err
+		}
+	}
+
+	imapFlags := make([]imaplib.Flag, len(m.Flags)+len(m.Keywords))
+	for j, f := range m.Flags {
+		imapFlags[j] = imaplib.Flag(f)
+	}
+	for j, k := range m.Keywords {
+		imapFlags[len(m.Flags)+j] = imaplib.Flag(k)
+	}
+	return imapserver.MatchMessage(seqNum, imaplib.UID(m.UID), m.InternalDate, int64(m.RFC822Size()), imapFlags, rawMsg, criteria), rawMsg, nil
+}
+
 func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriteria, opts *imaplib.SearchOptions) (*imaplib.SearchData, error) {
 	slog.Debug("imap: command", "sid", s.sid, "cmd", "Search")
 	if s.folder == nil {
@@ -2648,34 +2684,13 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 				matchCrit, needRaw = ftsF.stripped, ftsF.strippedNeedsBody
 			}
 		}
-		var rawMsg []byte
-		if needRaw && m.Filename != "" {
-			rc, err := s.fetchSelected(m)
-			if err == nil {
-				rawMsg, err = io.ReadAll(rc)
-				rc.Close()
-			}
-			if err != nil {
-				// MatchMessage answers TRUE for a BODY/TEXT criterion when it
-				// is given no message: with the read error dropped, every
-				// message the scan could not read matched every body search
-				// (#1283). Excluded and counted instead -- a message nobody
-				// looked at is not a message that matched.
-				unreadable = append(unreadable, m.UID)
-				lastReadErr = err
-				continue
-			}
+		matched, _, readErr := s.matchMessage(seqNum, m, matchCrit, needRaw)
+		if readErr != nil {
+			unreadable = append(unreadable, m.UID)
+			lastReadErr = readErr
+			continue
 		}
-
-		imapFlags := make([]imaplib.Flag, len(m.Flags)+len(m.Keywords))
-		for j, f := range m.Flags {
-			imapFlags[j] = imaplib.Flag(f)
-		}
-		for j, k := range m.Keywords {
-			imapFlags[len(m.Flags)+j] = imaplib.Flag(k)
-		}
-
-		if !imapserver.MatchMessage(seqNum, imaplib.UID(m.UID), m.InternalDate, int64(m.RFC822Size()), imapFlags, rawMsg, matchCrit) {
+		if !matched {
 			continue
 		}
 
