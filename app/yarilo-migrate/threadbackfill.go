@@ -88,8 +88,23 @@ func runThreadBackfillInto(o threadOpts, st *threadStats) error {
 	if err != nil {
 		return err
 	}
+	// One backend per driver, chosen per user, because a deployment holds
+	// accounts of several drivers at once: the sandbox alone runs mdbox,
+	// maildir and sdbox side by side. A single --driver for the whole run
+	// makes every account of the other two unreadable.
+	byDriver := func(d string) mailbox.MailboxBackend {
+		return mailboxbuild.ByDriver(d, cfg.Storage, locker)
+	}
+	// Resolving one account is a value rather than a call, so a test can hand
+	// this step an account with a driver and a mail root of its own without a
+	// live userdb -- which is the only shape in which #1456 is visible.
+	resolveUser := func(user string) (*mailbox.UserInfo, error) {
+		return guidUserInfo(resolver, authcl, guidOpts{
+			Offline: o.Offline, IndexTmpl: o.IndexTmpl, MailTmpl: o.MailTmpl,
+		}, user)
+	}
 	for _, user := range users {
-		if err := threadUser(boxBE, idxBE, resolver, locker, o, user, st); err != nil {
+		if err := threadUser(boxBE, byDriver, idxBE, resolveUser, locker, o, user, st); err != nil {
 			return fmt.Errorf("thread backfill %s: %w", user, err)
 		}
 	}
@@ -110,16 +125,16 @@ func runThreadBackfillInto(o threadOpts, st *threadStats) error {
 //
 // With no lock service (a stopped store, the case the warning above names)
 // there is nothing to hold, and the tool says so rather than pretending.
-func threadUser(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolver *mailbox.Resolver, locker locks.Locker, o threadOpts, user string, st *threadStats) error {
+func threadUser(boxBE mailbox.MailboxBackend, byDriver func(string) mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolveUser func(string) (*mailbox.UserInfo, error), locker locks.Locker, o threadOpts, user string, st *threadStats) error {
 	if locker == nil {
-		return threadUserLocked(boxBE, idxBE, resolver, o, user, st)
+		return threadUserLocked(boxBE, byDriver, idxBE, resolveUser, o, user, st)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), backfillLockTimeout)
 	defer cancel()
 	return locks.WithLock(ctx, locker, locks.ThreadsKey(user),
 		fmt.Sprintf("yarilo-migrate/%d", os.Getpid()), backfillLockTTL, backfillLockRenew,
 		func(context.Context) error {
-			return threadUserLocked(boxBE, idxBE, resolver, o, user, st)
+			return threadUserLocked(boxBE, byDriver, idxBE, resolveUser, o, user, st)
 		})
 }
 
@@ -133,13 +148,19 @@ const (
 	backfillLockRenew   = 5 * time.Second
 )
 
-func threadUserLocked(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolver *mailbox.Resolver, o threadOpts, user string, st *threadStats) error {
-	info, err := guidUserInfo(resolver, nil, guidOpts{
-		Offline: true, IndexTmpl: o.IndexTmpl, MailTmpl: o.MailTmpl,
-	}, user)
+func threadUserLocked(boxBE mailbox.MailboxBackend, byDriver func(string) mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolveUser func(string) (*mailbox.UserInfo, error), o threadOpts, user string, st *threadStats) error {
+	// Through userdb, exactly as a session resolves the account. Passing nil
+	// here asked the resolver for defaults instead, which gave every account
+	// the default driver's mail path: the sidecar was looked for beside a
+	// Maildir that mdbox and sdbox accounts do not have, and written to the
+	// home directory rather than to the mail root the deliveries use (#1456).
+	info, err := resolveUser(user)
 	if err != nil {
 		return err
 	}
+	// The account's own driver decides its storage, with the run-wide backend
+	// as the fallback for an account userdb says nothing about.
+	box := mailbox.SelectPersonalBackend(boxBE, byDriver, info.Driver)
 	path := threads.PathFor(info)
 	if path == "" {
 		return fmt.Errorf("no control root for %s", user)
@@ -156,12 +177,12 @@ func threadUserLocked(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, 
 		}
 	}
 
-	box := boxBE.OpenUser(info)
-	defer box.Close() //nolint:errcheck
+	userBox := box.OpenUser(info)
+	defer userBox.Close() //nolint:errcheck
 	idx := idxBE.OpenUser(info)
 	defer idx.Close() //nolint:errcheck
 
-	entries, err := box.ListFolders()
+	entries, err := userBox.ListFolders()
 	if err != nil {
 		return fmt.Errorf("list folders: %w", err)
 	}
@@ -178,7 +199,7 @@ func threadUserLocked(boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, 
 	}
 
 	before := st.Messages
-	state, err := buildSidecar(box, idx, names, path, user, st)
+	state, err := buildSidecar(userBox, idx, names, path, user, st)
 	if err != nil {
 		return err
 	}
