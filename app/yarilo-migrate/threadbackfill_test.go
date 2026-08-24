@@ -385,7 +385,9 @@ func TestTheRebuildHoldsTheAccountLock(t *testing.T) {
 
 	var st threadStats
 	o := backfillOpts(root, false)
-	if err := threadUser(maildir.New(), fileindex.New(), &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"},
+	resolver := &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"}
+	resolveUser := func(u string) (*mailbox.UserInfo, error) { return resolver.UserInfo(u, ""), nil }
+	if err := threadUser(maildir.New(), nil, fileindex.New(), resolveUser,
 		locker, o, info.Username, &st); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
@@ -403,5 +405,86 @@ func TestTheRebuildHoldsTheAccountLock(t *testing.T) {
 	}
 	if locker.holding[want] {
 		t.Error("the thread lock was not released when the account finished")
+	}
+}
+
+// An account whose driver is not the run's default must be read with its own
+// driver, and its sidecar written where the deliveries write it.
+//
+// This is #1456. The backfill resolved every account through the resolver's
+// defaults, so a userdb account with `mbtype=mdbox` was opened as maildir --
+// "open .../Maildir: no such file" on mdbox and sdbox accounts, and on maildir
+// accounts a sidecar written to the home directory while the deliveries kept
+// extending the real one a level below. Three of the QA window's five numbers
+// are taken with this command; all three were unobtainable.
+//
+// The row seeds the mail under a per-driver root, exactly as userdb hands it
+// out, and asserts on the path the sidecar lands at -- the observable half of
+// the defect. With the account resolved through defaults, nothing is written
+// there at all.
+func TestBackfillFollowsTheAccountsOwnDriverAndMailRoot(t *testing.T) {
+	root := t.TempDir()
+	resolver := &mailbox.Resolver{Root: root, HomeTemplate: "%d/%n"}
+	base := resolver.UserInfo("u1@d00001.test", "")
+
+	// What userdb gives a non-default account: its own driver, and a mail root
+	// one level below the home directory.
+	info := *base
+	info.Driver = "mdbox"
+	info.MailPath = filepath.Join(base.Home, "mdbox")
+
+	box := maildir.New().OpenUser(&info)
+	if err := box.Init(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	idx := fileindex.New().OpenUser(&info)
+	raw := "Message-ID: <a@x>\r\nSubject: Plan\r\n\r\nbody\r\n"
+	name, vsize, guid, err := box.Save("INBOX", strings.NewReader(raw), 1, int64(len(raw)), nil, [16]byte{})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	f, err := idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("open folder: %v", err)
+	}
+	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{
+		UID: 1, Filename: name, Size: uint32(len(raw)), VSize: vsize,
+		GUID: guid, InternalDate: time.Now(),
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	idx.Close() //nolint:errcheck
+	box.Close() //nolint:errcheck
+
+	var askedFor []string
+	byDriver := func(d string) mailbox.MailboxBackend {
+		askedFor = append(askedFor, d)
+		return maildir.New()
+	}
+	resolveUser := func(string) (*mailbox.UserInfo, error) { return &info, nil }
+
+	var st threadStats
+	if err := threadUser(maildir.New(), byDriver, fileindex.New(), resolveUser,
+		nil, backfillOpts(root, false), info.Username, &st); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// The account's driver decided the storage.
+	if len(askedFor) != 1 || askedFor[0] != "mdbox" {
+		t.Errorf("backends asked for %v, want exactly [mdbox] -- the account's own driver", askedFor)
+	}
+	// And the sidecar is where the deliveries keep theirs: in the mail root,
+	// not in the home directory above it.
+	want := filepath.Join(info.MailPath, threads.FileName)
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("no sidecar at %s: %v", want, err)
+	}
+	if stray := filepath.Join(base.Home, threads.FileName); stray != want {
+		if _, err := os.Stat(stray); err == nil {
+			t.Errorf("a second sidecar was written to the home directory at %s -- deliveries would never read it", stray)
+		}
+	}
+	if st.Threads != 1 {
+		t.Errorf("threads = %d, want 1", st.Threads)
 	}
 }
