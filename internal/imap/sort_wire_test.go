@@ -130,3 +130,66 @@ func TestSortCountsMessagesItCouldNotRead(t *testing.T) {
 		t.Errorf("counter for command=sort rose by %v, want 2", n)
 	}
 }
+
+// SORT by a key the index already holds must not open a single message, and
+// this row states that in the only way a test can: it breaks every stored
+// message first.
+//
+// A counter would have been the obvious assertion and a weaker one -- it says
+// how many files were opened, not whether the answer depended on them. Here
+// the mailbox is unreadable and the answer must still be complete and in the
+// right order, which is only possible if nothing was read.
+//
+// Measured before this existed (#1461): SORT (ARRIVAL) over 10 442 messages
+// cost 850ms against SEARCH ALL's 10ms on the same mailbox -- all of it
+// opening files for headers nobody had asked for.
+func TestSortByIndexKeysOpensNoMessages(t *testing.T) {
+	raws := []string{
+		mailFrom("a@x", "One", "Sun, 1 Mar 2026 10:00:00 +0000", "a@example.com"),
+		mailFrom("b@x", "Two", "Sun, 1 Mar 2026 11:00:00 +0000", "b@example.com"),
+		mailFrom("c@x", "Three", "Sun, 1 Mar 2026 12:00:00 +0000", "c@example.com"),
+	}
+	conn, rd, root := threadServerIn(t, raws)
+	if n := makeStoredMessagesUnreadable(t, root); n != 3 {
+		t.Fatalf("made %d messages unreadable, want 3", n)
+	}
+
+	before := unreadableCount(t, "sort")
+	for _, tc := range []struct{ cmd, want string }{
+		{"SORT (ARRIVAL) UTF-8 ALL", "* SORT 1 2 3"},
+		{"SORT (REVERSE ARRIVAL) UTF-8 ALL", "* SORT 3 2 1"},
+		{"SORT (SIZE) UTF-8 ALL", "* SORT 1 2 3"},
+	} {
+		if got := sortLine(t, conn, rd, "z"+tc.cmd[6:9], tc.cmd); got != tc.want {
+			t.Errorf("%s over an unreadable mailbox = %q, want %q -- the key is in the index, so nothing needed opening",
+				tc.cmd, got, tc.want)
+		}
+	}
+	if n := unreadableCount(t, "sort") - before; n != 0 {
+		t.Errorf("the scan counted %v unreadable messages, so it tried to read them", n)
+	}
+}
+
+// The counter-row: a key that is NOT in the index does depend on the message,
+// so on the same broken mailbox it degrades and says so. Without this, the row
+// above would also pass an implementation that silently answered nothing.
+func TestSortBySubjectStillNeedsTheMessage(t *testing.T) {
+	raws := []string{
+		mailFrom("a@x", "Zulu", "Sun, 1 Mar 2026 10:00:00 +0000", "a@example.com"),
+		mailFrom("b@x", "Alpha", "Sun, 1 Mar 2026 11:00:00 +0000", "b@example.com"),
+	}
+	conn, rd, root := threadServerIn(t, raws)
+	if n := makeStoredMessagesUnreadable(t, root); n != 2 {
+		t.Fatalf("made %d messages unreadable, want 2", n)
+	}
+
+	before := unreadableCount(t, "sort")
+	// Both messages are still named -- they exist -- but with no subject to
+	// order by they keep mailbox order, and the operator is told.
+	if got := sortLine(t, conn, rd, "z9", "SORT (SUBJECT) UTF-8 ALL"); got != "* SORT 1 2" {
+		t.Errorf("SORT (SUBJECT) = %q", got)
+	}
+	if n := unreadableCount(t, "sort") - before; n != 2 {
+		t.Errorf("counter rose by %v, want 2 -- a subject sort over unreadable messages is a degraded answer and must say so", n)
+	}
+}
