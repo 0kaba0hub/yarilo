@@ -1994,6 +1994,20 @@ protocol:
     read_timeout: 300
     write_timeout: 300
     client_workarounds: []
+    ## rate_limit — deliveries allowed per (sender IP, recipient mailbox) pair
+    ## inside one window; beyond it a sender gets 421 4.7.0 and retries later.
+    ## Counters live in yarilo-locks, so the limit is cluster-wide rather than
+    ## per pod.
+    ##
+    ## The defaults suit ordinary mail. They do NOT suit bulk delivery to one
+    ## account -- a migration, a load test, a mailing-list expansion landing in
+    ## one mailbox -- which is what raising the burst or widening the window is
+    ## for. Turning it off entirely leaves nothing between a misbehaving sender
+    ## and a mailbox.
+    rate_limit:
+      enabled: true
+      per_recipient_burst: 100
+      per_recipient_window_seconds: 60
 
   submission:
     hostname: ""
