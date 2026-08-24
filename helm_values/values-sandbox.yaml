@@ -345,6 +345,10 @@ components:
 
   ## internal mTLS for co-located backend + shared services (sandbox #856 gate)
   backend:
+    ## QA-вікно #1425 (docs-internal#13): прогін B міряє вартість доставки з
+    ## увімкненою ручкою. Читається на старті, тож перемикається викатом.
+    threading:
+      enabled: true
     ## 2, not the chart default of 3: three do not fit. The node has 4 cores,
     ## other namespaces hold ~1590m of it, and each backend pod requests 460m
     ## across its eight containers -- the third is refused outright with
