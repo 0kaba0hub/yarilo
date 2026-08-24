@@ -25,8 +25,21 @@ import (
 var metricDeliverySeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 	Name:    "lmtp_delivery_seconds",
 	Help:    "Duration of one LMTP recipient delivery, from message in hand to the status reported for that recipient.",
-	Buckets: prometheus.ExponentialBuckets(0.0005, 3, 12), // 0.5ms .. ~1.5min
+	Buckets: deliveryBuckets,
 }, []string{"outcome"})
+
+// deliveryBuckets double where deliveries actually land (4-256ms here) and
+// stay coarse either side.
+//
+// Stepping by three put 40.5ms and 121.5ms next to each other, so the whole
+// band a delivery lives in was one answer. The first question anyone asks of
+// this metric is about the SHAPE of the drift -- is the median rising or is
+// the tail? -- and a bucket that wide cannot tell those apart (#1462).
+var deliveryBuckets = []float64{
+	0.0005, 0.001, 0.002,
+	0.004, 0.008, 0.016, 0.032, 0.064, 0.128, 0.256,
+	0.5, 1, 5, 30, 120,
+}
 
 // metricThreadRecordSeconds is the threading sidecar write alone, inside the
 // delivery above.
@@ -40,8 +53,17 @@ var metricDeliverySeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 var metricThreadRecordSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
 	Name:    "lmtp_thread_record_seconds",
 	Help:    "Duration of the threading sidecar write within an LMTP delivery, lock included.",
-	Buckets: prometheus.ExponentialBuckets(0.0001, 3, 10), // 100us .. ~6.5s
+	Buckets: threadRecordBuckets,
 })
+
+// threadRecordBuckets double across 0.25-4ms, which is where the sidecar write
+// measured: ~1ms, flat across drivers and account sizes. A metric whose whole
+// job is to say whether that figure moves needs to resolve a doubling of it,
+// not a tripling.
+var threadRecordBuckets = []float64{
+	0.000125, 0.00025, 0.0005, 0.001, 0.002, 0.004,
+	0.008, 0.016, 0.064, 0.256, 1, 5,
+}
 
 // observeDelivery records one recipient's outcome. Rejections carry a 4xx/5xx
 // status, so the label is decided by what the recipient is told, not by
