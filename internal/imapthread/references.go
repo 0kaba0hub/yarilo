@@ -20,6 +20,16 @@ type Message struct {
 	References []string
 	Subject    string
 	Sent       time.Time
+
+	// The rest is what SORT needs and threading does not. From, To and Cc are
+	// the addr-mailbox of the FIRST address in each header (RFC 5256 §3) --
+	// the local part, not the display name: "John Doe <zeta@x>" sorts under
+	// "zeta".
+	Arrival time.Time
+	Size    int64
+	From    string
+	To      string
+	Cc      string
 }
 
 // container is a node while the tree is being built. RFC 5256 calls a
