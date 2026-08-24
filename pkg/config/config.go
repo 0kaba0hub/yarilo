@@ -964,10 +964,11 @@ func (c AuthServiceConfig) ClientAddr() string {
 type ThreadingConfig struct {
 	// Enabled turns on the delivery-time write of the threading sidecar.
 	//
-	// Off by default while the arc is being built: the sidecar costs work on
-	// every delivery, and until the read paths (Thread/get, Thread/changes,
-	// IMAP THREAD) are wired there is nothing to spend it on. An operator can
-	// turn it on to exercise it; the default flips when the readers land.
+	// On by default: the readers landed (Thread/get, Thread/changes,
+	// FETCH THREADID) and the cost was measured before the default moved
+	// (#1425) -- ~1ms per delivery, flat across drivers and account sizes.
+	// An account with this off behaves as it did before threading existed:
+	// every message its own conversation.
 	Enabled bool `koanf:"threading_enabled"`
 	// ThreadingCacheIdle is how long a process keeps an account's folded
 	// sidecar after its last delivery. Folding costs O(account) -- 37ms at a

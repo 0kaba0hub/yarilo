@@ -915,11 +915,15 @@ data:
     ## Conversation threading: which delivered messages are recorded as
     ## belonging together (#1425).
     threading:
-      ## Off while the arc is being built: the sidecar costs work on every
-      ## delivery, and until the read paths exist there is nothing to spend it
-      ## on. An account with threading off behaves exactly as it does today --
-      ## every message its own conversation.
-      threading_enabled: {{ .Values.components.backend.threading.enabled | default false }}
+      ## On by default since 2.3.246, measured before the default moved
+      ## (#1425): ~1ms per delivery, flat across drivers and account sizes.
+      ## An account with threading off behaves as it did before threading
+      ## existed -- every message its own conversation.
+      ##
+      ## Not `| default true`: Helm's default treats false as empty, so that
+      ## spelling would ignore an operator who turns this OFF. hasKey asks the
+      ## question actually being asked -- did they say anything at all.
+      threading_enabled: {{ if hasKey .Values.components.backend.threading "enabled" }}{{ .Values.components.backend.threading.enabled }}{{ else }}true{{ end }}
       ## Seconds a process keeps an account's folded sidecar after its last
       ## delivery. Folding costs O(account) -- 37ms at a hundred thousand
       ## messages -- so it is cached, and bounded by idleness so an account
