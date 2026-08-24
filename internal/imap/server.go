@@ -36,6 +36,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/userstate/acl"
 	"github.com/yarilomail/yarilo/internal/userstate/specialuse"
 	"github.com/yarilomail/yarilo/internal/userstate/subs"
+	"github.com/yarilomail/yarilo/internal/userstate/threads"
 	"github.com/yarilomail/yarilo/pkg/authclient"
 	"github.com/yarilomail/yarilo/pkg/dict"
 	"github.com/yarilomail/yarilo/pkg/locks"
@@ -166,6 +167,11 @@ type Options struct {
 	// ACLCacheTTL is how long a parsed per-mailbox ACL is trusted before its
 	// file's mtime+size are re-validated. Zero disables caching.
 	ACLCacheTTL time.Duration
+
+	// Threads answers FETCH THREADID from the account's threading sidecar.
+	// Nil leaves it NIL, which is what an account behaves like before the
+	// migration step reaches it (#1425).
+	Threads *threads.Cache
 
 	// UserdbLookup resolves an arbitrary (non-authenticating) user's storage
 	// identity via the yarilo-auth master -- the same lookup LMTP uses for a
@@ -3016,7 +3022,11 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			mw.WriteEmailID(mailbox.FormatObjectID(m.GUID)) // RFC 8474 OBJECTID
 		}
 		if opts.ThreadID {
-			mw.WriteThreadID("") // no threading -> NIL
+			// RFC 8474: NIL means the server cannot determine a thread, which
+			// is exactly true for an account the migration step has not
+			// reached -- and is what this answered for every message before
+			// threading existed.
+			mw.WriteThreadID(s.threadIDOf(m))
 		}
 		if opts.Envelope && m.Filename != "" {
 			if env := envCache.Envelope(m); env != nil {
