@@ -1,0 +1,126 @@
+name: Gate — lint and test
+
+## The single gate both branch pipelines run. One copy, because two copies of a
+## gate drift, and the day they differ is the day something merges into one
+## branch that the other would have refused.
+on:
+  workflow_call:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: [self-hosted, linux]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          ## The runners are self-hosted and keep GOCACHE/GOMODCACHE on local
+          ## disk between jobs, so Go already reuses both build artefacts and
+          ## test results. setup-go's own cache duplicates that through the
+          ## GitHub cache service: measured on run 30441836747 it moved ~1.85 GB
+          ## per job, costing 8m05s to restore and 2m02s to save while the tests
+          ## themselves took 12s. Disabling it leaves the local cache as the only
+          ## one, which is the one that actually works here.
+          cache: false
+
+      ## Pinned, and only rebuilt when the pin changes: `@latest` recompiled the
+      ## linter on every run and silently changed the ruleset under us, so a
+      ## green PR could go red on merge without a code change. v1 is required —
+      ## .golangci.yml is v1 format (it enables `gosimple`, which v2 folded into
+      ## staticcheck), so bumping to v2 needs a config migration first.
+      - name: Install golangci-lint
+        run: |
+          want=v1.64.8
+          have=$(golangci-lint version 2>/dev/null | grep -oE 'version v?[0-9.]+' | grep -oE '[0-9.]+' || true)
+          if [ "v${have}" != "$want" ]; then
+            go install github.com/golangci/golangci-lint/cmd/golangci-lint@$want
+          fi
+
+      - name: Run golangci-lint
+        run: golangci-lint run ./...
+
+      - name: Run hadolint
+        uses: hadolint/hadolint-action@v3.4.0
+        with:
+          dockerfile: docker/Dockerfile
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          ## Pinned so `helm lint` cannot start failing on a chart that did not
+          ## change.
+          version: v3.19.0
+
+      - name: Lint Helm chart
+        run: helm lint helm
+
+  test:
+    name: Test
+    runs-on: [self-hosted, linux]
+    permissions:
+      checks: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          ## The runners are self-hosted and keep GOCACHE/GOMODCACHE on local
+          ## disk between jobs, so Go already reuses both build artefacts and
+          ## test results. setup-go's own cache duplicates that through the
+          ## GitHub cache service: measured on run 30441836747 it moved ~1.85 GB
+          ## per job, costing 8m05s to restore and 2m02s to save while the tests
+          ## themselves took 12s. Disabling it leaves the local cache as the only
+          ## one, which is the one that actually works here.
+          cache: false
+
+      - name: Install go-junit-report
+        run: |
+          command -v go-junit-report >/dev/null || \
+            go install github.com/jstemmer/go-junit-report/v2@v2.1.0
+
+      - name: Run tests
+        run: |
+          set -o pipefail
+          go test -v ./... 2>&1 | tee /tmp/test-output.log | go-junit-report -set-exit-code > /tmp/test-results.xml
+
+      ## The flatcurve FTS engine is cgo + libxapian and only builds with the
+      ## "flatcurve" tag; the runner installs libxapian-dev / g++ on demand.
+      ## CGO_ENABLED=1 is explicit: without a C toolchain Go silently drops
+      ## the cgo files and the build fails with undefined symbols.
+      - name: Run flatcurve engine tests
+        run: |
+          if ! dpkg -s libxapian-dev >/dev/null 2>&1 || ! command -v g++ >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libxapian-dev g++
+          fi
+          CGO_ENABLED=1 go test -tags flatcurve ./internal/fts/flatcurve/ ./internal/ftsservice/ ./internal/ftsbench/
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v3
+        if: always()
+        with:
+          name: Go Tests
+          path: /tmp/test-results.xml
+          reporter: java-junit
+
+      - name: Upload raw test output
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: go-test-output
+          path: /tmp/test-output.log
+          retention-days: 14
+
