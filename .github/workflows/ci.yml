@@ -47,6 +47,11 @@ jobs:
   ## run the same gate rather than two copies of it.
   gate:
     uses: ./.github/workflows/gate.yml
+    ## A called workflow cannot ask for more than its caller grants,
+    ## and the test job publishes a check run.
+    permissions:
+      contents: read
+      checks: write
 
   build:
     name: Build & Push
