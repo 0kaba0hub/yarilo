@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yarilomail/yarilo/internal/storage/logrotate"
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -34,10 +35,11 @@ import (
 // Backend is the per-process factory for fileindex handles. It
 // holds only process-wide state; per-user state lives in
 // userIndex (created by OpenUser).
-const (
-	defaultLogCompactMinBytes   int64 = 32 * 1024   // 32 KiB
-	defaultLogCompactMaxBytes   int64 = 1024 * 1024 // 1 MiB
-	defaultLogCompactMinAgeSecs int   = 300         // 5 min
+// The fold thresholds live in one place for both logs; see internal/storage/logrotate.
+var (
+	defaultLogCompactMinBytes = logrotate.MinSize
+	defaultLogCompactMaxBytes = logrotate.MaxSize
+	defaultLogCompactMinAge   = logrotate.MinAge
 )
 
 // sidecarTmpSeq gives concurrent sidecar-file writers (saveNames,
@@ -181,7 +183,7 @@ func New(opts ...Option) *Backend {
 		users:              make(map[string]*refUserIndex),
 		logCompactMinBytes: defaultLogCompactMinBytes,
 		logCompactMaxBytes: defaultLogCompactMaxBytes,
-		logCompactMinAge:   time.Duration(defaultLogCompactMinAgeSecs) * time.Second,
+		logCompactMinAge:   defaultLogCompactMinAge,
 	}
 	for _, opt := range opts {
 		opt(b)
