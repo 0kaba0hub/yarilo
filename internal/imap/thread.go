@@ -213,18 +213,18 @@ func (s *session) orderingMessage(num uint32, m *mailbox.MessageMeta, raw []byte
 	// envelope without References would thread the message by subject alone
 	// and quietly put it in the wrong conversation, which is worse than
 	// being slow.
-	if env := envCache.Envelope(m); env != nil {
-		refs, cached := []string(nil), true
-		if needs.refs {
-			refs, cached = envCache.References(m)
-		}
-		if cached {
+	// One pass over the record, not one per field: each read walks the chain
+	// and decodes everything in it, so asking twice doubled what a THREAD
+	// spent on a large mailbox (#1461).
+	if needs.refs {
+		if env, refs, cached := envCache.EnvelopeAndReferences(m); env != nil && cached {
 			applyEnvelope(&out, env)
-			if needs.refs {
-				out.References = threadAncestry(refs, env.InReplyTo)
-			}
+			out.References = threadAncestry(refs, env.InReplyTo)
 			return out, nil
 		}
+	} else if env := envCache.Envelope(m); env != nil {
+		applyEnvelope(&out, env)
+		return out, nil
 	}
 	// A miss is read, not skipped: an account with a cold cache would
 	// otherwise sort by empty subjects and look like a mailbox of blank mail.

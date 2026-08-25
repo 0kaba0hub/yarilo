@@ -427,6 +427,36 @@ func (fc *Handle) References(m *mailbox.MessageMeta) ([]string, bool) {
 	return strings.Split(string(data), "\n"), true
 }
 
+// EnvelopeAndReferences reads both in ONE pass over the message's record.
+//
+// Asking for them separately costs two full reads -- each walks the record
+// chain, does its own ReadAt and decodes every field in it -- and threading
+// needs both for every message it touches. On ten thousand messages that
+// second pass was most of what a THREAD cost: the algorithm itself is ~8ms
+// there, while the doubled read is ~170ms (#1461).
+func (fc *Handle) EnvelopeAndReferences(m *mailbox.MessageMeta) (*imaplib.Envelope, []string, bool) {
+	if fc == nil {
+		return nil, nil, false
+	}
+	vals := fc.read(m)
+	envData, ok := vals[fc.envID]
+	if !ok {
+		return nil, nil, false
+	}
+	env, ok := decodeEnvelope(envData)
+	if !ok {
+		return nil, nil, false
+	}
+	refsData, cached := vals[fc.refsID]
+	if !cached {
+		return env, nil, false
+	}
+	if len(refsData) == 0 {
+		return env, nil, true // cached, and the message has none
+	}
+	return env, strings.Split(string(refsData), "\n"), true
+}
+
 // StoreReferences caches the References of a message. An empty list is stored
 // as an empty value rather than skipped: "no References" is an answer, and
 // skipping it would make every such message a permanent miss.
