@@ -1,6 +1,8 @@
 package imap
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"log/slog"
@@ -8,10 +10,13 @@ import (
 	"net/mail"
 	"strings"
 
+	"github.com/emersion/go-message/textproto"
+
 	imaplib "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 
 	"github.com/yarilomail/yarilo/internal/imapthread"
+	"github.com/yarilomail/yarilo/internal/msgcache"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -38,7 +43,7 @@ func (s *session) Thread(kind imapserver.NumKind, alg imaplib.ThreadAlgorithm, c
 	}
 	criteria = s.substituteSearchRes(criteria)
 
-	threaded, err := s.scanForOrdering(kind, criteria, "thread")
+	threaded, err := s.scanForOrdering(kind, criteria, "thread", orderingNeeds{envelope: true, refs: true})
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +69,38 @@ func (s *session) Thread(kind imapserver.NumKind, alg imaplib.ThreadAlgorithm, c
 //
 // command names the caller on the shared counter and in the warning, which is
 // the only thing that differs between them.
-func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.SearchCriteria, command string) ([]imapthread.Message, error) {
+// orderingNeeds is what a command actually has to read per message.
+//
+// Both fields false means the index already holds the answer -- ARRIVAL is the
+// internal date, SIZE is the size -- and the message is never opened. Measured
+// on 10 442 messages before this existed: SORT (ARRIVAL) cost 850ms against
+// SEARCH ALL's 10ms over the same mailbox, all of it spent opening files for
+// headers nobody asked for (#1461).
+type orderingNeeds struct {
+	// envelope: Subject, sent date, or an address. All are in ENVELOPE, which
+	// the message cache holds and FETCH already reads without opening
+	// anything (#1030).
+	envelope bool
+	// refs: the References header, the one threading field ENVELOPE does not
+	// carry -- so it is still the one reason to open a message.
+	refs bool
+}
+
+// sortNeeds reads the criteria of a SORT command. A key that the index answers
+// asks for nothing.
+func sortNeeds(criteria []imaplib.SortCriterion) orderingNeeds {
+	var n orderingNeeds
+	for _, c := range criteria {
+		switch c.Key {
+		case imaplib.SortKeyArrival, imaplib.SortKeySize:
+		default:
+			n.envelope = true
+		}
+	}
+	return n
+}
+
+func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.SearchCriteria, command string, needs orderingNeeds) ([]imapthread.Message, error) {
 	msgs, err := readMessages(s.folderIdx(), s.folder.ID)
 	if err != nil {
 		return nil, err
@@ -76,6 +112,20 @@ func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.Sea
 		detached    []uint32
 		lastReadErr error
 	)
+	// One handle per command, as FETCH opens one: misses are parsed and
+	// written back, so the second ordering command over a mailbox pays
+	// nothing for what the first one had to read.
+	var envCache *msgcache.Handle
+	if needs.envelope && !needs.refs {
+		envCache = msgcache.Open(s.folderIdx(), s.folder.ID, msgcache.Options{
+			Locker:  s.srv.opts.Locker,
+			User:    s.userInfo.Username,
+			Folder:  s.folder.Name,
+			TraceID: s.sid,
+		})
+		defer envCache.Close()
+	}
+
 	out := make([]imapthread.Message, 0, len(msgs))
 	for i, m := range msgs {
 		seqNum := uint32(i + 1)
@@ -97,7 +147,7 @@ func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.Sea
 		if kind == imapserver.NumKindUID {
 			num = m.UID
 		}
-		one, headerErr := s.threadMessage(num, m, raw)
+		one, headerErr := s.orderingMessage(num, m, raw, needs, envCache)
 		if headerErr != nil {
 			// Kept, not dropped: the message exists and the client can fetch
 			// it, so removing it from the answer would be a second lie. What
@@ -130,6 +180,103 @@ func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.Sea
 		)
 	}
 	return out, nil
+}
+
+// orderingMessage fills one message with what the command needs, from the
+// cheapest source that has it.
+//
+// Three paths, in order of cost. The index answers ARRIVAL and SIZE with no
+// message at all. The envelope cache answers subject, date and addresses
+// without opening one -- ENVELOPE's addr-mailbox IS the local part RFC 5256
+// sorts by, so nothing is re-parsed. Only References sends us to the file,
+// and only THREAD wants it.
+//
+// A cache miss falls back to reading the header and stores the envelope back,
+// which is what FETCH does: the miss is paid once, not once per command. It is
+// deliberately not treated as "no data" -- an account whose cache is cold
+// would otherwise sort by empty subjects and look like a mailbox of blank
+// mail (#1448 made the same choice about a message that cannot be read).
+func (s *session) orderingMessage(num uint32, m *mailbox.MessageMeta, raw []byte, needs orderingNeeds, envCache *msgcache.Handle) (imapthread.Message, error) {
+	// The index answers ARRIVAL and SIZE, so a command asking only for those
+	// never touches the message.
+	if !needs.envelope && !needs.refs {
+		return imapthread.Message{
+			Num: num, Sent: m.InternalDate, Arrival: m.InternalDate,
+			Size: int64(m.RFC822Size()),
+		}, nil
+	}
+	// References is the one ordering field ENVELOPE does not carry, so THREAD
+	// still reads the header. That is what step 2 of #1461 removes.
+	if needs.refs {
+		return s.threadMessage(num, m, raw)
+	}
+
+	out := imapthread.Message{
+		Num: num, Sent: m.InternalDate, Arrival: m.InternalDate,
+		Size: int64(m.RFC822Size()),
+	}
+	if env := envCache.Envelope(m); env != nil {
+		applyEnvelope(&out, env)
+		return out, nil
+	}
+	// A miss is read, not skipped: an account with a cold cache would
+	// otherwise sort by empty subjects and look like a mailbox of blank mail.
+	// Extracted with the same function FETCH uses -- a second spelling of
+	// ENVELOPE would be two answers about one message -- and stored, so the
+	// next command over this mailbox takes the path above.
+	env, err := s.envelopeOf(m, raw)
+	if err != nil {
+		return out, err
+	}
+	envCache.StoreEnvelope(m, env)
+	applyEnvelope(&out, env)
+	return out, nil
+}
+
+// envelopeOf parses the envelope from bytes already in hand, or by reading the
+// message header.
+func (s *session) envelopeOf(m *mailbox.MessageMeta, raw []byte) (*imaplib.Envelope, error) {
+	if len(raw) > 0 {
+		hdr, err := textproto.ReadHeader(bufio.NewReader(bytes.NewReader(raw)))
+		if err != nil {
+			return nil, fmt.Errorf("imap/order: parse header of uid %d: %w", m.UID, err)
+		}
+		return imapserver.ExtractEnvelope(hdr), nil
+	}
+	if m.Filename == "" {
+		return &imaplib.Envelope{}, nil
+	}
+	rc, err := s.fetchSelected(m)
+	if err != nil {
+		return nil, fmt.Errorf("imap/order: open uid %d: %w", m.UID, err)
+	}
+	defer rc.Close() //nolint:errcheck
+	hdr, err := textproto.ReadHeader(bufio.NewReader(rc))
+	if err != nil {
+		return nil, fmt.Errorf("imap/order: read header of uid %d: %w", m.UID, err)
+	}
+	return imapserver.ExtractEnvelope(hdr), nil
+}
+
+// applyEnvelope fills the ordering fields ENVELOPE carries. Address.Mailbox is
+// the addr-mailbox of RFC 5256 -- the local part, not the display name -- so
+// the sort key comes straight out of the cache with nothing re-parsed.
+func applyEnvelope(out *imapthread.Message, env *imaplib.Envelope) {
+	out.Subject = env.Subject
+	if !env.Date.IsZero() {
+		out.Sent = env.Date.UTC()
+	}
+	out.MessageID = env.MessageID
+	out.From = firstMailbox(env.From)
+	out.To = firstMailbox(env.To)
+	out.Cc = firstMailbox(env.Cc)
+}
+
+func firstMailbox(addrs []imaplib.Address) string {
+	if len(addrs) == 0 {
+		return ""
+	}
+	return addrs[0].Mailbox
 }
 
 // threadMessage reads the headers threading needs. raw is whatever the match

@@ -27,7 +27,7 @@ func (s *session) Sort(kind imapserver.NumKind, criteria []imaplib.SortCriterion
 	}
 	search = s.substituteSearchRes(search)
 
-	msgs, err := s.scanForOrdering(kind, search, "sort")
+	msgs, err := s.scanForOrdering(kind, search, "sort", sortNeeds(criteria))
 	if err != nil {
 		return nil, err
 	}
