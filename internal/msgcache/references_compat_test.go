@@ -172,3 +172,84 @@ func TestReferencesRoundTripInOrder(t *testing.T) {
 		}
 	}
 }
+
+// The combined read must answer exactly what the two separate reads answer, in
+// every state a record can be in.
+//
+// It replaced the pair for speed, and speed is the one reason to accept a
+// second implementation of a read -- so the second one has to agree with the
+// first everywhere, not only where a wire test happened to exercise it. The
+// state that matters most here is the middle one: a record whose envelope is
+// cached and whose References field is not. That is every message stored
+// before the field existed, and it must read as NOT cached, or threading would
+// treat "we have not looked" as "this message has no ancestry" and quietly put
+// it in the wrong conversation.
+func TestCombinedReadAgreesWithThePair(t *testing.T) {
+	tests := []struct {
+		name  string
+		store func(fc *Handle, m *mailbox.MessageMeta)
+	}{
+		{
+			name: "no References field at all",
+			store: func(fc *Handle, m *mailbox.MessageMeta) {
+				fc.StoreEnvelope(m, &imaplib.Envelope{Subject: "Plan", MessageID: "<a@x>"})
+			},
+		},
+		{
+			name: "References cached as empty",
+			store: func(fc *Handle, m *mailbox.MessageMeta) {
+				fc.StoreEnvelope(m, &imaplib.Envelope{Subject: "Plan", MessageID: "<a@x>"})
+				fc.StoreReferences(m, nil)
+			},
+		},
+		{
+			name: "References cached with ids",
+			store: func(fc *Handle, m *mailbox.MessageMeta) {
+				fc.StoreEnvelope(m, &imaplib.Envelope{Subject: "Plan", MessageID: "<b@x>"})
+				fc.StoreReferences(m, []string{"<root@x>", "<mid@x>"})
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			idx, f, m := compatFolder(t)
+			fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+			if fc == nil {
+				t.Fatal("cache unavailable")
+			}
+			tc.store(fc, m)
+			fc.Close()
+
+			read := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+			if read == nil {
+				t.Fatal("cache unavailable")
+			}
+			defer read.Close()
+			m = reread(t, idx, f.ID, m.UID)
+
+			wantEnv := read.Envelope(m)
+			wantRefs, wantCached := read.References(m)
+			gotEnv, gotRefs, gotCached := read.EnvelopeAndReferences(m)
+
+			switch {
+			case (wantEnv == nil) != (gotEnv == nil):
+				t.Fatalf("envelope presence differs: pair=%v combined=%v", wantEnv != nil, gotEnv != nil)
+			case wantEnv != nil && (wantEnv.Subject != gotEnv.Subject || wantEnv.MessageID != gotEnv.MessageID):
+				t.Errorf("envelope differs: pair=%+v combined=%+v", wantEnv, gotEnv)
+			}
+			if wantCached != gotCached {
+				t.Errorf("cached flag = %v, the pair says %v -- 'we have not looked' and 'it has none' are different answers",
+					gotCached, wantCached)
+			}
+			if len(wantRefs) != len(gotRefs) {
+				t.Fatalf("references = %v, the pair says %v", gotRefs, wantRefs)
+			}
+			for i := range wantRefs {
+				if wantRefs[i] != gotRefs[i] {
+					t.Errorf("reference %d = %q, the pair says %q", i, gotRefs[i], wantRefs[i])
+				}
+			}
+		})
+	}
+}
