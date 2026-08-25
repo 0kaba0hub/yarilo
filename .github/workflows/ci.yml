@@ -283,6 +283,10 @@ jobs:
           name: ${{ steps.version.outputs.tag }}
           body_path: RELEASE_NOTES.md
 
+      ## GHCR is the working set and is pruned; Docker Hub is the durable
+      ## archive and is never cleaned. That split is what makes "roll back
+      ## after a bad upgrade" available to an operator several releases
+      ## behind, rather than only to one who upgraded yesterday (#1217).
       - name: Cleanup old GHCR versions
         uses: actions/delete-package-versions@v5
         with:

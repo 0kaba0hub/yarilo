@@ -22,18 +22,46 @@ func writeHookScript(t *testing.T, outFile string) string {
 	return script
 }
 
-// waitForFile polls for outFile to contain non-empty content, returning it. It gives the
-// async best-effort hook a bounded window to run.
+// waitForFile polls until outFile has content, and is deliberately patient.
+//
+// The hook is an external process: the wait covers a fork, an exec and a write
+// on a machine that may be running every other package's tests at the same
+// time. A generous deadline costs nothing when the hook is on time -- the loop
+// returns on its first iteration -- and the two-second one it replaces failed
+// exactly at its limit under a full-tree run while passing alone every time
+// (#1475).
+//
+// Patience also sharpens the failure: if this now fails, the hook did not run
+// in half a minute, which is a statement about the hook rather than about the
+// machine.
 func waitForFile(t *testing.T, outFile string) string {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if b, err := os.ReadFile(outFile); err == nil && len(b) > 0 {
 			return string(b)
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 	return ""
+}
+
+// expectNoFile is the opposite assertion and needs the opposite deadline: it
+// waits a fixed window to give a hook that should not run the chance to run
+// anyway, then declares it did not.
+//
+// Waiting longer here buys nothing -- a hook that has not fired in two seconds
+// is not firing -- and would only make the suite slower, which is why the two
+// waits are separate rather than one number serving both.
+func expectNoFile(t *testing.T, outFile string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(outFile); err == nil && len(b) > 0 {
+			t.Fatalf("a hook ran that must not have: %q", strings.TrimSpace(string(b)))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // confirmUser drives a user's kill to the confirmed state (no active sessions → armed at
@@ -83,9 +111,7 @@ func TestFlushHook_DisabledByDefault(t *testing.T) {
 	s.moveUser(user, "10.0.0.2:993", nil)
 	confirmUser(t, s, user, grace)
 
-	if b := waitForFile(t, out); b != "" {
-		t.Fatalf("no hook must run when flush_program is empty, got %q", b)
-	}
+	expectNoFile(t, out)
 }
 
 // TestFlushHook_SkippedWithoutOldHost: a move that creates a fresh pin (no prior host)
@@ -108,9 +134,7 @@ func TestFlushHook_SkippedWithoutOldHost(t *testing.T) {
 	// There is no kill to confirm; drive a sweep anyway to be sure nothing fires.
 	confirmUser(t, s, user, grace)
 
-	if b := waitForFile(t, out); b != "" {
-		t.Fatalf("a move with no old host must not run the hook, got %q", b)
-	}
+	expectNoFile(t, out)
 }
 
 // The bound is the operator's, and the default is what applies when they say
