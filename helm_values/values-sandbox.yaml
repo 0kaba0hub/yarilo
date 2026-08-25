@@ -149,11 +149,6 @@ protocol:
     imap_max_line_length: 65536
     imap_quota: true
   lmtp:
-    ## QA (#1461): seeding a ten-thousand-message mailbox needs the recipient
-    ## burst raised for the duration of the measurement window. The default of
-    ## 100 per 60s is what a sandbox account should live with otherwise.
-    rate_limit:
-      per_recipient_burst: 20000
     add_received_header: true
     hdr_delivery_address: final
   managesieve:
