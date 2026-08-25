@@ -18,7 +18,16 @@ import "strings"
 // The specification says servers MUST use exactly this algorithm, because a
 // disconnected client runs it too: a server that normalises subjects its own
 // way sorts a mailbox differently from the client displaying it.
+// onBaseSubject, when set, is called once per extraction. It exists so a test
+// can count extractions -- the property this package had to fix was how MANY
+// times the work ran, which no assertion on the result can see. A nil check
+// per call, and nil in every build but a test's.
+var onBaseSubject func()
+
 func BaseSubject(subject string) (base string, refOrFwd bool) {
+	if onBaseSubject != nil {
+		onBaseSubject()
+	}
 	s := collapse(subject)
 	for {
 		// (2) Remove every trailing subj-trailer: "(fwd)" or whitespace.

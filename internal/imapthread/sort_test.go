@@ -1,6 +1,7 @@
 package imapthread
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -125,4 +126,39 @@ func equal(a, b []uint32) bool {
 		}
 	}
 	return true
+}
+
+// The keys are computed once per message, and this is the row that can tell.
+//
+// No assertion on the ORDER can see the difference: the old code produced the
+// same answer, it just produced it after extracting the base subject on every
+// comparison -- O(n log n) times something that depends on one message. Over
+// 10 442 messages that was ~140 000 extractions instead of 10 442, worth ~100ms
+// of a 248ms sort (#1461).
+//
+// So the property is counted directly. n extractions for n messages: anything
+// proportional to the comparisons is the defect coming back.
+func TestSubjectKeysAreExtractedOncePerMessage(t *testing.T) {
+	const n = 64 // log2(64) = 6, so a per-comparison implementation runs ~6x more
+
+	msgs := make([]Message, n)
+	for i := range msgs {
+		msgs[i] = Message{Num: uint32(i + 1), Subject: fmt.Sprintf("Re: subject %02d", n-i)}
+	}
+
+	var calls int
+	onBaseSubject = func() { calls++ }
+	defer func() { onBaseSubject = nil }()
+
+	got := Sort(msgs, []imaplib.SortCriterion{key(imaplib.SortKeySubject)})
+	if len(got) != n {
+		t.Fatalf("Sort returned %d messages, want %d", len(got), n)
+	}
+	if calls != n {
+		t.Errorf("BaseSubject ran %d times for %d messages -- the key is being extracted inside the comparison, not once per message", calls, n)
+	}
+	// The order still has to be right; a fast wrong answer is not the point.
+	if got[0] != uint32(n) {
+		t.Errorf("first = %d, want %d (subject 01 sorts first)", got[0], n)
+	}
 }
