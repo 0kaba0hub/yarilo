@@ -42,7 +42,7 @@ Commands:
   set    <user> [<folder>] --entry /private/comment --value 'literal' | --value-file path
         Write a value. Empty folder targets server scope.
 
-  delete <user> [<folder>] --entry /private/comment [--namespace NS] [--as-user U]
+  delete <user> [<folder>] --entry /private/comment [--namespace NS] [--as-user U]   (alias: del)
         Delete an entry.
 
 Entry names start with /private/ or /shared/ (RFC 5464).

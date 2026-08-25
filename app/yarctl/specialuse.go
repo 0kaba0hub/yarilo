@@ -28,7 +28,7 @@ Commands:
   list   <user>                       — overrides + configured defaults
   get    <user> <folder>              — resolved attr + source (override/default/none)
   set    <user> <folder> <attr>       — record special-use attr (e.g. "\Sent")
-  delete <user> <folder>              — drop override; default (if any) re-applies
+  delete <user> <folder>  (alias: del) — drop override; default (if any) re-applies
 
 Only the personal namespace carries special-use overrides — RFC 6154
 \Sent / \Drafts / etc. semantics do not extend to shared or public.`)

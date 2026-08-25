@@ -45,7 +45,7 @@ Commands:
                                               — upsert ONE entry (replaces matching
                                                 identifier; '-' prefix marks negative)
   set     --root <user> <identifier> <rights> — same, on the namespace root
-  delete  <user> <mailbox> [<identifier>]     — without identifier: drop entire file;
+  delete  <user> <mailbox> [<identifier>]     (alias: rm) — without identifier: drop entire file;
                                                 with identifier: drop just that entry
   delete  --root <user> [<identifier>]        — same, on the namespace root
   rebuild <user> <folder> [<folder> ...]      — reseed those folders in the namespace-wide
@@ -61,7 +61,7 @@ Commands:
                                                 group grants resolve per session)
   registry rebuild <user> --namespace NS      — reproject the owner's registry rows
                                                 from the namespace acl index
-  materialise <user> <folder> [<folder> ...]  — write what each mailbox inherits into
+  materialise <user> <folder> [<folder> ...]  (alias: materialize) — write what each mailbox inherits into
                                                 its own ACL; repairs mailboxes created
                                                 before inheritance was materialised at
                                                 creation. Dry run unless --apply.
