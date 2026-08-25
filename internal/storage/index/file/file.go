@@ -154,11 +154,22 @@ func WithNoCreate() Option {
 // minBytes / maxBytes control when rotation fires; minAge prevents
 // rotation before the log reaches a minimum age. Pass 0 for minBytes
 // to disable.
+// A zero for any of the three keeps that arm's built-in default, so the arms
+// are independent: setting the age alone changes the age and leaves the size
+// thresholds where they were. Passing zeros for all three would otherwise read
+// as "never fold", which is the opposite of what an operator who set one knob
+// asked for.
 func WithLogCompaction(minBytes, maxBytes int64, minAge time.Duration) Option {
 	return func(b *Backend) {
-		b.logCompactMinBytes = minBytes
-		b.logCompactMaxBytes = maxBytes
-		b.logCompactMinAge = minAge
+		if minBytes != 0 {
+			b.logCompactMinBytes = minBytes
+		}
+		if maxBytes != 0 {
+			b.logCompactMaxBytes = maxBytes
+		}
+		if minAge != 0 {
+			b.logCompactMinAge = minAge
+		}
 	}
 }
 
