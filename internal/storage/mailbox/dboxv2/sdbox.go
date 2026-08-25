@@ -193,8 +193,9 @@ func (u *userMailbox) Init() error {
 }
 
 // ensureUIDValidity creates control/yarilo-uidvalidity with the current unix
-// timestamp on first run. A legacy control/dovecot-uidvalidity is renamed in
-// place rather than reseeded — the stamp must never decrease across migration.
+// timestamp on first run. A legacy uidvalidity file (legacyUIDValidity) is
+// renamed in place rather than reseeded -- the stamp must never decrease
+// across migration.
 func (u *userMailbox) ensureUIDValidity() error {
 	path := u.uidValidityPath()
 	if _, err := os.Stat(path); err == nil {
