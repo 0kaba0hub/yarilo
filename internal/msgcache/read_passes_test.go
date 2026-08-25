@@ -70,3 +70,19 @@ func BenchmarkOneReadPerMessage(b *testing.B) {
 		fc.Close()
 	}
 }
+
+// The same walk with the file read once instead of per record. This is the
+// syscall the profile found: ReadRecord issues two ReadAt per chain link, and
+// on ten thousand messages 30% of a THREAD's CPU sat in pread (#1461).
+func BenchmarkOneReadPerMessagePreloaded(b *testing.B) {
+	idx, f, metas := benchFolder(b, 2000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+		fc.Preload()
+		for _, m := range metas {
+			_, _, _ = fc.EnvelopeAndReferences(m)
+		}
+		fc.Close()
+	}
+}

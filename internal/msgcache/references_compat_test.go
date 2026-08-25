@@ -253,3 +253,47 @@ func TestCombinedReadAgreesWithThePair(t *testing.T) {
 		})
 	}
 }
+
+// A snapshot must never answer with bytes that are no longer the truth.
+//
+// Preload reads the file as it stands; the same handle then keeps appending,
+// because a scan writes back what it had to parse. Anything appended lives
+// past the snapshot's end and has to come from the file — otherwise a message
+// cached during the scan would read as a miss for the rest of it, or worse,
+// resolve to whatever occupied that offset earlier.
+func TestAPreloadedHandleStillSeesWhatItAppends(t *testing.T) {
+	idx, f, first := compatFolder(t)
+
+	// One message already cached, so the snapshot has something in it.
+	fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+	if fc == nil {
+		t.Fatal("cache unavailable")
+	}
+	fc.StoreEnvelope(first, &imaplib.Envelope{Subject: "First", MessageID: "<a@x>"})
+	fc.Close()
+
+	second := &mailbox.MessageMeta{UID: 2}
+	if err := idx.AppendMessage(f.ID, second); err != nil {
+		t.Fatal(err)
+	}
+
+	read := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+	if read == nil {
+		t.Fatal("cache unavailable")
+	}
+	read.Preload() // snapshot taken here: it contains the first message only
+
+	// What the scan does on a miss: parse, store, and expect to read it back.
+	read.StoreEnvelope(second, &imaplib.Envelope{Subject: "Second", MessageID: "<b@x>"})
+	if env := read.Envelope(second); env == nil {
+		t.Fatal("a message cached after the snapshot reads as a miss -- the snapshot is answering for offsets it does not hold")
+	} else if env.Subject != "Second" {
+		t.Errorf("subject = %q, want \"Second\" -- the read resolved inside the snapshot rather than in the file", env.Subject)
+	}
+
+	// And the message that was in the snapshot still reads correctly.
+	if env := read.Envelope(reread(t, idx, f.ID, first.UID)); env == nil || env.Subject != "First" {
+		t.Errorf("the pre-existing message no longer reads back: %+v", env)
+	}
+	read.Close()
+}

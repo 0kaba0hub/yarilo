@@ -406,6 +406,16 @@ func (fc *Handle) Envelope(m *mailbox.MessageMeta) *imaplib.Envelope {
 	return env
 }
 
+// Preload tells the handle it is about to be read in full, so it reads the
+// cache file once instead of paying a syscall per record. Callers that touch
+// one message should not call it.
+func (fc *Handle) Preload() {
+	if fc == nil || fc.file == nil {
+		return
+	}
+	fc.file.Preload()
+}
+
 // References returns the cached References header as a list of message ids, or
 // nil when the message has no record, no such field, or genuinely had no
 // References header.
