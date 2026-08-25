@@ -178,6 +178,12 @@ type CacheFile struct {
 // preloadLimit caps what Preload will hold. A cache grows with the account, and
 // a command that walks every message is worth a few megabytes of buffer; one
 // that would need hundreds is better off paying per read.
+//
+// The buffer lives as long as the handle, which lives as long as one command --
+// so the ceiling on a backend is this limit times the number of commands
+// walking large accounts at the same moment, not times the number of accounts.
+// If backend memory ever grows under a client that sorts or threads large
+// mailboxes in parallel, this is the line to come back to.
 const preloadLimit = 64 << 20
 
 // Preload reads the whole file once, so that a caller walking every message
