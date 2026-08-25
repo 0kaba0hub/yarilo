@@ -31,12 +31,18 @@ func TestMigrate_DboxV1_ToSdbox(t *testing.T) {
 	}
 
 	bodies := []string{"first msg", "second", "third bytes"}
+	sourceGUIDs := map[string]bool{}
 	for i, body := range bodies {
 		var g [16]byte
 		_, _ = rand.Read(g[:])
+		sourceGUIDs[fmt.Sprintf("%x", g)] = true
 		writeDboxV1(t,
 			filepath.Join(srcHome, "INBOX"),
-			fmt.Sprintf("u.%016x", i+1),
+			// Sparse on purpose: 7, 9, 11. A destination that carried the
+			// source UIDs through would reproduce the gaps, and the row below
+			// would catch it -- with 1, 2, 3 the two implementations are
+			// indistinguishable.
+			fmt.Sprintf("u.%016x", 7+i*2),
 			[]byte(body),
 			g,
 			uint32(time.Now().Unix()),
@@ -97,15 +103,45 @@ func TestMigrate_DboxV1_ToSdbox(t *testing.T) {
 			t.Errorf("body %q missing after migrate (got %v)", body, mapKeys(bodySet))
 		}
 	}
-	// Per-message GUID is intentionally NOT preserved through the
-	// migration: the source GUID is read by the v1 reader but the
-	// destination driver (sdbox / mdbox) mints a fresh GUID inside
-	// Save(). The folder-level GUID — what RFC 5464 METADATA and
-	// ACL state key on — survives because it lives in the
-	// fileindex dbox-hdr extension and the migrator writes one
-	// fresh GUID per Init(). Document the limitation here so a
-	// future per-message-GUID pass-through is a graspable
-	// requirement, not a regression.
+	// Per-message GUIDs come across. The migrator passes the source id into
+	// Save, which mints one only for a message that arrives without one --
+	// so a message keeps its identity across a conversion even though its UID
+	// does not, and a JMAP client recognises mail it already has.
+	//
+	// This comment used to say the opposite, describing the behaviour before
+	// the pass-through was added; the public migration page now states the
+	// preservation, so the claim is asserted here rather than believed.
+	metas, err := verifyIdx.GetMessages(inbox.ID, nil)
+	if err != nil {
+		t.Fatalf("read destination index: %v", err)
+	}
+	var carried, minted int
+	for _, m := range metas {
+		if sourceGUIDs[fmt.Sprintf("%x", m.GUID)] {
+			carried++
+			continue
+		}
+		minted++
+	}
+	if carried != len(bodies) {
+		t.Errorf("%d of %d INBOX messages kept their GUID (%d were minted fresh) -- a converted mailbox loses its EMAILIDs, and every JMAP client sees new mail",
+			carried, len(bodies), minted)
+	}
+	// UIDs are the destination's own: identity survives, position does not.
+	// The source was seeded sparsely (7, 9, 11), so carrying its UIDs through
+	// would show as gaps here -- which is the only way this row can tell the
+	// two behaviours apart.
+	seen := map[uint32]bool{}
+	for _, m := range metas {
+		seen[m.UID] = true
+	}
+	for uid := uint32(1); uid <= uint32(len(bodies)); uid++ {
+		if !seen[uid] {
+			t.Errorf("destination UIDs are %v, want a dense 1..%d -- the source's own numbering came through, and a client that had synced the source would collide",
+				seen, len(bodies))
+			break
+		}
+	}
 }
 
 // TestMigrate_MdboxV1_ToMdbox covers the multi-message path:
