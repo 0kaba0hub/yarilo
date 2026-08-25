@@ -74,3 +74,15 @@ func TestMailboxAttrs_TBLSUBFlags(t *testing.T) {
 		t.Errorf("expected no attrs without workaround, got %v", attrs)
 	}
 }
+
+// The warning names what the operator could have meant, so the advertised set
+// has to be the accepted set: a stale list here answers a wrong name with
+// another wrong name.
+func TestKnownWorkaroundsMatchesTheParser(t *testing.T) {
+	for _, name := range KnownWorkarounds() {
+		mask, unknown := ParseIMAPWorkarounds([]string{name})
+		if mask == 0 || len(unknown) != 0 {
+			t.Errorf("KnownWorkarounds() offers %q, which the parser does not accept", name)
+		}
+	}
+}
