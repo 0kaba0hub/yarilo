@@ -38,7 +38,11 @@ func TestMigrate_DboxV1_ToSdbox(t *testing.T) {
 		sourceGUIDs[fmt.Sprintf("%x", g)] = true
 		writeDboxV1(t,
 			filepath.Join(srcHome, "INBOX"),
-			fmt.Sprintf("u.%016x", i+1),
+			// Sparse on purpose: 7, 9, 11. A destination that carried the
+			// source UIDs through would reproduce the gaps, and the row below
+			// would catch it -- with 1, 2, 3 the two implementations are
+			// indistinguishable.
+			fmt.Sprintf("u.%016x", 7+i*2),
 			[]byte(body),
 			g,
 			uint32(time.Now().Unix()),
@@ -123,10 +127,19 @@ func TestMigrate_DboxV1_ToSdbox(t *testing.T) {
 		t.Errorf("%d of %d INBOX messages kept their GUID (%d were minted fresh) -- a converted mailbox loses its EMAILIDs, and every JMAP client sees new mail",
 			carried, len(bodies), minted)
 	}
-	// UIDs are the destination's own; identity survives, position does not.
+	// UIDs are the destination's own: identity survives, position does not.
+	// The source was seeded sparsely (7, 9, 11), so carrying its UIDs through
+	// would show as gaps here -- which is the only way this row can tell the
+	// two behaviours apart.
+	seen := map[uint32]bool{}
 	for _, m := range metas {
-		if m.UID == 0 {
-			t.Errorf("uid %d: the destination allocates its own UIDs", m.UID)
+		seen[m.UID] = true
+	}
+	for uid := uint32(1); uid <= uint32(len(bodies)); uid++ {
+		if !seen[uid] {
+			t.Errorf("destination UIDs are %v, want a dense 1..%d -- the source's own numbering came through, and a client that had synced the source would collide",
+				seen, len(bodies))
+			break
 		}
 	}
 }
