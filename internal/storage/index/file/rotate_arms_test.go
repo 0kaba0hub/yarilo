@@ -18,6 +18,20 @@ import (
 // restated -- at exactly its own default, so the only real change was that the
 // guard stopped skipping -- folded once per window and took p99 from 240ms to
 // 128ms.
+// The fold age is a decision with a number behind it, so the number is pinned
+// rather than left to whoever edits the const block next.
+//
+// 60s came out of the #1460 window: at 300s an actively delivering account
+// carried its log to ~110 KB past the floor and paid p99 249ms against 128ms.
+// Changing it back would be a product decision, and this row is where that
+// decision has to be made deliberately instead of by a keystroke.
+func TestTheFoldAgeDefaultIsTheMeasuredOne(t *testing.T) {
+	const measured = 60 * time.Second
+	if got := New().logCompactMinAge; got != measured {
+		t.Errorf("built-in fold age = %s, want %s -- see #1460 before changing it", got, measured)
+	}
+}
+
 func TestEachRotationArmAppliesAlone(t *testing.T) {
 	tests := []struct {
 		name              string
