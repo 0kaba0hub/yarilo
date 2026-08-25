@@ -130,7 +130,11 @@ telemetry:
 image:
   repository: ghcr.io/yarilomail/yarilo
   tag: latest
-  pullPolicy: Always
+  ## IfNotPresent, not Always: every tag we deploy is immutable, so re-pulling
+  ## buys nothing -- and it costs the one case that matters, a rollback while
+  ## the registry is unreachable, where the node's cached image is the way out
+  ## rather than a staleness risk (#1217).
+  pullPolicy: IfNotPresent
 
 logLevel: debug
 

@@ -68,7 +68,13 @@ func stillRunning(t *testing.T, pidFile string) bool {
 // bound bounded nothing. Both rows must now finish on the bound instead, and
 // neither may leave the grandchild running.
 func TestFlushHook_BoundHoldsOverTheTree(t *testing.T) {
-	const bound = 1 * time.Second
+	// Three seconds, not one. The bound has to outlast a shell starting, forking
+	// a grandchild and writing its pid: under a full-tree run that took more
+	// than a second, the hook was killed before recording anything, and the row
+	// failed on a missing pid file rather than on what it measures (#1475). Any
+	// bound well under the 5s and 20s holds proves the same thing -- the run
+	// finishes on the bound, not on the hook.
+	const bound = 3 * time.Second
 	for _, hold := range []int{5, 20} {
 		t.Run("hook holds "+strconv.Itoa(hold)+"s", func(t *testing.T) {
 			dir := t.TempDir()
@@ -165,7 +171,7 @@ func TestHelperEscapingHook(t *testing.T) {
 // output pipes open. Wait must come back on its own delay and SAY the
 // descendant may have survived, rather than sitting for as long as it runs.
 func TestFlushHook_EscapedDescendantStillReleasesTheWait(t *testing.T) {
-	const bound = 1 * time.Second
+	const bound = 3 * time.Second
 	pidFile := filepath.Join(t.TempDir(), "escaped.pid")
 	t.Setenv(helperEscapingHookEnv, pidFile)
 	script := os.Args[0]
