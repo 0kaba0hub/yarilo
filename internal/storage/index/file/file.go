@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yarilomail/yarilo/internal/storage/logrotate"
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -34,21 +35,11 @@ import (
 // Backend is the per-process factory for fileindex handles. It
 // holds only process-wide state; per-user state lives in
 // userIndex (created by OpenUser).
-const (
-	defaultLogCompactMinBytes int64 = 32 * 1024   // 32 KiB
-	defaultLogCompactMaxBytes int64 = 1024 * 1024 // 1 MiB
-	// 60s, measured rather than chosen (#1460). The age gate exists so a fold
-	// does not fire in the middle of a burst of appends -- a log still growing
-	// is not worth folding, it will cross the floor again in a moment -- so it
-	// only has to outlast a typical delivery burst. A minute does; five was
-	// overpayment, and the overpayment is what an account pays for.
-	//
-	// With 300s the log ran to ~110 KB past the 32 KiB floor, and over that
-	// interval delivery p50 went 74 -> 103 ms while p99 went 127 -> 249 ms.
-	// With 60s it folds once per hundred deliveries and p99 returns to 128 ms.
-	// A fold costs ~1.2s on a ten-thousand-message account, so one delay costs
-	// about what three folds do.
-	defaultLogCompactMinAgeSecs int = 60
+// The fold thresholds live in one place for both logs; see internal/storage/logrotate.
+var (
+	defaultLogCompactMinBytes = logrotate.MinSize
+	defaultLogCompactMaxBytes = logrotate.MaxSize
+	defaultLogCompactMinAge   = logrotate.MinAge
 )
 
 // sidecarTmpSeq gives concurrent sidecar-file writers (saveNames,
@@ -192,7 +183,7 @@ func New(opts ...Option) *Backend {
 		users:              make(map[string]*refUserIndex),
 		logCompactMinBytes: defaultLogCompactMinBytes,
 		logCompactMaxBytes: defaultLogCompactMaxBytes,
-		logCompactMinAge:   time.Duration(defaultLogCompactMinAgeSecs) * time.Second,
+		logCompactMinAge:   defaultLogCompactMinAge,
 	}
 	for _, opt := range opts {
 		opt(b)

@@ -43,7 +43,7 @@ func TestEachRotationArmAppliesAlone(t *testing.T) {
 		{
 			name:    "nothing set keeps every default",
 			wantMin: defaultLogCompactMinBytes, wantMax: defaultLogCompactMaxBytes,
-			wantAge: time.Duration(defaultLogCompactMinAgeSecs) * time.Second,
+			wantAge: defaultLogCompactMinAge,
 		},
 		{
 			// The case from the window: the age alone, which used to be inert.
@@ -57,14 +57,14 @@ func TestEachRotationArmAppliesAlone(t *testing.T) {
 			maxByte: 64 * 1024,
 			wantMin: defaultLogCompactMinBytes,
 			wantMax: 64 * 1024,
-			wantAge: time.Duration(defaultLogCompactMinAgeSecs) * time.Second,
+			wantAge: defaultLogCompactMinAge,
 		},
 		{
 			name:     "the floor alone",
 			minBytes: 8 * 1024,
 			wantMin:  8 * 1024,
 			wantMax:  defaultLogCompactMaxBytes,
-			wantAge:  time.Duration(defaultLogCompactMinAgeSecs) * time.Second,
+			wantAge:  defaultLogCompactMinAge,
 		},
 		{
 			name:     "all three",

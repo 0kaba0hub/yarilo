@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yarilomail/yarilo/internal/storage/logrotate"
+
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
@@ -30,10 +32,12 @@ import (
 // The floor exists because every open replays the tail, at a measured ~0.5 µs
 // per byte: the old flat 256 KiB threshold meant a legal tail could cost ~136 ms
 // on every open of an account that sits between folds.
-const (
-	defaultLogRotateMinSize int64 = 32 << 10
-	defaultLogRotateMaxSize int64 = 1 << 20
-	defaultLogRotateMinAge        = 5 * time.Minute
+// The map log folds on the same thresholds as the index log: one key, one
+// value, whichever log it lands on (internal/storage/logrotate).
+var (
+	defaultLogRotateMinSize = logrotate.MinSize
+	defaultLogRotateMaxSize = logrotate.MaxSize
+	defaultLogRotateMinAge  = logrotate.MinAge
 )
 
 var errLogIndexMismatch = errors.New("mdboxmap: log IndexID mismatch")
