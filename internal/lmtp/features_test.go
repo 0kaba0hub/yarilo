@@ -104,7 +104,7 @@ func TestParseWorkarounds(t *testing.T) {
 		{[]string{"unknown-thing"}, 0},
 	}
 	for _, tc := range cases {
-		got := parseWorkarounds(tc.input)
+		got, _ := parseWorkarounds(tc.input)
 		if got != tc.want {
 			t.Errorf("parseWorkarounds(%v) = %b, want %b", tc.input, got, tc.want)
 		}

@@ -281,6 +281,14 @@ func New(cfg *config.Config) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("backend: acl global: %w", err)
 		}
+		imapWorkarounds, unknownWorkarounds := imapsvr.ParseIMAPWorkarounds(p.ClientWorkarounds)
+		if len(unknownWorkarounds) > 0 {
+			// Accepted and inert is the shape an operator cannot see: the
+			// behaviour they were working around simply continues, with the
+			// setting that was meant to fix it sitting in the file.
+			slog.Warn("imap: unknown client workarounds ignored",
+				"values", unknownWorkarounds, "known", imapsvr.KnownWorkarounds())
+		}
 		imapServer = imapsvr.New(imapsvr.Options{
 			Addr:      listenAddr(svcs.IMAPS),
 			AddrPlain: listenAddr(svcs.IMAP),
@@ -312,7 +320,7 @@ func New(cfg *config.Config) (*Server, error) {
 			IDSend:               p.IDSend,
 			LoginGreeting:        p.LoginGreeting,
 			LogoutFormat:         p.LogoutFormat,
-			ClientWorkarounds:    imapsvr.ParseIMAPWorkarounds(p.ClientWorkarounds),
+			ClientWorkarounds:    imapWorkarounds,
 			Locker:               locker,
 			SpecialUseDefaults:   p.SpecialUseDefaults,
 			MetadataDict:         metadataDict,

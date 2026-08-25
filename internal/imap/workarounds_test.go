@@ -19,7 +19,7 @@ func TestParseIMAPWorkarounds(t *testing.T) {
 		{[]string{"unknown"}, 0},
 	}
 	for _, tc := range cases {
-		got := ParseIMAPWorkarounds(tc.input)
+		got, _ := ParseIMAPWorkarounds(tc.input)
 		if got != tc.want {
 			t.Errorf("ParseIMAPWorkarounds(%v) = %b, want %b", tc.input, got, tc.want)
 		}

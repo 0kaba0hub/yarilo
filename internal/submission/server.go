@@ -87,7 +87,12 @@ type Server struct {
 
 // New creates the submission server. Call Serve to start it.
 func New(opts Options) *Server {
-	s := &Server{opts: opts, workarounds: parseWorkarounds(opts.Config.Workarounds)}
+	wa, unknown := parseWorkarounds(opts.Config.Workarounds)
+	if len(unknown) > 0 {
+		slog.Warn("submission: unknown client workarounds ignored",
+			"values", unknown, "known", knownWorkarounds())
+	}
+	s := &Server{opts: opts, workarounds: wa}
 	be := &backend{srv: s}
 	srv := goSmtp.NewServer(be)
 	srv.Domain = opts.Config.Hostname

@@ -181,7 +181,12 @@ func (s *Server) Serve(ln net.Listener) error {
 			TLSConfig:       s.opts.PreambleTLS,
 		}
 	}
-	if wa := parseWorkarounds(s.opts.Config.ClientWorkarounds); wa != 0 {
+	wa, unknown := parseWorkarounds(s.opts.Config.ClientWorkarounds)
+	if len(unknown) > 0 {
+		slog.Warn("lmtp: unknown client workarounds ignored",
+			"values", unknown, "known", knownWorkarounds())
+	}
+	if wa != 0 {
 		ln = &lmtpWorkaroundListener{Listener: ln, workarounds: wa}
 	}
 	return s.srv.Serve(ln)

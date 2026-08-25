@@ -19,18 +19,23 @@ const (
 )
 
 // parseWorkarounds parses a list of workaround names into a bitmask.
-// Unknown names are silently ignored.
-func parseWorkarounds(list []string) lmtpWorkarounds {
+// Names it does not recognise are returned rather than dropped: an accepted
+// setting that does nothing is the hardest kind of configuration bug to see.
+func parseWorkarounds(list []string) (lmtpWorkarounds, []string) {
 	var mask lmtpWorkarounds
+	var unknown []string
 	for _, item := range list {
 		switch strings.ToLower(strings.TrimSpace(item)) {
 		case "whitespace-before-path":
 			mask |= workaroundWhitespaceBeforePath
 		case "mailbox-for-path":
 			mask |= workaroundMailboxForPath
+		case "":
+		default:
+			unknown = append(unknown, item)
 		}
 	}
-	return mask
+	return mask, unknown
 }
 
 type lmtpWorkaroundListener struct {
@@ -100,4 +105,10 @@ func (c *lmtpWorkaroundConn) applyWorkarounds(line string) string {
 		}
 	}
 	return prefix + rest
+}
+
+// knownWorkarounds is the accepted set, so the warning about an unknown name
+// can print what the operator could have meant.
+func knownWorkarounds() []string {
+	return []string{"whitespace-before-path", "mailbox-for-path"}
 }

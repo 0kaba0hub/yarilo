@@ -13,17 +13,21 @@ const (
 	workaroundMailboxForPath
 )
 
-func parseWorkarounds(list []string) submissionWorkarounds {
+func parseWorkarounds(list []string) (submissionWorkarounds, []string) {
 	var mask submissionWorkarounds
+	var unknown []string
 	for _, item := range list {
 		switch strings.ToLower(strings.TrimSpace(item)) {
 		case "whitespace-before-path":
 			mask |= workaroundWhitespaceBeforePath
 		case "mailbox-for-path":
 			mask |= workaroundMailboxForPath
+		case "":
+		default:
+			unknown = append(unknown, item)
 		}
 	}
-	return mask
+	return mask, unknown
 }
 
 type workaroundListener struct {
@@ -99,4 +103,10 @@ func (c *workaroundConn) applyWorkarounds(line string) string {
 		}
 	}
 	return prefix + rest
+}
+
+// knownWorkarounds is the accepted set, so the warning about an unknown name
+// can print what the operator could have meant.
+func knownWorkarounds() []string {
+	return []string{"whitespace-before-path", "mailbox-for-path"}
 }
