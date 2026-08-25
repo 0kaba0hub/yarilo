@@ -41,8 +41,22 @@ func TestUsageTextMatchesTheDispatcher(t *testing.T) {
 		}
 		cases := dispatchCases(t, file, string(src))
 		usage := usageCommands(string(src))
-		if len(cases) == 0 || len(usage) == 0 {
-			continue // a file with no dispatch or no usage text of its own
+		switch {
+		case len(cases) == 0 && len(usage) == 0:
+			continue // neither half: not a command file
+		case len(usage) == 0:
+			// A dispatcher whose usage text lives elsewhere is normal; say so
+			// rather than deciding silently, so a text that was deleted is
+			// visible in the run.
+			t.Logf("%s: dispatch branches with no usage text in this file", file)
+			continue
+		case len(cases) == 0:
+			// The dangerous half: a usage text whose dispatcher this guard
+			// could not find -- a renamed dispatch function takes its file out
+			// of scope, and the check would go quiet rather than fail.
+			t.Errorf("%s: a usage text with no dispatch* function in this file -- if the dispatcher was renamed, this file just left the guard's scope",
+				file)
+			continue
 		}
 		checked++
 
@@ -145,6 +159,19 @@ func usageCommands(src string) map[string]bool {
 			if !entryLine.MatchString(line) {
 				continue
 			}
+			// An example invocation is not an entry. Recognised by shape --
+			// it starts with the binary's own name -- rather than by
+			// excluding an "Examples:" heading, which would be one more
+			// section name to remember.
+			if strings.HasPrefix(trimmed, "yarctl ") {
+				continue
+			}
+			// An entry starts with the command's own name, so a line that
+			// opens with punctuation is prose -- a parenthesised note under
+			// "Usage:", for instance. Shape again, not another exclusion list.
+			if !startsWithCommandWord.MatchString(trimmed) {
+				continue
+			}
 			// Every leading command word, not just the first: an entry may
 			// name a subtree ("backends add IP --port PORT"), and both words
 			// are branches the dispatcher takes.
@@ -180,14 +207,18 @@ var entryLine = regexp.MustCompile(`^ {2,3}\S`)
 // groups by plane and by shorthand, and a heading this function does not know
 // is a list the guard silently skips -- so it is written to be extended when a
 // new one appears rather than to guess.
+// A heading is any capitalised phrase ending in a colon -- Commands:,
+// Services:, Planes:, "Shorthand (no plane prefix):". Recognised by shape
+// rather than by a list of known ones: a list is a place somebody has to
+// remember to extend, and the section that gets added without being added
+// here is precisely the one nobody would look at.
 func listHeading(line string) bool {
-	for _, h := range []string{"Commands:", "Services:", "Planes:", "Shorthand"} {
-		if strings.HasPrefix(line, h) || strings.HasSuffix(line, h) {
-			return true
-		}
-	}
-	return false
+	return headingShape.MatchString(line)
 }
+
+var startsWithCommandWord = regexp.MustCompile(`^[a-z]`)
+
+var headingShape = regexp.MustCompile(`^[A-Z][A-Za-z]+[^:]*:$`)
 
 var aliasPattern = regexp.MustCompile(`alias:\s*([a-z][a-z0-9-]*)`)
 
