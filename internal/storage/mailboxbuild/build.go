@@ -65,7 +65,7 @@ func byDriver(driver string, sc config.StorageConfig, locker locks.Locker) mailb
 // which would read as "rotation disabled" — the same guard the file index puts
 // in front of WithLogCompaction.
 func mapLogRotation(sc config.StorageConfig) mdbox.Option {
-	if sc.MailIndexLogRotateMinSize == 0 {
+	if sc.MailIndexLogRotateMinSize == 0 && sc.MailIndexLogRotateMaxSize == 0 && sc.MailIndexLogRotateMinAge == 0 {
 		return func(*mdbox.Backend) {}
 	}
 	return mdbox.WithLogRotation(sc.MailIndexLogRotateMinSize, sc.MailIndexLogRotateMaxSize,

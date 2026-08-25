@@ -151,14 +151,27 @@ func WithNoCreate() Option {
 }
 
 // WithLogCompaction configures automatic log compaction thresholds.
-// minBytes / maxBytes control when rotation fires; minAge prevents
-// rotation before the log reaches a minimum age. Pass 0 for minBytes
-// to disable.
+// minBytes / maxBytes control when rotation fires; minAge prevents rotation
+// before the log reaches a minimum age.
+//
+// A zero for any of the three keeps that arm's built-in default, so the arms
+// are independent: setting the age alone changes the age and leaves the size
+// thresholds where they were. It used to mean "disable" for minBytes, which is
+// the opposite reading -- and an operator who sets one knob is asking for that
+// knob, not for rotation to stop. There is deliberately no way to disable
+// rotation through this option; nobody has asked for one, and a value that
+// means "never fold" wants to be explicit rather than to be a zero.
 func WithLogCompaction(minBytes, maxBytes int64, minAge time.Duration) Option {
 	return func(b *Backend) {
-		b.logCompactMinBytes = minBytes
-		b.logCompactMaxBytes = maxBytes
-		b.logCompactMinAge = minAge
+		if minBytes != 0 {
+			b.logCompactMinBytes = minBytes
+		}
+		if maxBytes != 0 {
+			b.logCompactMaxBytes = maxBytes
+		}
+		if minAge != 0 {
+			b.logCompactMinAge = minAge
+		}
 	}
 }
 

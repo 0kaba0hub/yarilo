@@ -178,6 +178,9 @@ storage:
   ## mail_alt_path: "/mnt/cold/%d/%n"              # cold-tier storage root, maildir and mdbox alike
   ## Log rotation, one policy for both transaction logs — the mdbox map and the per-folder file index.
   ## Every open replays the tail since the last fold, so the floor bounds what an open costs.
+  ## Each of the three works on its own: set one and the other two keep their
+  ## built-in values. They are commented out here because those built-ins are
+  ## what runs when nothing is set.
   ## mail_index_log_rotate_min_size: "32k"  # 32 KiB — never fold below this (human-readable; quote it)
   ## mail_index_log_rotate_min_age: 300     # 5 min  — between min and max, fold only once the log is this old
   ## mail_index_log_rotate_max_size: "1M"   # 1 MiB  — fold above this whatever the age (human-readable; quote it)

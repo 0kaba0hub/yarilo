@@ -1178,7 +1178,12 @@ func BuildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.Mailbox
 // the standalone binaries that construct their own index (yarilo-jmap).
 func IndexOptions(cfg config.StorageConfig, locker locks.Locker) []file.Option {
 	opts := []file.Option{file.WithLocker(locker)}
-	if cfg.MailIndexLogRotateMinSize != 0 {
+	// Any of the three, not all three. Gating the whole triple on min_size
+	// meant an operator could set the age or the ceiling alone, see the key in
+	// the rendered config, and have it do nothing -- accepted and inert, which
+	// is the hardest kind of setting to debug because everything looks right
+	// (#1481).
+	if cfg.MailIndexLogRotateMinSize != 0 || cfg.MailIndexLogRotateMaxSize != 0 || cfg.MailIndexLogRotateMinAge != 0 {
 		opts = append(opts, file.WithLogCompaction(
 			cfg.MailIndexLogRotateMinSize,
 			cfg.MailIndexLogRotateMaxSize,
