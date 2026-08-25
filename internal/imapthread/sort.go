@@ -112,36 +112,6 @@ func (r *sortRow) compare(other *sortRow, i int, key imaplib.SortKey) int {
 	}
 }
 
-func compareKey(key imaplib.SortKey, a, b *Message) int {
-	switch key {
-	case imaplib.SortKeyArrival:
-		return compareTime(a.Arrival, b.Arrival)
-	case imaplib.SortKeyDate:
-		return compareTime(a.Sent, b.Sent)
-	case imaplib.SortKeySize:
-		switch {
-		case a.Size < b.Size:
-			return -1
-		case a.Size > b.Size:
-			return 1
-		default:
-			return 0
-		}
-	case imaplib.SortKeySubject:
-		aBase, _ := BaseSubject(a.Subject)
-		bBase, _ := BaseSubject(b.Subject)
-		return collate(aBase, bBase)
-	case imaplib.SortKeyFrom:
-		return collate(a.From, b.From)
-	case imaplib.SortKeyTo:
-		return collate(a.To, b.To)
-	case imaplib.SortKeyCc:
-		return collate(a.Cc, b.Cc)
-	default:
-		return 0
-	}
-}
-
 func compareTime(a, b time.Time) int {
 	switch {
 	case a.Before(b):
@@ -164,9 +134,4 @@ func compareTime(a, b time.Time) int {
 // I18NLEVEL=1, which yarilo does not advertise.
 func collationKey(s string) string {
 	return strings.ToUpper(s)
-}
-
-// collate compares two strings under that collation.
-func collate(a, b string) int {
-	return strings.Compare(collationKey(a), collationKey(b))
 }
