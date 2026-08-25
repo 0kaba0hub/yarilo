@@ -168,6 +168,51 @@ type CacheFile struct {
 	fields []CacheField
 	// byName maps a field name to its id (= position in fields).
 	byName map[string]uint32
+	// snap is the file as it stood when Preload was called, or nil. Reads
+	// fully inside it are served from memory; anything past its end -- an
+	// append made since -- falls through to the file, so a snapshot can never
+	// answer with stale bytes.
+	snap []byte
+}
+
+// preloadLimit caps what Preload will hold. A cache grows with the account, and
+// a command that walks every message is worth a few megabytes of buffer; one
+// that would need hundreds is better off paying per read.
+const preloadLimit = 64 << 20
+
+// Preload reads the whole file once, so that a caller walking every message
+// does not pay a syscall per record.
+//
+// ReadRecord issues two ReadAt calls per chain link, which on a ten-thousand
+// message account is tens of thousands of preads for one command -- 30% of a
+// THREAD's CPU time sat in pread, with the garbage from those small reads
+// costing again (#1461). Sequential reading of a file that is about to be read
+// in full is the same bytes in one trip.
+//
+// Best effort: a file too large, or a read that fails, leaves the handle
+// exactly as it was.
+func (c *CacheFile) Preload() {
+	if c == nil || c.snap != nil {
+		return
+	}
+	fi, err := c.f.Stat()
+	if err != nil || fi.Size() <= 0 || fi.Size() > preloadLimit {
+		return
+	}
+	buf := make([]byte, fi.Size())
+	if _, err := io.ReadFull(io.NewSectionReader(c.f, 0, fi.Size()), buf); err != nil {
+		return
+	}
+	c.snap = buf
+}
+
+// readAt serves from the snapshot when the whole range is inside it, and from
+// the file otherwise.
+func (c *CacheFile) readAt(p []byte, off int64) (int, error) {
+	if end := off + int64(len(p)); c.snap != nil && off >= 0 && end <= int64(len(c.snap)) {
+		return copy(p, c.snap[off:end]), nil
+	}
+	return c.f.ReadAt(p, off)
 }
 
 // CreateCache writes a fresh cache file for the given index identity.
@@ -285,7 +330,7 @@ func (c *CacheFile) loadFields() error {
 //	decision[count] u8 | names: NUL-separated
 func (c *CacheFile) readFieldTable(off uint32) (next uint32, fields []CacheField, err error) {
 	fixed := make([]byte, 12)
-	if _, err := c.f.ReadAt(fixed, int64(off)); err != nil {
+	if _, err := c.readAt(fixed, int64(off)); err != nil {
 		return 0, nil, fmt.Errorf("mailindex: cache field table at %d: %w", off, ErrCacheInvalid)
 	}
 	le := binary.LittleEndian
@@ -296,7 +341,7 @@ func (c *CacheFile) readFieldTable(off uint32) (next uint32, fields []CacheField
 		return 0, nil, fmt.Errorf("mailindex: cache field table size %d count %d: %w", size, count, ErrCacheInvalid)
 	}
 	body := make([]byte, size-12)
-	if _, err := c.f.ReadAt(body, int64(off)+12); err != nil {
+	if _, err := c.readAt(body, int64(off)+12); err != nil {
 		return 0, nil, fmt.Errorf("mailindex: cache field table body: %w", ErrCacheInvalid)
 	}
 	lastUsed := body[0 : 4*count]
@@ -393,7 +438,7 @@ func (c *CacheFile) newestTableOffset() (uint32, error) {
 	off := c.hdr.FieldHeaderOffset
 	for {
 		var nb [4]byte
-		if _, err := c.f.ReadAt(nb[:], int64(off)); err != nil {
+		if _, err := c.readAt(nb[:], int64(off)); err != nil {
 			return 0, fmt.Errorf("mailindex: cache field chain: %w", ErrCacheInvalid)
 		}
 		next := unpackCacheOffset(binary.LittleEndian.Uint32(nb[:]))
@@ -468,7 +513,7 @@ func (c *CacheFile) ReadRecord(offset uint32) (map[uint32][]byte, error) {
 			return nil, fmt.Errorf("mailindex: cache record chain too long: %w", ErrCacheInvalid)
 		}
 		var rh [8]byte
-		if _, err := c.f.ReadAt(rh[:], int64(offset)); err != nil {
+		if _, err := c.readAt(rh[:], int64(offset)); err != nil {
 			return nil, fmt.Errorf("mailindex: cache record at %d: %w", offset, ErrCacheInvalid)
 		}
 		prev := le.Uint32(rh[0:])
@@ -477,7 +522,7 @@ func (c *CacheFile) ReadRecord(offset uint32) (map[uint32][]byte, error) {
 			return nil, fmt.Errorf("mailindex: cache record size %d: %w", size, ErrCacheInvalid)
 		}
 		body := make([]byte, size-8)
-		if _, err := c.f.ReadAt(body, int64(offset)+8); err != nil {
+		if _, err := c.readAt(body, int64(offset)+8); err != nil {
 			return nil, fmt.Errorf("mailindex: cache record body: %w", ErrCacheInvalid)
 		}
 		for p := 0; p+4 <= len(body); {

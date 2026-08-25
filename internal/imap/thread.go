@@ -123,6 +123,10 @@ func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.Sea
 			Folder:  s.folder.Name,
 			TraceID: s.sid,
 		})
+		// This command walks every matched message, so the cache is read in
+		// one pass rather than a record at a time: per-record reads put 30% of
+		// a THREAD's CPU into pread on a large mailbox (#1461).
+		envCache.Preload()
 		defer envCache.Close()
 	}
 
