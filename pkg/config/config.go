@@ -615,7 +615,7 @@ type SubmissionProtocolConfig struct {
 	MaxLineLength      int         `koanf:"max_line_length"`
 	MaxRecipients      int         `koanf:"submission_max_recipients"` // 0 = unlimited
 	RecipientDelimiter string      `koanf:"recipient_delimiter"`
-	Workarounds        []string    `koanf:"submission_client_workarounds"` // whitespace-before-path | mailbox-for-path | implicit-auth-external
+	Workarounds        []string    `koanf:"submission_client_workarounds"` // whitespace-before-path | mailbox-for-path
 	AddReceivedHeader  bool        `koanf:"submission_add_received_header"`
 	Relay              RelayConfig `koanf:"relay"`
 	// Pre-beta spellings, accepted as aliases and removed after beta.

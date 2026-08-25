@@ -104,7 +104,7 @@ func TestParseWorkarounds(t *testing.T) {
 		{[]string{"unknown-thing"}, 0},
 	}
 	for _, tc := range cases {
-		got := parseWorkarounds(tc.input)
+		got, _ := parseWorkarounds(tc.input)
 		if got != tc.want {
 			t.Errorf("parseWorkarounds(%v) = %b, want %b", tc.input, got, tc.want)
 		}
@@ -221,5 +221,17 @@ func TestLMTP_QuotaEnforcement_452(t *testing.T) {
 	resp := deliver(t, conn, sc, "sender@external.com", "alice@example.com", testMsg)
 	if len(resp) == 0 || !strings.HasPrefix(resp[0], "452") {
 		t.Fatalf("expected 452 Mailbox full, got: %v", resp)
+	}
+}
+
+// The warning names what the operator could have meant, so the advertised set
+// has to be the accepted set: a stale list here answers a wrong name with
+// another wrong name.
+func TestKnownWorkaroundsMatchesTheParser(t *testing.T) {
+	for _, name := range knownWorkarounds() {
+		mask, unknown := parseWorkarounds([]string{name})
+		if mask == 0 || len(unknown) != 0 {
+			t.Errorf("knownWorkarounds() offers %q, which the parser does not accept", name)
+		}
 	}
 }
