@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +41,18 @@ func lockCachePath(path string) func() {
 
 // cacheFieldEnvelope is the cache field name for the encoded envelope.
 const cacheFieldEnvelope = "yarilo.envelope"
+
+// cacheFieldReferences holds the References header, the one threading field
+// ENVELOPE does not carry (RFC 3501 has Message-ID and In-Reply-To and stops
+// there). Without it THREAD opens every matched message to read a header the
+// cache already holds the rest of (#1461).
+//
+// A separate field rather than a wider envelope encoding: the envelope's bytes
+// are read by every FETCH, and a threading header nobody fetches has no place
+// in them. Fields are looked up by name, so a file written before this one
+// existed simply does not carry it, and a file that does is read by older
+// binaries without complaint -- the field table lives in the file itself.
+const cacheFieldReferences = "yarilo.references"
 
 // indexCacher is the slice of the file-index surface the cache reader needs.
 // Asserted at use: an index backend without it simply serves no cache.
@@ -199,6 +212,7 @@ type Handle struct {
 	file   *mailindex.CacheFile
 	envID  uint32
 	bsID   uint32
+	refsID uint32
 	stamps map[uint32]uint32 // uid -> new head offset, flushed on close
 	idx    Index
 	fid    uint64
@@ -311,6 +325,7 @@ func Open(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle {
 	}{
 		{cacheFieldEnvelope, &fc.envID},
 		{cacheFieldBodyStructure, &fc.bsID},
+		{cacheFieldReferences, &fc.refsID},
 	} {
 		id, ok := fc.file.FieldID(want.name)
 		if !ok {
@@ -389,6 +404,37 @@ func (fc *Handle) Envelope(m *mailbox.MessageMeta) *imaplib.Envelope {
 		return nil
 	}
 	return env
+}
+
+// References returns the cached References header as a list of message ids, or
+// nil when the message has no record, no such field, or genuinely had no
+// References header.
+//
+// The last two cases are told apart by the empty marker: a message with no
+// References is stored as one empty entry, so that a header nobody has to read
+// again is not re-read for ever.
+func (fc *Handle) References(m *mailbox.MessageMeta) ([]string, bool) {
+	if fc == nil {
+		return nil, false
+	}
+	data, ok := fc.read(m)[fc.refsID]
+	if !ok {
+		return nil, false
+	}
+	if len(data) == 0 {
+		return nil, true // cached, and the message has none
+	}
+	return strings.Split(string(data), "\n"), true
+}
+
+// StoreReferences caches the References of a message. An empty list is stored
+// as an empty value rather than skipped: "no References" is an answer, and
+// skipping it would make every such message a permanent miss.
+func (fc *Handle) StoreReferences(m *mailbox.MessageMeta, refs []string) {
+	if fc == nil {
+		return
+	}
+	fc.storeField(m, fc.refsID, []byte(strings.Join(refs, "\n")))
 }
 
 // store appends the freshly-parsed envelope for a message.

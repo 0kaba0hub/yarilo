@@ -116,7 +116,7 @@ func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.Sea
 	// written back, so the second ordering command over a mailbox pays
 	// nothing for what the first one had to read.
 	var envCache *msgcache.Handle
-	if needs.envelope && !needs.refs {
+	if needs.envelope || needs.refs {
 		envCache = msgcache.Open(s.folderIdx(), s.folder.ID, msgcache.Options{
 			Locker:  s.srv.opts.Locker,
 			User:    s.userInfo.Username,
@@ -205,25 +205,48 @@ func (s *session) orderingMessage(num uint32, m *mailbox.MessageMeta, raw []byte
 			Size: int64(m.RFC822Size()),
 		}, nil
 	}
-	// References is the one ordering field ENVELOPE does not carry, so THREAD
-	// still reads the header. That is what step 2 of #1461 removes.
-	if needs.refs {
-		return s.threadMessage(num, m, raw)
-	}
-
 	out := imapthread.Message{
 		Num: num, Sent: m.InternalDate, Arrival: m.InternalDate,
 		Size: int64(m.RFC822Size()),
 	}
+	// Both halves must be cached for the message to stay unopened: an
+	// envelope without References would thread the message by subject alone
+	// and quietly put it in the wrong conversation, which is worse than
+	// being slow.
 	if env := envCache.Envelope(m); env != nil {
-		applyEnvelope(&out, env)
-		return out, nil
+		refs, cached := []string(nil), true
+		if needs.refs {
+			refs, cached = envCache.References(m)
+		}
+		if cached {
+			applyEnvelope(&out, env)
+			if needs.refs {
+				out.References = threadAncestry(refs, env.InReplyTo)
+			}
+			return out, nil
+		}
 	}
 	// A miss is read, not skipped: an account with a cold cache would
 	// otherwise sort by empty subjects and look like a mailbox of blank mail.
 	// Extracted with the same function FETCH uses -- a second spelling of
 	// ENVELOPE would be two answers about one message -- and stored, so the
 	// next command over this mailbox takes the path above.
+	if needs.refs {
+		full, err := s.threadMessage(num, m, raw)
+		if err != nil {
+			return out, err
+		}
+		// The read is paid once: what it produced goes into the cache the
+		// path above reads, so the next THREAD over this account opens
+		// nothing. The cache is on disk, so "once" means once per account,
+		// not once per process.
+		if env, eerr := s.envelopeOf(m, raw); eerr == nil {
+			envCache.StoreEnvelope(m, env)
+			envCache.StoreReferences(m, full.References)
+		}
+		return full, nil
+	}
+
 	env, err := s.envelopeOf(m, raw)
 	if err != nil {
 		return out, err
@@ -231,6 +254,19 @@ func (s *session) orderingMessage(num uint32, m *mailbox.MessageMeta, raw []byte
 	envCache.StoreEnvelope(m, env)
 	applyEnvelope(&out, env)
 	return out, nil
+}
+
+// threadAncestry follows §4's rule about where ancestry comes from, over
+// cached values: References when it names anything, otherwise the first
+// In-Reply-To id -- the same order threadReferences applies to a live header.
+func threadAncestry(refs []string, inReplyTo []string) []string {
+	if len(refs) > 0 {
+		return refs
+	}
+	if len(inReplyTo) > 0 {
+		return []string{"<" + strings.Trim(inReplyTo[0], "<>") + ">"}
+	}
+	return nil
 }
 
 // envelopeOf parses the envelope from bytes already in hand, or by reading the

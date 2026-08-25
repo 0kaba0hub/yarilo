@@ -1,0 +1,174 @@
+package msgcache
+
+import (
+	"testing"
+	"time"
+
+	imaplib "github.com/emersion/go-imap/v2"
+
+	"github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
+)
+
+func compatFolder(t *testing.T) (mailbox.UserIndex, *mailbox.Folder, *mailbox.MessageMeta) {
+	t.Helper()
+	idx := file.New().OpenUser(&mailbox.UserInfo{Username: "u", Home: t.TempDir()})
+	f, err := idx.OpenFolder("INBOX", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &mailbox.MessageMeta{UID: 1}
+	if err := idx.AppendMessage(f.ID, m); err != nil {
+		t.Fatal(err)
+	}
+	return idx, f, m
+}
+
+// reread returns the message as the index now holds it: the cache offset is
+// stamped there on Close, so a stale struct from before the write points at
+// nothing and every read looks like a miss.
+func reread(t *testing.T, idx mailbox.UserIndex, folderID uint64, uid uint32) *mailbox.MessageMeta {
+	t.Helper()
+	msgs, err := idx.GetMessages(folderID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range msgs {
+		if m.UID == uid {
+			return m
+		}
+	}
+	t.Fatalf("uid %d vanished from the index", uid)
+	return nil
+}
+
+// A cache file written by a version that knows References must stay readable
+// to one that does not.
+//
+// The field table lives in the file, so a reader looks its own fields up by
+// name and meets the third as an id it never asks about. This asserts that on
+// the bytes rather than on that reasoning: the envelope written beside the new
+// field still decodes, which is what an older binary would be doing.
+//
+// A rollback after an upgrade is the case, and it is asked about during an
+// incident, so it is answered here instead.
+func TestAReaderWithoutReferencesStillReadsTheFile(t *testing.T) {
+	idx, f, m := compatFolder(t)
+	want := &imaplib.Envelope{Subject: "Plan", MessageID: "<a@x>", Date: time.Unix(1770000000, 0).UTC()}
+
+	fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+	if fc == nil {
+		t.Fatal("cache unavailable")
+	}
+	fc.StoreEnvelope(m, want)
+	fc.StoreReferences(m, []string{"<root@x>", "<mid@x>"})
+	fc.Close()
+
+	// What an older binary does: open the same pair, ask for the two fields it
+	// knows, and read the record.
+	old := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+	if old == nil {
+		t.Fatal("cache unavailable on the second open")
+	}
+	defer old.Close()
+	old.refsID = 1 << 30 // a field id this reader never registered
+
+	m = reread(t, idx, f.ID, m.UID)
+	got := old.Envelope(m)
+	if got == nil {
+		t.Fatal("the envelope became unreadable once a third field was written beside it")
+	}
+	if got.Subject != want.Subject || got.MessageID != want.MessageID {
+		t.Errorf("envelope = %+v, want %+v", got, want)
+	}
+	if _, cached := old.References(m); cached {
+		t.Error("a reader that never registered the field found one anyway")
+	}
+}
+
+// The other direction: a file written before the field existed. The read must
+// be a miss, not an error and not an empty answer -- an empty answer would
+// thread every pre-existing message as if it had no ancestry.
+func TestAFileWithoutReferencesIsAMissNotAnAnswer(t *testing.T) {
+	idx, f, m := compatFolder(t)
+
+	fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+	if fc == nil {
+		t.Fatal("cache unavailable")
+	}
+	fc.StoreEnvelope(m, &imaplib.Envelope{Subject: "Plan"})
+	fc.Close()
+
+	fresh := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+	if fresh == nil {
+		t.Fatal("cache unavailable")
+	}
+	defer fresh.Close()
+	m = reread(t, idx, f.ID, m.UID)
+	if refs, cached := fresh.References(m); cached {
+		t.Errorf("References reported %v as cached for a message stored before the field existed", refs)
+	}
+	if fresh.Envelope(m) == nil {
+		t.Error("the envelope from the older writer is no longer readable")
+	}
+}
+
+// "No References" is an answer and must be cached as one, or every message
+// without the header is read again on every command for ever.
+func TestAMessageWithNoReferencesIsCachedAsHavingNone(t *testing.T) {
+	idx, f, m := compatFolder(t)
+
+	fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+	if fc == nil {
+		t.Fatal("cache unavailable")
+	}
+	fc.StoreReferences(m, nil)
+	fc.Close()
+
+	again := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+	if again == nil {
+		t.Fatal("cache unavailable")
+	}
+	defer again.Close()
+	m = reread(t, idx, f.ID, m.UID)
+	refs, cached := again.References(m)
+	if !cached {
+		t.Fatal("a message with no References reads as a miss, so it will be re-read for ever")
+	}
+	if len(refs) != 0 {
+		t.Errorf("References = %v, want none", refs)
+	}
+}
+
+// Round trip, because the ids are the thing threading joins on: a lost or
+// reordered id changes which conversation a message lands in.
+func TestReferencesRoundTripInOrder(t *testing.T) {
+	idx, f, m := compatFolder(t)
+	want := []string{"<root@x>", "<second@x>", "<third@x>"}
+
+	fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+	if fc == nil {
+		t.Fatal("cache unavailable")
+	}
+	fc.StoreReferences(m, want)
+	fc.Close()
+
+	again := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+	if again == nil {
+		t.Fatal("cache unavailable")
+	}
+	defer again.Close()
+	m = reread(t, idx, f.ID, m.UID)
+	got, cached := again.References(m)
+	if !cached {
+		t.Fatal("not cached")
+	}
+	if len(got) != len(want) {
+		t.Fatalf("References = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("id %d = %q, want %q -- order decides the parent", i, got[i], want[i])
+		}
+	}
+}
