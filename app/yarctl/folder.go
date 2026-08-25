@@ -47,8 +47,8 @@ Commands:
   repair  <user> <folder> [--namespace NS]                     — rebuild fileindex from disk + compact log
   create  <user> <folder> [--namespace NS] [--special-use ATTR]
                                                                 — create folder (RFC 6154 special-use attr is personal-only)
-  delete  <user> <folder> [--namespace NS]                     — delete folder + ACL state
-  rename  <user> <old> <new> [--namespace NS]                  — rename folder (INBOX not supported)
+  delete  <user> <folder> [--namespace NS]        (alias: rm) — delete folder + ACL state
+  rename  <user> <old> <new> [--namespace NS]     (alias: mv) — rename folder (INBOX not supported)
   expunge <user> <folder> [--namespace NS] [--uids 1,2,3]      — drop \Deleted-flagged messages
                                                                   (entire mailbox when --uids omitted)
 

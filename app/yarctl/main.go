@@ -276,7 +276,10 @@ Planes:
 
 Shorthand (no plane prefix):
   user      — alias for 'backend user'
-  warden     — connection-accounting introspection (warden dump), via the backend plane
+  subs      — alias for 'backend subscriptions'
+  warden    — connection-accounting introspection (warden dump), via the backend plane
+  fts       — search index status, rescan and optimize, via the backend plane
+  wait      — block until the given URLs answer (init containers, scripts)
 
 Tip: set YARILO_ADMIN_TYPE=backend|director|auth to skip the plane prefix entirely.
 
@@ -297,6 +300,7 @@ Services:
   subscriptions — IMAP SUBSCRIBE state
   specialuse    — special-use annotations
   metadata      — IMAP METADATA (RFC 5464)
+  mailbox       — message retrieval (mailbox message get mime|raw)
   who           — active session listing
   sessions      — session management (kick)
 

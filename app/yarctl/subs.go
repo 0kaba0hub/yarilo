@@ -30,7 +30,7 @@ func printSubsUsage() {
 Commands:
   list   <user> [--namespace NS]                — every subscribed folder
   add    <user> <folder> [--namespace NS]       — record SUBSCRIBE
-  remove <user> <folder> [--namespace NS]       — drop SUBSCRIBE
+  remove <user> <folder> [--namespace NS]  (alias: rm) — drop SUBSCRIBE
   migrate <user> --namespace NS [--apply]       — fold a namespace's old per-namespace
                                                   subscription file into the user's own
                                                   (subscriptions follow the subscriber);

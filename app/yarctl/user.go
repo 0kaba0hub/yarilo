@@ -46,7 +46,7 @@ Commands:
                      backend_api.auth_master_addr) the userdb block
                      plus userdb_status ("ok" / "not_found" / "error").
   usage    <user>  — per-folder message + byte totals across every namespace.
-  iterate          — every username yarilo-auth's userdb backend can
+  iterate  (alias: list) — every username yarilo-auth's userdb backend can
                      enumerate. Requires backend_api.auth_master_addr
                      to be configured; 503 otherwise.`)
 }
