@@ -115,9 +115,8 @@ func (s *Server) apiBackendDown(w http.ResponseWriter, r *http.Request) {
 	apiJSON(w, map[string]string{"status": "ok"})
 }
 
-// apiBackendFlush is the operator-forced EVACUATION (doveadm director flush
-// parity, #706): kick the backend's sessions and clear its pins so users move
-// off NOW. This is deliberately different from the wire BACKEND-FLUSH
+// apiBackendFlush is the operator-forced EVACUATION (#706): kick the backend's
+// sessions and clear its pins so users move off NOW. This is deliberately different from the wire BACKEND-FLUSH
 // (handleBackendFlush), which DRAINS without kicking. The kick is origin-local
 // (matching the other admin ops); the pin-clear replicates ring-wide via the
 // originated flush event, so every replica rehashes away too.

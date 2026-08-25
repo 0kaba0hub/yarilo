@@ -58,7 +58,7 @@ type legacyTestRec struct {
 func TestAutoMigratesLegacyOnOpen(t *testing.T) {
 	dir := t.TempDir()
 	// Seed under the legacy filename — Open() must first rename
-	// dovecot.index → yarilo.index, then notice the pre-Phase-2
+	// the legacy index name → yarilo.index, then notice the pre-Phase-2
 	// yarilo wire format inside and migrate to current format.
 	indexPath := filepath.Join(dir, "dovecot.index")
 

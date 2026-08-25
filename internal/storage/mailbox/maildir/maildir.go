@@ -954,8 +954,8 @@ func (u *userMailbox) uidListPath(folder string) string {
 	return filepath.Join(u.controlFolderPath(folder), UIDListFileName)
 }
 
-// migrateLegacyUIDList renames dovecot-uidlist → yarilo-uidlist when the
-// yarilo file is absent. Idempotent.
+// migrateLegacyUIDList renames the legacy uidlist file (LegacyUIDListFileName)
+// to yarilo-uidlist when the yarilo file is absent. Idempotent.
 func (u *userMailbox) migrateLegacyUIDList(folder string) error {
 	dst := u.uidListPath(folder)
 	if _, err := os.Stat(dst); err == nil {

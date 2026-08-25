@@ -983,10 +983,15 @@ func (s *Service) indexOne(mbox fts.MailboxRef, item fetched, upd fts.Update) er
 }
 
 // buildError tags an indexOne failure as coming from buildmail's Build (a
-// content/config problem) rather than Fetch (a storage/read problem). runIndex
-// treats these differently: a Build failure halts the run without advancing the
-// checkpoint past it (see haltIndexRunOnBuildFailure), while a Fetch failure
-// keeps the skip-and-continue-with-heal tolerance.
+// content/config problem) rather than Fetch (a storage/read problem). What it
+// buys is the rollback above: a partially built document must not flush into
+// the shard on the next message's first SetBuildKey.
+//
+// It no longer decides whether the run continues. It once halted the run
+// without advancing the checkpoint, so that a fixed decoder config would
+// retry the message -- until #1219, where a message that could never build
+// stopped its folder for ever and a search spanning folders became no search
+// at all. Both kinds are skipped, counted and logged now.
 type buildError struct{ err error }
 
 func (e *buildError) Error() string { return e.err.Error() }
