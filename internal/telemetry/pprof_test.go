@@ -16,15 +16,12 @@ import (
 
 // profileRoutes is every path the profilers can be reached at. One switch
 // opens all of them (#1488).
-var (
-	profileRoutes = []string{
-		"/debug/pprof/profile", "/debug/pprof/trace", "/debug/pprof/cmdline",
-		"/debug/pprof/symbol", "/debug/pprof/allocs", "/debug/pprof/heap",
-		"/debug/pprof/goroutine", "/debug/pprof/block", "/debug/pprof/mutex",
-		"/debug/pprof/threadcreate",
-	}
-	heapRoute = "/debug/pprof/heap"
-)
+var profileRoutes = []string{
+	"/debug/pprof/profile", "/debug/pprof/trace", "/debug/pprof/cmdline",
+	"/debug/pprof/symbol", "/debug/pprof/allocs", "/debug/pprof/heap",
+	"/debug/pprof/goroutine", "/debug/pprof/block", "/debug/pprof/mutex",
+	"/debug/pprof/threadcreate",
+}
 
 // registered reports whether the mux routes path to anything.
 //
