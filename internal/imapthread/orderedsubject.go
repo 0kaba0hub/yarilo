@@ -17,24 +17,24 @@ import (
 // "(1 2 3 4 5)" -- the latter would claim each message answers the one before
 // it, which is precisely the claim this algorithm cannot make.
 func OrderedSubject(msgs []Message) []imaplib.ThreadNode {
-	type thread struct {
-		msgs []*Message
-	}
-	var order []string
-	threads := map[string]*thread{}
+	// Threads by index, not by pointer: the field fixture is almost all
+	// conversations of one, so a *thread per subject was an allocation per
+	// message for a struct holding a single slice (#1487).
+	index := make(map[string]int, len(msgs))
+	groups := make([][]*Message, 0, len(msgs))
 	for i := range msgs {
 		m := &msgs[i]
 		base, _ := BaseSubject(m.Subject)
 		// Subject comparisons are case-insensitive (§5, Internationalization
 		// Considerations).
 		key := strings.ToLower(base)
-		t, ok := threads[key]
+		k, ok := index[key]
 		if !ok {
-			t = &thread{}
-			threads[key] = t
-			order = append(order, key)
+			k = len(groups)
+			index[key] = k
+			groups = append(groups, nil)
 		}
-		t.msgs = append(t.msgs, m)
+		groups[k] = append(groups[k], m)
 	}
 
 	// The threads are ordered by their own first message, so the node and that
@@ -44,15 +44,21 @@ func OrderedSubject(msgs []Message) []imaplib.ThreadNode {
 		node  imaplib.ThreadNode
 		first *Message
 	}
-	list := make([]built, 0, len(threads))
-	for _, key := range order {
-		t := threads[key]
-		sort.SliceStable(t.msgs, func(i, j int) bool { return earlier(t.msgs[i], t.msgs[j]) })
-		node := imaplib.ThreadNode{Num: t.msgs[0].Num}
-		for _, child := range t.msgs[1:] {
-			node.Children = append(node.Children, imaplib.ThreadNode{Num: child.Num})
+	list := make([]built, 0, len(groups))
+	for _, g := range groups {
+		// A thread of one is already ordered, and sorting it would still cost a
+		// closure and a sort call per thread.
+		if len(g) > 1 {
+			sort.SliceStable(g, func(i, j int) bool { return earlier(g[i], g[j]) })
 		}
-		list = append(list, built{node: node, first: t.msgs[0]})
+		node := imaplib.ThreadNode{Num: g[0].Num}
+		if len(g) > 1 {
+			node.Children = make([]imaplib.ThreadNode, 0, len(g)-1)
+			for _, child := range g[1:] {
+				node.Children = append(node.Children, imaplib.ThreadNode{Num: child.Num})
+			}
+		}
+		list = append(list, built{node: node, first: g[0]})
 	}
 	sort.SliceStable(list, func(i, j int) bool { return earlier(list[i].first, list[j].first) })
 

@@ -25,20 +25,31 @@ func Sort(msgs []Message, criteria []imaplib.SortCriterion) []uint32 {
 	// collate uppercased both sides on every one of those. Measured cost of
 	// that waste: ~100ms of a 248ms SORT (SUBJECT), and the same again inside
 	// every THREAD, which sorts by subject too (#1461).
-	rows := make([]sortRow, len(msgs))
-	for i := range msgs {
-		rows[i] = newSortRow(&msgs[i], criteria)
+	//
+	// One column per criterion, not one row per message: a row carried three
+	// slices whatever the key was, so a one-key sort over 10 442 messages
+	// allocated 31 326 slices to hold 10 442 values (#1487).
+	cols := make([]column, len(criteria))
+	for k := range criteria {
+		cols[k] = newColumn(criteria[k].Key, msgs)
+	}
+
+	// Sort a permutation: a swap moves an int, not the keys themselves.
+	perm := make([]int, len(msgs))
+	for i := range perm {
+		perm[i] = i
 	}
 
 	// Stable, so messages equal on every stated key keep their mailbox order --
 	// the implicit criterion of §3, which REVERSE does not touch.
-	sort.SliceStable(rows, func(i, j int) bool {
-		for k, c := range criteria {
-			cmp := rows[i].compare(&rows[j], k, c.Key)
+	sort.SliceStable(perm, func(x, y int) bool {
+		i, j := perm[x], perm[y]
+		for k := range criteria {
+			cmp := cols[k].compare(i, j)
 			if cmp == 0 {
 				continue
 			}
-			if c.Reverse {
+			if criteria[k].Reverse {
 				return cmp > 0
 			}
 			return cmp < 0
@@ -46,67 +57,74 @@ func Sort(msgs []Message, criteria []imaplib.SortCriterion) []uint32 {
 		return false
 	})
 
-	out := make([]uint32, len(rows))
-	for i := range rows {
-		out[i] = rows[i].num
+	out := make([]uint32, len(perm))
+	for i, idx := range perm {
+		out[i] = msgs[idx].Num
 	}
 	return out
 }
 
-// sortRow is one message reduced to what the requested keys compare, in the
-// form they compare in: strings already collated, times and sizes already
-// extracted. One entry per criterion, so a two-key sort computes two.
-type sortRow struct {
-	num  uint32
-	text []string    // collated string key per criterion, "" where not a string key
-	time []time.Time // per criterion
-	size []int64     // per criterion
+// column holds one criterion's key for every message, in the form it compares
+// in: strings already collated, times and sizes already extracted. Only the
+// slice the key needs is allocated -- ARRIVAL never builds a string, SUBJECT
+// never builds a time -- so a sort allocates per criterion, not per message.
+type column struct {
+	text []string
+	time []time.Time
+	size []int64
 }
 
-func newSortRow(m *Message, criteria []imaplib.SortCriterion) sortRow {
-	r := sortRow{
-		num:  m.Num,
-		text: make([]string, len(criteria)),
-		time: make([]time.Time, len(criteria)),
-		size: make([]int64, len(criteria)),
-	}
-	for i, c := range criteria {
-		switch c.Key {
-		case imaplib.SortKeyArrival:
-			r.time[i] = m.Arrival
-		case imaplib.SortKeyDate:
-			r.time[i] = m.Sent
-		case imaplib.SortKeySize:
-			r.size[i] = m.Size
-		case imaplib.SortKeySubject:
-			base, _ := BaseSubject(m.Subject)
-			r.text[i] = collationKey(base)
-		case imaplib.SortKeyFrom:
-			r.text[i] = collationKey(m.From)
-		case imaplib.SortKeyTo:
-			r.text[i] = collationKey(m.To)
-		case imaplib.SortKeyCc:
-			r.text[i] = collationKey(m.Cc)
-		}
-	}
-	return r
-}
-
-func (r *sortRow) compare(other *sortRow, i int, key imaplib.SortKey) int {
+func newColumn(key imaplib.SortKey, msgs []Message) column {
+	var c column
 	switch key {
 	case imaplib.SortKeyArrival, imaplib.SortKeyDate:
-		return compareTime(r.time[i], other.time[i])
+		c.time = make([]time.Time, len(msgs))
+		for i := range msgs {
+			if key == imaplib.SortKeyArrival {
+				c.time[i] = msgs[i].Arrival
+			} else {
+				c.time[i] = msgs[i].Sent
+			}
+		}
 	case imaplib.SortKeySize:
+		c.size = make([]int64, len(msgs))
+		for i := range msgs {
+			c.size[i] = msgs[i].Size
+		}
+	case imaplib.SortKeySubject, imaplib.SortKeyFrom, imaplib.SortKeyTo, imaplib.SortKeyCc:
+		c.text = make([]string, len(msgs))
+		for i := range msgs {
+			switch key {
+			case imaplib.SortKeySubject:
+				base, _ := BaseSubject(msgs[i].Subject)
+				c.text[i] = collationKey(base)
+			case imaplib.SortKeyFrom:
+				c.text[i] = collationKey(msgs[i].From)
+			case imaplib.SortKeyTo:
+				c.text[i] = collationKey(msgs[i].To)
+			case imaplib.SortKeyCc:
+				c.text[i] = collationKey(msgs[i].Cc)
+			}
+		}
+	}
+	return c
+}
+
+func (c *column) compare(i, j int) int {
+	switch {
+	case c.time != nil:
+		return compareTime(c.time[i], c.time[j])
+	case c.size != nil:
 		switch {
-		case r.size[i] < other.size[i]:
+		case c.size[i] < c.size[j]:
 			return -1
-		case r.size[i] > other.size[i]:
+		case c.size[i] > c.size[j]:
 			return 1
 		default:
 			return 0
 		}
-	case imaplib.SortKeySubject, imaplib.SortKeyFrom, imaplib.SortKeyTo, imaplib.SortKeyCc:
-		return strings.Compare(r.text[i], other.text[i])
+	case c.text != nil:
+		return strings.Compare(c.text[i], c.text[j])
 	default:
 		return 0
 	}

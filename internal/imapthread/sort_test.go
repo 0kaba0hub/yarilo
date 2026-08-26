@@ -162,3 +162,40 @@ func TestSubjectKeysAreExtractedOncePerMessage(t *testing.T) {
 		t.Errorf("first = %d, want %d (subject 01 sorts first)", got[0], n)
 	}
 }
+
+// TestSortAllocatesPerCommandNotPerMessage guards the column layout: the sort
+// must allocate a fixed number of slices for the whole command, not a set of
+// them for every message. A row-per-message layout allocates ~3n and fails here.
+func TestSortAllocatesPerCommandNotPerMessage(t *testing.T) {
+	const n = 1000
+	msgs := make([]Message, n)
+	for i := range msgs {
+		msgs[i] = Message{
+			Num:     uint32(i + 1),
+			Subject: fmt.Sprintf("Subject %d", (i*7919)%n),
+			Sent:    time.Date(2026, 3, 1, 0, 0, i, 0, time.UTC),
+			Arrival: time.Date(2026, 3, 1, 0, 0, i, 0, time.UTC),
+			Size:    int64(1000 + i),
+		}
+	}
+	tests := []struct {
+		name     string
+		criteria []imaplib.SortCriterion
+	}{
+		{"DATE", []imaplib.SortCriterion{{Key: imaplib.SortKeyDate}}},
+		{"SIZE", []imaplib.SortCriterion{{Key: imaplib.SortKeySize}}},
+		{"SUBJECT", []imaplib.SortCriterion{{Key: imaplib.SortKeySubject}}},
+		{"SUBJECT DATE", []imaplib.SortCriterion{{Key: imaplib.SortKeySubject}, {Key: imaplib.SortKeyDate}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// A bound, not a count: the collation keys of a SUBJECT sort are one
+			// allocation per message and are the point of the exercise. What must
+			// not scale with n is the number of slices holding them.
+			allocs := testing.AllocsPerRun(3, func() { Sort(msgs, tt.criteria) })
+			if limit := float64(n + 16); allocs > limit {
+				t.Errorf("Sort allocated %.0f times over %d messages, want at most %.0f", allocs, n, limit)
+			}
+		})
+	}
+}

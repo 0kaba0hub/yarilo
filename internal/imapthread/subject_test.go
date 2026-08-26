@@ -1,6 +1,10 @@
 package imapthread
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 // RFC 5256 §2.1 says servers MUST use exactly this algorithm, and the reason
 // is in the specification: a disconnected client runs it too, so a server that
@@ -72,6 +76,70 @@ func TestBaseSubjectFollowsTheGrammar(t *testing.T) {
 			}
 			if refwd != tc.refwd {
 				t.Errorf("BaseSubject(%q) reported reply/forward = %v, want %v", tc.in, refwd, tc.refwd)
+			}
+		})
+	}
+}
+
+// slowCollapse is what collapse does when it decides there is work: kept here
+// so the fast path can be checked against it rather than against a description
+// of it.
+func slowCollapse(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	space := false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '\t', '\r', '\n', ' ':
+			space = true
+		default:
+			if space && b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			space = false
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// The fast path skips the rebuild when it decides nothing would change, so the
+// property it rests on is exactly: needsCollapse(s) == (slowCollapse(s) != s).
+//
+// A predicate that says "no work" where work was needed loses a
+// transformation the specification asks for; one that says "work" where none
+// was needed only costs an allocation. So the rows below are chosen to press
+// the first direction -- including a malformed UTF-8 subject, which is where
+// the two used to disagree: iterating runes rewrote each bad byte as U+FFFD,
+// a normalisation nobody asked for and the fast path never performed.
+func TestCollapseFastPathAgreesWithTheSlowOne(t *testing.T) {
+	subjects := []string{
+		"",
+		"Plan",
+		"Plan for Friday",
+		" leading space",
+		"trailing space ",
+		"double  space",
+		"tab\tinside",
+		"crlf\r\nfolded",
+		"   ",
+		"\t",
+		"ends with tab\t",
+		"поточні справи",  // non-ASCII, nothing to collapse
+		"поточні  справи", // non-ASCII with a double space
+		"\xff\xfe broken", // invalid UTF-8
+		"broken\xff",      // invalid UTF-8 at the end
+		"multi   space   subject",
+	}
+	for _, s := range subjects {
+		t.Run(fmt.Sprintf("%q", s), func(t *testing.T) {
+			want := slowCollapse(s)
+			if got := collapse(s); got != want {
+				t.Errorf("collapse(%q) = %q, the full pass gives %q", s, got, want)
+			}
+			if needsCollapse(s) != (want != s) {
+				t.Errorf("needsCollapse(%q) = %v, but the full pass %s the string",
+					s, needsCollapse(s), map[bool]string{true: "changes", false: "leaves"}[want != s])
 			}
 		})
 	}
