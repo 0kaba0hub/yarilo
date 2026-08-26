@@ -2409,13 +2409,26 @@ type TelemetryConfig struct {
 	// profiles. Off by default — it is a switch thrown for the duration of an
 	// investigation, and the process logs a warning at every start while it is
 	// on, because the failure mode is leaving it enabled and forgetting.
-	PprofEnabled bool `koanf:"telemetry_pprof_enabled"`
-	// PprofHeapEnabled additionally serves /debug/pprof/heap.
 	//
-	// A separate knob because the two differ in kind. The allocation profile
-	// records where allocations were made; the heap profile dumps the live
-	// objects of a process whose live objects are other people's mail. Finding
-	// where CPU and allocations go never needs this one.
+	// What it exposes, stated plainly: stack traces, counts and the binary's
+	// symbol names -- which code paths this process runs and what they cost.
+	// Not the contents of anything; there is no field in the pprof format a
+	// message body could appear in. The reason it is still off by default is
+	// that the shape of a workload is worth something to someone, and an
+	// unauthenticated diagnostic port is not the place to leave it.
+	PprofEnabled bool `koanf:"telemetry_pprof_enabled"`
+	// PprofHeapEnabled is deprecated and does nothing. Setting it logs a
+	// warning at start; /debug/pprof/heap is served by PprofEnabled.
+	//
+	// It was a separate knob on the grounds that the heap profile dumps live
+	// objects while the allocation profile only records where allocations were
+	// made. Neither half held (#1488): Go's heap and allocs profiles are the
+	// same profile with different default sample types, so allocs already
+	// served inuse_space, and neither carries the contents of anything -- a
+	// pprof profile is stack traces and counts.
+	//
+	// Kept as a key so a config that still sets it is told, rather than
+	// starting with an unknown-key error or with silence.
 	PprofHeapEnabled bool `koanf:"telemetry_pprof_heap_enabled"`
 	// PprofBlockProfileRate samples one blocking event per this many
 	// nanoseconds of blocked time (runtime.SetBlockProfileRate). 0 (default)

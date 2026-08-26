@@ -14,13 +14,14 @@ import (
 	"github.com/google/pprof/profile"
 )
 
-// pprofRoutes is every path the profilers can be reached at, split by which
-// switch is supposed to open it.
+// profileRoutes is every path the profilers can be reached at. One switch
+// opens all of them (#1488).
 var (
-	executionRoutes = []string{
+	profileRoutes = []string{
 		"/debug/pprof/profile", "/debug/pprof/trace", "/debug/pprof/cmdline",
-		"/debug/pprof/symbol", "/debug/pprof/allocs", "/debug/pprof/goroutine",
-		"/debug/pprof/block", "/debug/pprof/mutex", "/debug/pprof/threadcreate",
+		"/debug/pprof/symbol", "/debug/pprof/allocs", "/debug/pprof/heap",
+		"/debug/pprof/goroutine", "/debug/pprof/block", "/debug/pprof/mutex",
+		"/debug/pprof/threadcreate",
 	}
 	heapRoute = "/debug/pprof/heap"
 )
@@ -56,7 +57,7 @@ func status(t *testing.T, h http.Handler, path string) int {
 func TestPprofIsAbsentUnlessEnabled(t *testing.T) {
 	h := NewWithOptions(Options{Addr: ":0"}).Handler()
 
-	for _, path := range append(executionRoutes, heapRoute, "/debug/pprof/") {
+	for _, path := range append(profileRoutes, "/debug/pprof/") {
 		if registered(t, h, path) {
 			t.Errorf("%s is routed with pprof disabled", path)
 		}
@@ -64,45 +65,51 @@ func TestPprofIsAbsentUnlessEnabled(t *testing.T) {
 }
 
 // The switch has to actually do something, or the test above passes for the
-// wrong reason.
+// wrong reason -- and it opens every profile, the heap route included.
+//
+// That route used to have a switch of its own, on the grounds that it dumps
+// live objects while the allocation profile only records where allocations were
+// made. Both halves were wrong: heap and allocs are the same runtime profile
+// with different default sample types, so the allocation route already served
+// inuse_space, and neither carries the contents of anything a pprof profile
+// could hold (#1488).
 func TestPprofIsPresentWhenEnabled(t *testing.T) {
 	h := NewWithOptions(Options{Addr: ":0", Pprof: PprofOptions{Enabled: true}}).Handler()
 
-	for _, path := range executionRoutes {
+	for _, path := range profileRoutes {
 		if !registered(t, h, path) {
-			t.Errorf("%s is not routed with pprof enabled", path)
+			t.Errorf("%s is not routed with the profilers enabled", path)
+		}
+	}
+	// Still no index page: it dispatches any unrouted suffix to the runtime
+	// profile of that name, so the served set would be decided by whatever any
+	// package in the binary registered rather than by the list above.
+	if registered(t, h, "/debug/pprof/") {
+		t.Error("/debug/pprof/ is routed — the index dispatches to every registered runtime profile, not to this list")
+	}
+}
+
+// The deprecated key opens nothing on its own. An operator who set it and
+// nothing else had the heap route before; they must not silently keep it, or
+// the removal would be a rename with extra steps.
+func TestTheDeprecatedHeapKeyOpensNothing(t *testing.T) {
+	h := NewWithOptions(Options{Addr: ":0", Pprof: PprofOptions{HeapDeprecated: true}}).Handler()
+
+	for _, path := range profileRoutes {
+		if registered(t, h, path) {
+			t.Errorf("%s is routed with only the deprecated heap key set", path)
 		}
 	}
 }
 
-// The heap dump is the one that can contain message bodies, so enabling the
-// execution profilers must not bring it along. This is the assertion that
-// keeps the split real: pprof.Index dispatches any unrouted suffix to the
-// runtime profile of that name, so mounting the prefix instead of the
-// individual routes would serve heap here and the split would exist only in
-// the option.
-func TestExecutionProfilesDoNotOpenTheHeapDump(t *testing.T) {
-	h := NewWithOptions(Options{Addr: ":0", Pprof: PprofOptions{Enabled: true}}).Handler()
+// And it does not close anything either: a config carrying both keeps every
+// route, so the deprecation cannot break a running investigation.
+func TestTheDeprecatedHeapKeyChangesNothingWhenEnabled(t *testing.T) {
+	h := NewWithOptions(Options{Addr: ":0", Pprof: PprofOptions{Enabled: true, HeapDeprecated: true}}).Handler()
 
-	if registered(t, h, heapRoute) {
-		t.Errorf("%s is routed with only the execution profiles enabled", heapRoute)
-	}
-	// The index page would list and route to it, so it is not mounted at all.
-	if registered(t, h, "/debug/pprof/") {
-		t.Error("/debug/pprof/ is routed — the index dispatches to every runtime profile, heap included")
-	}
-}
-
-// And the heap switch opens exactly that one.
-func TestHeapSwitchOpensTheHeapDumpAlone(t *testing.T) {
-	h := NewWithOptions(Options{Addr: ":0", Pprof: PprofOptions{Heap: true}}).Handler()
-
-	if !registered(t, h, heapRoute) {
-		t.Errorf("%s is not routed with the heap switch on", heapRoute)
-	}
-	for _, path := range executionRoutes {
-		if registered(t, h, path) {
-			t.Errorf("%s is routed with only the heap switch on", path)
+	for _, path := range profileRoutes {
+		if !registered(t, h, path) {
+			t.Errorf("%s is not routed with both keys set", path)
 		}
 	}
 }
@@ -119,7 +126,7 @@ func TestPprofDoesNotDisturbTheExistingEndpoints(t *testing.T) {
 	}{
 		{"disabled", PprofOptions{}},
 		{"execution", PprofOptions{Enabled: true}},
-		{"heap", PprofOptions{Enabled: true, Heap: true}},
+		{"deprecated key also set", PprofOptions{Enabled: true, HeapDeprecated: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewWithOptions(Options{Addr: ":0", Pprof: tc.pprof}).Handler()

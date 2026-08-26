@@ -33,51 +33,57 @@ type PprofOptions struct {
 	// mutex contention events is sampled. 0 leaves it off. Same reasoning as
 	// BlockRate.
 	MutexFraction int
-	// Heap additionally registers /debug/pprof/heap.
+	// HeapDeprecated is the former separate switch for /debug/pprof/heap. It
+	// changes nothing and is read only to warn: the route is now served by
+	// Enabled with the rest.
 	//
-	// Separate from Enabled because the two differ in kind, not degree. The
-	// allocation profile is stacks and counts: where allocations were made, not
-	// what was in them. The heap profile dumps the live objects of a process
-	// whose live objects are messages — bodies, headers, and whatever
-	// credentials a component holds. Splitting them means the common case,
-	// finding where CPU and allocations go, never needs the dangerous one.
-	Heap bool
+	// It was justified by two claims, both wrong (#1488). Go's heap and allocs
+	// profiles are the same profile written twice, differing only in which
+	// sample type is the default -- allocs already carries inuse_objects and
+	// inuse_space, so the switch withheld nothing that Enabled did not already
+	// serve. And neither profile carries the contents of anything: a pprof heap
+	// profile is sampled stack traces with object and byte counts, and the
+	// format has no field a message body could appear in.
+	//
+	// A boundary that is documented but not real is worse than none, because it
+	// is trusted.
+	HeapDeprecated bool
 }
 
 // registerPprof installs the profiling endpoints on mux.
 //
 // The routes are registered one by one rather than by handing the whole
 // /debug/pprof/ prefix to pprof.Index. Index dispatches any unrouted suffix to
-// the runtime profile of that name, so mounting it would serve /debug/pprof/heap
-// whatever Heap says — the split would exist in the option and not in the
-// server. There is no index page for the same reason; the URLs are in the docs.
+// the runtime profile of that name, so the set of routes would be whatever any
+// package in the binary happened to register with runtime/pprof — decided by
+// an import, not by this list. There is no index page for the same reason; the
+// URLs are in the docs.
 func registerPprof(mux *http.ServeMux, opts PprofOptions) {
 	// The sampling rates are a runtime setting, not a route, so they are applied
 	// even when nothing is registered: a component can be asked to collect
 	// without also being asked to serve.
 	applyProfileRates(opts)
-	if !opts.Enabled && !opts.Heap {
+	if opts.HeapDeprecated {
+		slog.Warn("telemetry: telemetry_pprof_heap_enabled is deprecated and does nothing — /debug/pprof/heap is served by telemetry_pprof_enabled, which always could serve the same data through /debug/pprof/allocs (#1488); remove the key")
+	}
+	if !opts.Enabled {
 		return
 	}
-	if opts.Enabled {
-		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		for _, name := range []string{"allocs", "goroutine", "block", "mutex", "threadcreate"} {
-			mux.Handle("/debug/pprof/"+name, pprof.Handler(name))
-		}
-	}
-	if opts.Heap {
-		mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	// heap and allocs are the same profile with different default sample
+	// types. Both are routed because the tools default to different ones.
+	for _, name := range []string{"allocs", "heap", "goroutine", "block", "mutex", "threadcreate"} {
+		mux.Handle("/debug/pprof/"+name, pprof.Handler(name))
 	}
 
 	// Warned at every start, not only in the config an operator read once. The
 	// failure this guards against is not enabling it — it is enabling it for an
 	// afternoon's investigation and leaving it on for a year.
 	slog.Warn("telemetry: pprof endpoints are ENABLED — this is a diagnostic switch, turn it off when the investigation ends",
-		"heap", opts.Heap,
-		"exposure", pprofExposure(opts))
+		"exposure", pprofExposure())
 }
 
 // applyProfileRates turns on the sampling the block and mutex profiles need.
@@ -98,9 +104,10 @@ func applyProfileRates(opts PprofOptions) {
 }
 
 // pprofExposure states in the log what the operator has actually opened.
-func pprofExposure(opts PprofOptions) string {
-	if opts.Heap {
-		return "execution profiles and /debug/pprof/heap, which dumps live objects and can contain message bodies"
-	}
-	return "execution profiles only (no heap dump)"
+//
+// Not message contents: a profile is stack traces with counts. What it does
+// give away is the shape of the process -- which code paths run, how often,
+// and how much they allocate -- and the symbol names of the binary.
+func pprofExposure() string {
+	return "stacks, counts and symbol names — the code paths this process runs and how much they cost, not the contents of anything"
 }
