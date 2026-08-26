@@ -42,6 +42,13 @@ type container struct {
 
 	base  string
 	refwd bool
+	// baseKey is base lowered once, because subject comparison is
+	// case-insensitive (§5) and gatherBySubject asks for it up to five times
+	// per container. Lowering on each ask allocated a string every time: on
+	// an account of ten thousand single-message threads that is fifty
+	// thousand allocations for one command, and the profile of that command
+	// is a third garbage collection (#1461).
+	baseKey string
 }
 
 func (c *container) dummy() bool { return c.msg == nil }
@@ -86,13 +93,15 @@ func (c *container) detach() {
 
 // References implements the REFERENCES threading algorithm of RFC 5256 §4.
 func References(msgs []Message) []imaplib.ThreadNode {
-	byID := map[string]*container{}
+	var a arena
+	byID := make(map[string]*container, len(msgs))
 	// Step 1: link every message to its ancestry.
 	for i := range msgs {
 		m := &msgs[i]
-		self := containerFor(byID, messageIDOf(byID, m, i))
+		self := containerFor(&a, byID, messageIDOf(byID, m, i))
 		self.msg = m
 		self.base, self.refwd = BaseSubject(m.Subject)
+		self.baseKey = strings.ToLower(self.base)
 
 		// (A) The references are a chain: each is the parent of the next.
 		var prev *container
@@ -101,7 +110,7 @@ func References(msgs []Message) []imaplib.ThreadNode {
 			if ref == "" {
 				continue
 			}
-			cur := containerFor(byID, ref)
+			cur := containerFor(&a, byID, ref)
 			if prev != nil {
 				link(prev, cur)
 			}
@@ -117,7 +126,7 @@ func References(msgs []Message) []imaplib.ThreadNode {
 	}
 
 	// Step 2: everything without a parent hangs off one root.
-	root := &container{}
+	root := a.next()
 	for _, c := range sortedContainers(byID) {
 		if c.parent == nil && c != root {
 			root.adopt(c)
@@ -131,7 +140,7 @@ func References(msgs []Message) []imaplib.ThreadNode {
 	// Step 4 and 5 both work on the top level, and 5 compares sent dates of
 	// what 4 ordered.
 	sortSiblings(root)
-	gatherBySubject(root)
+	gatherBySubject(&a, root)
 	// Step 6: sort every generation, children before their parents, so a
 	// parent orders by a child list that is already ordered.
 	sortTree(root)
@@ -142,12 +151,35 @@ func References(msgs []Message) []imaplib.ThreadNode {
 // containerFor is the id table of step 1: one container per Message ID,
 // created on first mention, so a reference to a message the mailbox does not
 // hold becomes the dummy the specification asks for.
-func containerFor(byID map[string]*container, id string) *container {
+func containerFor(a *arena, byID map[string]*container, id string) *container {
 	c, ok := byID[id]
 	if !ok {
-		c = &container{}
+		c = a.next()
 		byID[id] = c
 	}
+	return c
+}
+
+// arena hands out containers from blocks instead of one allocation each.
+//
+// A thread tree needs a container per message plus one per referenced message
+// the mailbox does not hold, so an account of ten thousand costs ten thousand
+// small allocations before any threading happens -- and the profile of a
+// THREAD on such an account is around a third garbage collection (#1461).
+//
+// Pointers stay valid because a block is never grown: when one is used up the
+// next allocation starts a fresh block, and the old one is kept alive by the
+// pointers already handed out.
+type arena struct{ block []container }
+
+const arenaBlock = 512
+
+func (a *arena) next() *container {
+	if len(a.block) == 0 {
+		a.block = make([]container, arenaBlock)
+	}
+	c := &a.block[0]
+	a.block = a.block[1:]
 	return c
 }
 
@@ -215,7 +247,7 @@ func pruneDummies(root, c *container) {
 // gatherBySubject implements step 5: threads whose first message shares a base
 // subject are one conversation, which is how a reply that lost its References
 // header still finds its thread.
-func gatherBySubject(root *container) {
+func gatherBySubject(a *arena, root *container) {
 	table := map[string]*container{}
 	for _, c := range root.children {
 		subject, _ := threadSubject(c)
@@ -260,7 +292,7 @@ func gatherBySubject(root *container) {
 		default:
 			// Neither is obviously the other's parent, so neither is made one:
 			// a new dummy holds both as siblings.
-			merged := &container{}
+			merged := a.next()
 			root.adopt(merged)
 			merged.adopt(head)
 			merged.adopt(c)
@@ -273,12 +305,12 @@ func gatherBySubject(root *container) {
 // thread is named by its first child.
 func threadSubject(c *container) (string, bool) {
 	if !c.dummy() {
-		return strings.ToLower(c.base), c.refwd
+		return c.baseKey, c.refwd
 	}
 	if len(c.children) == 0 {
 		return "", false
 	}
-	return strings.ToLower(c.children[0].base), c.children[0].refwd
+	return c.children[0].baseKey, c.children[0].refwd
 }
 
 func sortSiblings(c *container) {

@@ -6,6 +6,39 @@ import (
 	"time"
 )
 
+// singletons is the shape the field fixture actually has, and the worst input
+// gatherBySubject can get: every message a conversation of one, every subject
+// distinct, no References anywhere.
+//
+// The first version of this benchmark did not measure it -- it chained every
+// fifth message and reused subjects, which is a cheaper case, and reported
+// 8.3ms where the field spends ~56ms. A benchmark on a shape the corpus does
+// not have measures something nobody runs.
+func singletons(n int) []Message {
+	msgs := make([]Message, 0, n)
+	for i := 0; i < n; i++ {
+		msgs = append(msgs, Message{
+			Num:       uint32(i + 1),
+			MessageID: fmt.Sprintf("<msg-%d@example.com>", i),
+			Subject:   fmt.Sprintf("Unique subject %d about %d", i, i*7),
+			Sent:      time.Date(2026, 3, 1, 0, 0, i, 0, time.UTC),
+			Arrival:   time.Date(2026, 3, 1, 0, 0, i, 0, time.UTC),
+			Size:      int64(1000 + i),
+		})
+	}
+	return msgs
+}
+
+func BenchmarkReferencesSingletons10k(b *testing.B) {
+	msgs := singletons(10000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := References(msgs); len(got) != 10000 {
+			b.Fatalf("threads = %d, want 10000 -- the corpus is not singletons", len(got))
+		}
+	}
+}
+
 // tenThousand builds a mailbox-shaped corpus: mostly unrelated mail with a
 // scattering of conversations, which is what a real account looks like and
 // what the sandbox fixture holds.

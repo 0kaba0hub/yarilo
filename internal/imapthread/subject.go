@@ -73,6 +73,13 @@ func BaseSubject(subject string) (base string, refOrFwd bool) {
 // collapse implements step (1) for text already decoded to UTF-8: tabs and
 // continuations become spaces, runs of spaces become one.
 func collapse(s string) string {
+	if !needsCollapse(s) {
+		// The common case by far: an ordinary subject has no tabs, no runs of
+		// spaces and no edges to trim, and rebuilding it allocates a copy of
+		// every subject in the mailbox. On an account of ten thousand that was
+		// half the allocations of a THREAD (#1461).
+		return s
+	}
 	var b strings.Builder
 	b.Grow(len(s))
 	space := false
@@ -89,6 +96,28 @@ func collapse(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// needsCollapse reports whether step (1) would change anything: a tab or a
+// line break, an edge space, or two spaces in a row.
+func needsCollapse(s string) bool {
+	if s == "" {
+		return false
+	}
+	if s[0] == ' ' || s[len(s)-1] == ' ' {
+		return true
+	}
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\t', '\r', '\n':
+			return true
+		case ' ':
+			if i+1 < len(s) && s[i+1] == ' ' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // cutLeader removes leading whitespace, which is the WSP branch of subj-leader.
