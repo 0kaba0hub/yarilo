@@ -84,11 +84,59 @@ func (c *container) detach() {
 	siblings := c.parent.children
 	for i, s := range siblings {
 		if s == c {
-			c.parent.children = append(siblings[:i:i], siblings[i+1:]...)
+			// Shift in place. This used to be append(siblings[:i:i], ...), whose
+			// capped slice forces a fresh array and a copy of the whole child
+			// list on every single detachment -- 334 MB per THREAD on ten
+			// thousand messages that gather into pairs (#1461).
+			//
+			// Order is preserved, not swap-removed: threadSubject names a dummy
+			// thread after children[0], so moving the last child into the gap
+			// would change which one names the thread.
+			copy(siblings[i:], siblings[i+1:])
+			siblings[len(siblings)-1] = nil
+			c.parent.children = siblings[:len(siblings)-1]
 			break
 		}
 	}
 	c.parent = nil
+}
+
+// A generation is re-parented in one pass in steps 3 and 5: nearly every child
+// of the root can move. Removing each one as it goes shifts the tail behind it,
+// so a top level of ten thousand costs fifty million moves to empty. These do
+// the same work by leaving the old list untouched and rebuilding it once.
+//
+// Both forms are only correct on a child of a node that compactChildren is then
+// called on -- takeFrom leaves the child in the old list, and only the compact
+// pass removes it. treeIsConsistent guards the pair in the tests.
+func (c *container) takeFrom(old, child *container) {
+	if child.parent != old {
+		child.detach()
+	}
+	child.parent = c
+	c.children = append(c.children, child)
+}
+
+func dropFrom(old, c *container) {
+	if c.parent != old {
+		c.detach()
+		return
+	}
+	c.parent = nil
+}
+
+// compactChildren keeps the children that are still c's, in order.
+func compactChildren(c *container) {
+	kept := c.children[:0]
+	for _, child := range c.children {
+		if child.parent == c {
+			kept = append(kept, child)
+		}
+	}
+	for i := len(kept); i < len(c.children); i++ {
+		c.children[i] = nil
+	}
+	c.children = kept
 }
 
 // References implements the REFERENCES threading algorithm of RFC 5256 §4.
@@ -136,6 +184,7 @@ func References(msgs []Message) []imaplib.ThreadNode {
 	// Step 3: dummies exist to hold a tree together; the ones holding nothing
 	// go.
 	pruneDummies(root, root)
+	compactChildren(root)
 
 	// Step 4 and 5 both work on the top level, and 5 compares sent dates of
 	// what 4 ordered.
@@ -228,7 +277,7 @@ func pruneDummies(root, c *container) {
 		return
 	}
 	if len(c.children) == 0 {
-		c.detach()
+		dropFrom(root, c)
 		return
 	}
 	// A dummy with several children stays when its children would otherwise
@@ -239,9 +288,9 @@ func pruneDummies(root, c *container) {
 	}
 	parent := c.parent
 	for _, child := range append([]*container(nil), c.children...) {
-		parent.adopt(child)
+		parent.takeFrom(root, child)
 	}
-	c.detach()
+	dropFrom(root, c)
 }
 
 // gatherBySubject implements step 5: threads whose first message shares a base
@@ -284,23 +333,24 @@ func gatherBySubject(a *arena, root *container) {
 		switch {
 		case head.dummy() && c.dummy():
 			for _, child := range append([]*container(nil), c.children...) {
-				head.adopt(child)
+				head.takeFrom(root, child)
 			}
-			c.detach()
+			dropFrom(root, c)
 		case head.dummy():
-			head.adopt(c)
+			head.takeFrom(root, c)
 		case refwd && !headRefwd:
-			head.adopt(c)
+			head.takeFrom(root, c)
 		default:
 			// Neither is obviously the other's parent, so neither is made one:
 			// a new dummy holds both as siblings.
 			merged := a.next()
 			root.adopt(merged)
-			merged.adopt(head)
-			merged.adopt(c)
+			merged.takeFrom(root, head)
+			merged.takeFrom(root, c)
 			table[subject] = merged
 		}
 	}
+	compactChildren(root)
 }
 
 // threadSubject is step 5.B.i: a dummy has no subject of its own, so the
