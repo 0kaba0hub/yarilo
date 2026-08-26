@@ -120,3 +120,33 @@ func BenchmarkSortDateSingletons10k(b *testing.B) {
 		Sort(msgs, criteria)
 	}
 }
+
+// subjectPairs is the shape that makes step 5 detach from root: every subject
+// appears twice, once as an original and once as a reply that lost its
+// References header, so gathering re-parents half the top level.
+func subjectPairs(n int) []Message {
+	msgs := make([]Message, 0, n)
+	for i := 0; i < n; i++ {
+		subject := fmt.Sprintf("Subject %d", i/2)
+		if i%2 == 1 {
+			subject = "Re: " + subject
+		}
+		msgs = append(msgs, Message{
+			Num:       uint32(i + 1),
+			MessageID: fmt.Sprintf("<msg-%d@example.com>", i),
+			Subject:   subject,
+			Sent:      time.Date(2026, 3, 1, 0, 0, i, 0, time.UTC),
+			Arrival:   time.Date(2026, 3, 1, 0, 0, i, 0, time.UTC),
+			Size:      int64(1000 + i),
+		})
+	}
+	return msgs
+}
+
+func BenchmarkReferencesSubjectPairs10k(b *testing.B) {
+	msgs := subjectPairs(10000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		References(msgs)
+	}
+}
