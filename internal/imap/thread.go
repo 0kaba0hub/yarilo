@@ -220,14 +220,18 @@ func (s *session) orderingMessage(num uint32, m *mailbox.MessageMeta, raw []byte
 	// One pass over the record, not one per field: each read walks the chain
 	// and decodes everything in it, so asking twice doubled what a THREAD
 	// spent on a large mailbox (#1461).
+	// The head, not the whole envelope: ordering compares the date, the base
+	// subject and the first mailbox of From/To/Cc, and decoding the six address
+	// lists to reach them was 30.6% of every object a SORT (DATE) allocated on
+	// a ten-thousand-message account (#1490).
 	if needs.refs {
-		if env, refs, cached := envCache.EnvelopeAndReferences(m); env != nil && cached {
-			applyEnvelope(&out, env)
-			out.References = threadAncestry(refs, env.InReplyTo)
+		if head, refs, ok := envCache.HeadAndReferences(m); ok {
+			applyHead(&out, head)
+			out.References = threadAncestry(refs, head.InReplyTo)
 			return out, nil
 		}
-	} else if env := envCache.Envelope(m); env != nil {
-		applyEnvelope(&out, env)
+	} else if head, ok := envCache.Head(m); ok {
+		applyHead(&out, head)
 		return out, nil
 	}
 	// A miss is read, not skipped: an account with a cold cache would
@@ -256,7 +260,7 @@ func (s *session) orderingMessage(num uint32, m *mailbox.MessageMeta, raw []byte
 		return out, err
 	}
 	envCache.StoreEnvelope(m, env)
-	applyEnvelope(&out, env)
+	applyHead(&out, msgcache.HeadOf(env))
 	return out, nil
 }
 
@@ -301,22 +305,15 @@ func (s *session) envelopeOf(m *mailbox.MessageMeta, raw []byte) (*imaplib.Envel
 // applyEnvelope fills the ordering fields ENVELOPE carries. Address.Mailbox is
 // the addr-mailbox of RFC 5256 -- the local part, not the display name -- so
 // the sort key comes straight out of the cache with nothing re-parsed.
-func applyEnvelope(out *imapthread.Message, env *imaplib.Envelope) {
-	out.Subject = env.Subject
-	if !env.Date.IsZero() {
-		out.Sent = env.Date.UTC()
+func applyHead(out *imapthread.Message, head msgcache.Head) {
+	out.Subject = head.Subject
+	if !head.Date.IsZero() {
+		out.Sent = head.Date.UTC()
 	}
-	out.MessageID = env.MessageID
-	out.From = firstMailbox(env.From)
-	out.To = firstMailbox(env.To)
-	out.Cc = firstMailbox(env.Cc)
-}
-
-func firstMailbox(addrs []imaplib.Address) string {
-	if len(addrs) == 0 {
-		return ""
-	}
-	return addrs[0].Mailbox
+	out.MessageID = head.MessageID
+	out.From = head.From
+	out.To = head.To
+	out.Cc = head.Cc
 }
 
 // threadMessage reads the headers threading needs. raw is whatever the match
