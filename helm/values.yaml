@@ -2360,14 +2360,18 @@ telemetry:
   # warning at every start while it is on — the failure mode is not enabling it,
   # it is enabling it for an afternoon and leaving it on for a year.
   #
-  # enabled serves the profiles that describe execution: CPU, execution trace,
-  # allocations, goroutines, block and mutex. These are stacks and counts.
+  # enabled serves every Go runtime profile: CPU, execution trace, allocations,
+  # heap, goroutines, block and mutex. What that exposes is stack traces, counts
+  # and the binary's symbol names — which code paths this process runs and what
+  # they cost. Not the contents of anything: the pprof format has no field a
+  # message body could appear in. It is off by default because the shape of a
+  # workload is still worth something to someone, and an unauthenticated
+  # diagnostic port is not where to leave it.
   #
-  # heapEnabled is separate because it differs in kind, not degree:
-  # /debug/pprof/heap dumps the live objects of a process that has just parsed
-  # other people's mail, so the dump can contain message bodies. Finding where
-  # CPU and allocations go does not need it — leave it off unless the question
-  # is specifically what is retained.
+  # heapEnabled is deprecated and does nothing; a process that finds it set says
+  # so at start. It was justified by a distinction that does not exist — heap and
+  # allocs are the same profile with different default sample types, so the
+  # allocation route always served inuse_space too (#1488).
   pprof:
     enabled: false
     heapEnabled: false
