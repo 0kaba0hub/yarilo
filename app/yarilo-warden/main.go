@@ -158,10 +158,9 @@ func startTelemetry(cfg config.TelemetryConfig, srv *warden.Server, checks []tel
 		Lifecycle: true,
 		Checks:    checks,
 		Pprof: telemetry.PprofOptions{
-			Enabled:        cfg.PprofEnabled,
-			HeapDeprecated: cfg.PprofHeapEnabled,
-			BlockRate:      cfg.PprofBlockProfileRate,
-			MutexFraction:  cfg.PprofMutexProfileFraction,
+			Enabled:       cfg.PprofEnabled,
+			BlockRate:     cfg.PprofBlockProfileRate,
+			MutexFraction: cfg.PprofMutexProfileFraction,
 		},
 	}
 	if wd := cfg.LivenessWatchdog; wd.Enabled {

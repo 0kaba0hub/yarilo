@@ -1121,7 +1121,6 @@ data:
     telemetry:
       listen: {{ .Values.telemetry.listen | quote }}
       telemetry_pprof_enabled: {{ .Values.telemetry.pprof.enabled }}
-      telemetry_pprof_heap_enabled: {{ .Values.telemetry.pprof.heapEnabled }}
       telemetry_block_profile_rate: {{ .Values.telemetry.pprof.blockProfileRate | default 0 }}
       telemetry_mutex_profile_fraction: {{ .Values.telemetry.pprof.mutexProfileFraction | default 0 }}
       liveness_watchdog:

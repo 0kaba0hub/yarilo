@@ -86,27 +86,23 @@ func TestPprofIsPresentWhenEnabled(t *testing.T) {
 	}
 }
 
-// The deprecated key opens nothing on its own. An operator who set it and
-// nothing else had the heap route before; they must not silently keep it, or
-// the removal would be a rename with extra steps.
-func TestTheDeprecatedHeapKeyOpensNothing(t *testing.T) {
-	h := NewWithOptions(Options{Addr: ":0", Pprof: PprofOptions{HeapDeprecated: true}}).Handler()
+// An invented path answers 404, which is what separates "each route is
+// registered by name" from "the prefix is mounted".
+//
+// The three assertions above cannot tell those apart: they check paths that a
+// prefix mount would also serve, and the absence of the index page only says
+// the index itself is unrouted. pprof.Index dispatches any unrouted suffix to
+// the runtime profile of that name, so under a prefix mount this path would
+// answer rather than 404 -- which is how the served set would come to be
+// decided by whatever a package registered with runtime/pprof instead of by the
+// list in registerPprof. QA added this control while verifying #1491; it is
+// kept here so it outlives the report.
+func TestAnInventedProfilePathIsNotRouted(t *testing.T) {
+	h := NewWithOptions(Options{Addr: ":0", Pprof: PprofOptions{Enabled: true}}).Handler()
 
-	for _, path := range profileRoutes {
-		if registered(t, h, path) {
-			t.Errorf("%s is routed with only the deprecated heap key set", path)
-		}
-	}
-}
-
-// And it does not close anything either: a config carrying both keeps every
-// route, so the deprecation cannot break a running investigation.
-func TestTheDeprecatedHeapKeyChangesNothingWhenEnabled(t *testing.T) {
-	h := NewWithOptions(Options{Addr: ":0", Pprof: PprofOptions{Enabled: true, HeapDeprecated: true}}).Handler()
-
-	for _, path := range profileRoutes {
-		if !registered(t, h, path) {
-			t.Errorf("%s is not routed with both keys set", path)
+	for _, p := range []string{"/debug/pprof/zzz", "/debug/pprof/heap/extra", "/debug/pprof/allocsx"} {
+		if registered(t, h, p) {
+			t.Errorf("%s is routed — the profilers are mounted as a prefix, not as a list", p)
 		}
 	}
 }
@@ -123,7 +119,6 @@ func TestPprofDoesNotDisturbTheExistingEndpoints(t *testing.T) {
 	}{
 		{"disabled", PprofOptions{}},
 		{"execution", PprofOptions{Enabled: true}},
-		{"deprecated key also set", PprofOptions{Enabled: true, HeapDeprecated: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewWithOptions(Options{Addr: ":0", Pprof: tc.pprof}).Handler()
