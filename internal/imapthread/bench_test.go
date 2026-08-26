@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	imaplib "github.com/emersion/go-imap/v2"
 )
 
 // singletons is the shape the field fixture actually has, and the worst input
@@ -88,5 +90,33 @@ func BenchmarkOrderedSubject10k(b *testing.B) {
 		if got := OrderedSubject(msgs); len(got) == 0 {
 			b.Fatal("no threads")
 		}
+	}
+}
+
+func BenchmarkOrderedSubjectSingletons10k(b *testing.B) {
+	msgs := singletons(10000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := OrderedSubject(msgs); len(got) == 0 {
+			b.Fatal("no threads")
+		}
+	}
+}
+
+func BenchmarkSortSubjectSingletons10k(b *testing.B) {
+	msgs := singletons(10000)
+	criteria := []imaplib.SortCriterion{{Key: imaplib.SortKeySubject}}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Sort(msgs, criteria)
+	}
+}
+
+func BenchmarkSortDateSingletons10k(b *testing.B) {
+	msgs := singletons(10000)
+	criteria := []imaplib.SortCriterion{{Key: imaplib.SortKeyDate}}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Sort(msgs, criteria)
 	}
 }

@@ -80,11 +80,20 @@ func collapse(s string) string {
 		// half the allocations of a THREAD (#1461).
 		return s
 	}
+	// Byte-wise, not rune-wise. Everything this looks for is ASCII, and every
+	// byte of a multi-byte sequence is >= 0x80, so bytes cannot be mistaken
+	// for whitespace and non-ASCII text passes through untouched.
+	//
+	// Iterating runes did touch it: an invalid UTF-8 byte decodes to U+FFFD
+	// and was written back as the replacement character, so collapse quietly
+	// rewrote a malformed subject -- a normalisation §2.1 does not ask for,
+	// and one the fast path above does not perform. That made
+	// needsCollapse(s) == (collapse(s) != s) false for such a subject.
 	var b strings.Builder
 	b.Grow(len(s))
 	space := false
-	for _, r := range s {
-		switch r {
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
 		case '\t', '\r', '\n', ' ':
 			space = true
 		default:
@@ -92,7 +101,7 @@ func collapse(s string) string {
 				b.WriteByte(' ')
 			}
 			space = false
-			b.WriteRune(r)
+			b.WriteByte(c)
 		}
 	}
 	return b.String()

@@ -248,7 +248,9 @@ func pruneDummies(root, c *container) {
 // subject are one conversation, which is how a reply that lost its References
 // header still finds its thread.
 func gatherBySubject(a *arena, root *container) {
-	table := map[string]*container{}
+	// Sized for the worst case, which is also the common one: no message shares a
+	// subject with another, so the table ends up with a row per child.
+	table := make(map[string]*container, len(root.children))
 	for _, c := range root.children {
 		subject, _ := threadSubject(c)
 		if subject == "" {
