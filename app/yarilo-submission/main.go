@@ -301,10 +301,9 @@ func runTelemetry(cfg config.TelemetryConfig) {
 	tel := telemetry.NewWithOptions(telemetry.Options{
 		Addr: telemetry.Addr(cfg.Listen),
 		Pprof: telemetry.PprofOptions{
-			Enabled:        cfg.PprofEnabled,
-			HeapDeprecated: cfg.PprofHeapEnabled,
-			BlockRate:      cfg.PprofBlockProfileRate,
-			MutexFraction:  cfg.PprofMutexProfileFraction,
+			Enabled:       cfg.PprofEnabled,
+			BlockRate:     cfg.PprofBlockProfileRate,
+			MutexFraction: cfg.PprofMutexProfileFraction,
 		},
 	})
 	if err := tel.ListenAndServe(context.Background()); err != nil {

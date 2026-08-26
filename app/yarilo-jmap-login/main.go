@@ -97,10 +97,9 @@ func main() {
 	tel := telemetry.NewWithOptions(telemetry.Options{
 		Addr: telemetry.Addr(cfg.Telemetry.Listen),
 		Pprof: telemetry.PprofOptions{
-			Enabled:        cfg.Telemetry.PprofEnabled,
-			HeapDeprecated: cfg.Telemetry.PprofHeapEnabled,
-			BlockRate:      cfg.Telemetry.PprofBlockProfileRate,
-			MutexFraction:  cfg.Telemetry.PprofMutexProfileFraction,
+			Enabled:       cfg.Telemetry.PprofEnabled,
+			BlockRate:     cfg.Telemetry.PprofBlockProfileRate,
+			MutexFraction: cfg.Telemetry.PprofMutexProfileFraction,
 		},
 		Lifecycle: true,
 	})

@@ -2368,13 +2368,12 @@ telemetry:
   # workload is still worth something to someone, and an unauthenticated
   # diagnostic port is not where to leave it.
   #
-  # heapEnabled is deprecated and does nothing; a process that finds it set says
-  # so at start. It was justified by a distinction that does not exist — heap and
-  # allocs are the same profile with different default sample types, so the
-  # allocation route always served inuse_space too (#1488).
+  # There was a second switch here, telemetry.pprof.heapEnabled, on a
+  # distinction that does not exist — heap and allocs are the same profile with
+  # different default sample types (#1488). It is gone from the chart; a config
+  # that still carries it is warned about at start (#1493).
   pprof:
     enabled: false
-    heapEnabled: false
     # Sampling rates for the block and mutex profiles. The routes above answer
     # 200 with an EMPTY profile while these are 0 — a diagnostic that looks like
     # an answer. Set them for a measurement window and clear them afterwards:

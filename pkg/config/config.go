@@ -2417,19 +2417,6 @@ type TelemetryConfig struct {
 	// that the shape of a workload is worth something to someone, and an
 	// unauthenticated diagnostic port is not the place to leave it.
 	PprofEnabled bool `koanf:"telemetry_pprof_enabled"`
-	// PprofHeapEnabled is deprecated and does nothing. Setting it logs a
-	// warning at start; /debug/pprof/heap is served by PprofEnabled.
-	//
-	// It was a separate knob on the grounds that the heap profile dumps live
-	// objects while the allocation profile only records where allocations were
-	// made. Neither half held (#1488): Go's heap and allocs profiles are the
-	// same profile with different default sample types, so allocs already
-	// served inuse_space, and neither carries the contents of anything -- a
-	// pprof profile is stack traces and counts.
-	//
-	// Kept as a key so a config that still sets it is told, rather than
-	// starting with an unknown-key error or with silence.
-	PprofHeapEnabled bool `koanf:"telemetry_pprof_heap_enabled"`
 	// PprofBlockProfileRate samples one blocking event per this many
 	// nanoseconds of blocked time (runtime.SetBlockProfileRate). 0 (default)
 	// leaves block profiling off.
@@ -2709,7 +2696,6 @@ func Load(path string) (*Config, error) {
 		Telemetry: TelemetryConfig{
 			Listen:                    ":8080",
 			PprofEnabled:              false,
-			PprofHeapEnabled:          false,
 			PprofBlockProfileRate:     0,
 			PprofMutexProfileFraction: 0,
 			LivenessWatchdog: LivenessWatchdogConfig{
@@ -2760,6 +2746,7 @@ func Load(path string) (*Config, error) {
 			return nil, err
 		}
 	}
+	warnRetiredKeys(k, retiredKeys())
 	if err := refuseInvertedPairs(cfg); err != nil {
 		return nil, err
 	}

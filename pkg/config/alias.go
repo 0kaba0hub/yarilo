@@ -488,3 +488,50 @@ func refuseInvertedPairs(cfg *Config) error {
 	}
 	return nil
 }
+
+// A key that is retired rather than renamed has no canonical spelling to adopt:
+// it does nothing at all. It is still worth answering, because an operator who
+// wrote it believes it does something, and dropping it from the schema in
+// silence leaves that belief in place.
+//
+// Presence is asked of koanf, not read off a struct field. A retired bool at
+// false is indistinguishable from a key nobody wrote once it has been
+// unmarshalled, so a check on the value tells only the operators who set it to
+// true -- which is the opposite of the population that needs telling. That was
+// #1493.
+//
+// The chart must stop rendering a key before it is listed here. While a
+// template writes it unconditionally the key is present in every install, so a
+// presence check would warn everywhere, permanently, and a warning everyone
+// sees on a healthy deployment is one nobody reads on a sick one.
+type retiredKey struct {
+	key string
+	// note says what happened to the setting and what to do now. It is the
+	// whole value of the warning: "unknown key" an operator can already see.
+	note string
+}
+
+func warnRetiredKeys(k *koanf.Koanf, keys []retiredKey) {
+	for _, r := range keys {
+		if !k.Exists(r.key) {
+			continue
+		}
+		slog.Warn("config: retired key found; it does nothing and can be deleted",
+			"key", r.key,
+			"note", r.note)
+	}
+}
+
+// retiredKeys is the whole list. It is short by construction: a key only lands
+// here when the setting it named is gone, and it leaves once the beta window
+// that promised the warning has passed.
+func retiredKeys() []retiredKey {
+	return []retiredKey{
+		{
+			key: "telemetry.telemetry_pprof_heap_enabled",
+			note: "/debug/pprof/heap is served by telemetry_pprof_enabled; " +
+				"the split was made on a difference that does not exist, since heap and allocs " +
+				"are one profile with different default sample types (#1488)",
+		},
+	}
+}

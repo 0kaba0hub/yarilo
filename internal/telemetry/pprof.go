@@ -33,21 +33,6 @@ type PprofOptions struct {
 	// mutex contention events is sampled. 0 leaves it off. Same reasoning as
 	// BlockRate.
 	MutexFraction int
-	// HeapDeprecated is the former separate switch for /debug/pprof/heap. It
-	// changes nothing and is read only to warn: the route is now served by
-	// Enabled with the rest.
-	//
-	// It was justified by two claims, both wrong (#1488). Go's heap and allocs
-	// profiles are the same profile written twice, differing only in which
-	// sample type is the default -- allocs already carries inuse_objects and
-	// inuse_space, so the switch withheld nothing that Enabled did not already
-	// serve. And neither profile carries the contents of anything: a pprof heap
-	// profile is sampled stack traces with object and byte counts, and the
-	// format has no field a message body could appear in.
-	//
-	// A boundary that is documented but not real is worse than none, because it
-	// is trusted.
-	HeapDeprecated bool
 }
 
 // registerPprof installs the profiling endpoints on mux.
@@ -63,9 +48,6 @@ func registerPprof(mux *http.ServeMux, opts PprofOptions) {
 	// even when nothing is registered: a component can be asked to collect
 	// without also being asked to serve.
 	applyProfileRates(opts)
-	if opts.HeapDeprecated {
-		slog.Warn("telemetry: telemetry_pprof_heap_enabled is deprecated and does nothing — /debug/pprof/heap is served by telemetry_pprof_enabled, which always could serve the same data through /debug/pprof/allocs (#1488); remove the key")
-	}
 	if !opts.Enabled {
 		return
 	}
