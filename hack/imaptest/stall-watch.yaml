@@ -5,6 +5,11 @@
 # on an operator's machine on purpose: a dropped link used to end the watch at
 # exactly the moment it mattered.
 #
+# Needs telemetry.pprof.enabled on the backends: the goroutine dump and the CPU
+# profile come from /debug/pprof on the telemetry port. Without it the metrics
+# snapshot still arrives and the two profiles are simply absent -- which reads
+# as a quiet server rather than as a switch that is off, so check it first.
+#
 #   kubectl -n yarilo-sb create configmap stall-watch --from-file=stall_watch.py=hack/imaptest/stall_watch.py
 #   kubectl -n yarilo-sb apply -f hack/imaptest/stall-watch.yaml
 #   kubectl -n yarilo-sb set env job/stall-watch TARGET=imaptest-<name>   # before apply, or edit below
