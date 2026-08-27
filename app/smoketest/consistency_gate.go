@@ -83,14 +83,21 @@ func registerConsistency(checks *[]check) {
 		func() error { return checkConsistencyFlagsIMAPToJMAP(imapUser, imapPass) },
 		imap, jmap, delivery)
 
-	// The write half of JMAP does not exist yet (#712). The row is registered
-	// so the report keeps asking for it: a direction that quietly stops being
-	// checked is the same hole this area was built to close.
-	jmapWrite := surfaceState{surface: "jmap Email/set", present: false,
-		needs: "Email/set, the JMAP write path — not implemented yet (#712)"}
+	// The write half of JMAP arrived with phase 2 (#1216): Email/set updates
+	// keywords, which is exactly what this row writes. It was a named skip
+	// until then, and left as one afterwards -- so the direction went
+	// unchecked in the field while the code that serves it was merged and
+	// released.
 	row("consistency jmap->imap keyword becomes the flag",
 		func() error { return checkConsistencyFlagsJMAPToIMAP(imapUser, imapPass) },
-		imap, jmapWrite, delivery)
+		imap, jmap, delivery)
+
+	// State and changes are what phase 2 is FOR, and nothing exercised them:
+	// a client that cannot trust /changes resynchronises in full, which is the
+	// cost the whole feature exists to avoid.
+	row("consistency jmap Email/changes and Mailbox/changes report one real change",
+		func() error { return checkConsistencyChanges(imapUser, imapPass) },
+		imap, jmap, delivery)
 
 	row("consistency imap SEARCH <-> jmap Email/query over one term",
 		func() error { return checkConsistencySearch(imapUser, imapPass) },
