@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -126,4 +127,61 @@ func readWorkflow(t *testing.T, name string) string {
 		t.Fatalf("read %s: %v", name, err)
 	}
 	return string(body)
+}
+
+// Every workflow that triggers on a branch must name develop, or it stopped
+// working the day the work moved there.
+//
+// secret-scan did: it ran on pushes to main only, so from the move to develop
+// until the first cut nothing scanned the commits people actually write. A
+// secret would have been found in the history rather than in the change that
+// introduced it, which is the difference between deleting a line and rotating a
+// credential.
+//
+// ci.yml is the exception and stays one: it is the master line, and develop has
+// its own pipeline. Named here rather than inferred, so adding a workflow means
+// deciding rather than defaulting.
+func TestEveryBranchTriggeredWorkflowCoversDevelop(t *testing.T) {
+	masterOnly := map[string]string{
+		"ci.yml":                     "the master pipeline; develop has ci-develop.yml",
+		"dockerhub-description.yaml": "publishes the description of what master released",
+	}
+	dir := filepath.Join("..", "..", ".github", "workflows")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read workflows: %v", err)
+	}
+	var checked int
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		on := triggers(t, name)
+		push, ok := on["push"].(map[string]any)
+		if !ok {
+			continue
+		}
+		branches, ok := push["branches"].([]any)
+		if !ok {
+			continue
+		}
+		checked++
+		var names []string
+		for _, b := range branches {
+			names = append(names, b.(string))
+		}
+		if why, exempt := masterOnly[name]; exempt {
+			if slices.Contains(names, "develop") {
+				t.Errorf("%s is listed as master-only (%s) but triggers on develop", name, why)
+			}
+			continue
+		}
+		if !slices.Contains(names, "develop") {
+			t.Errorf("%s triggers on %v and not on develop, where the work lands: it stopped running the day the work moved", name, names)
+		}
+	}
+	if checked < 3 {
+		t.Errorf("found %d branch-triggered workflows; this guard is reading the wrong directory", checked)
+	}
 }
