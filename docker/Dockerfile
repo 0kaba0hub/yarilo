@@ -1,5 +1,21 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26-alpine AS builder
+
+## The base is pinned to an exact patch, not golang:1.26-alpine, and go.mod
+## names the same version. A floating base picks up toolchain security fixes
+## on its own, which sounds like a virtue until the scan disagrees with the
+## image: govulncheck reads go.mod and reported 15 called stdlib
+## vulnerabilities while the shipped binary, built from a floated base, had
+## every one of them fixed (#1497). One version, named once, is what makes a
+## scan a statement about what we ship.
+##
+## Moving it is a person's job, and dependabot's docker ecosystem opens the PR.
+FROM golang:1.26.7-alpine AS builder
+
+## GOTOOLCHAIN=local so the build uses the base image's toolchain and nothing
+## else. Without it a go.mod naming a newer version would silently download one
+## mid-build, and the pin above would describe a toolchain that did not compile
+## anything.
+ENV GOTOOLCHAIN=local
 
 ARG BUILD_VERSION=dev
 
@@ -48,7 +64,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 ## --- yarilo-fts: the only cgo binary (libxapian). Built in its own stage so
 ## every other binary stays CGO_ENABLED=0 static; ships in the single image.
-FROM golang:1.26-alpine AS fts-builder
+FROM golang:1.26.7-alpine AS fts-builder
+ENV GOTOOLCHAIN=local
 # hadolint ignore=DL3018
 RUN apk add --no-cache build-base xapian-core-dev
 WORKDIR /src

@@ -48,6 +48,20 @@ jobs:
       - name: Run golangci-lint
         run: golangci-lint run ./...
 
+      ## On every gate run, not on a clock like the Trivy scan. Trivy asks what
+      ## CVEs exist in the image, and that answer changes when a CVE is
+      ## published; this asks whether OUR code calls a known-vulnerable
+      ## function, and that answer changes when we write a call -- so it belongs
+      ## where the code changes.
+      ##
+      ## It is also the check that catches the toolchain drifting behind its
+      ## fixes, which is how #1497 was found: 15 called standard-library
+      ## vulnerabilities, every one of them fixed by a newer patch release.
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
       - name: Run hadolint
         uses: hadolint/hadolint-action@v3.4.0
         with:

@@ -32,3 +32,17 @@ updates:
     labels:
       - dependencies
     open-pull-requests-limit: 5
+
+  ## The Go base image. Pinned to an exact patch (#1497), so the toolchain no
+  ## longer moves on its own -- which means something has to move it, and this
+  ## is that something.
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    labels:
+      - dependencies
+    open-pull-requests-limit: 5
