@@ -100,3 +100,24 @@ func readChartText(t *testing.T) string {
 	}
 	return b.String()
 }
+
+// Every retired key must say what took its place.
+//
+// "Unknown key" is something an operator can already see; the value of the
+// warning is the sentence after it. A list entry with an empty or bare note
+// would still log, and the log would say nothing worth reading — which is the
+// same failure as the silence this list was written to end (#1493).
+//
+// Asserted because the release notes promise it: a retired key is answered,
+// not ignored.
+func TestEveryRetiredKeySaysWhatReplacedIt(t *testing.T) {
+	for _, r := range retiredKeys() {
+		if r.key == "" {
+			t.Error("a retired entry has no key")
+			continue
+		}
+		if len(r.note) < 40 {
+			t.Errorf("%s has no useful note (%q): the warning would name the key and tell the operator nothing", r.key, r.note)
+		}
+	}
+}
