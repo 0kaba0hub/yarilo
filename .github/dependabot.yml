@@ -32,3 +32,15 @@ updates:
     labels:
       - dependencies
     open-pull-requests-limit: 5
+
+  ## The Go base image is pinned, so something has to move it (#1497).
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    labels:
+      - dependencies
+    open-pull-requests-limit: 5

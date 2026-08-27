@@ -1,6 +1,6 @@
 module github.com/yarilomail/yarilo
 
-go 1.26.2
+go 1.26.7
 
 require (
 	github.com/0kaba0hub/go-xapian v0.2.0
