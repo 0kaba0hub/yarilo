@@ -1,0 +1,152 @@
+name: CI — develop
+
+## The develop line: every green build feeds the sandbox.
+##
+## Two differences from the master pipeline, both deliberate. Nothing here
+## reaches Docker Hub -- stable users pull only what master published. And no
+## git tag and no GitHub release are created: a release number belongs to a
+## master merge, not to a build counter.
+##
+## Merged into the current line before `develop` exists. It activates when the
+## branch appears, which is the point: the pipeline that feeds the sandbox
+## should not be written on the day it is first needed.
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - "app/**"
+      - "helm/**"
+      - "internal/**"
+      - "pkg/**"
+      - "go.mod"
+      - "go.sum"
+      - "docker/Dockerfile"
+      - ".github/workflows/ci-develop.yml"
+      - ".github/workflows/gate.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-develop-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/yarilo
+  ## Until master exists, dev images are candidates for the first stable
+  ## release. After it, the next release is master's version with the patch
+  ## raised -- read from the branch rather than committed anywhere, because a
+  ## number in a file on develop is a number someone has to remember to change.
+  FIRST_RELEASE: "2.4.1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  ## Dev tags kept in GHCR besides `latest`. Enough to roll the sandbox back
+  ## past the candidate that broke it; not so many that the registry becomes an
+  ## archive nobody prunes.
+  KEEP_DEV_TAGS: "3"
+
+jobs:
+  gate:
+    uses: ./.github/workflows/gate.yml
+    ## A called workflow cannot ask for more than its caller grants,
+    ## and the test job publishes a check run.
+    permissions:
+      contents: read
+      checks: write
+
+  build:
+    name: Build & Push (develop)
+    needs: [gate]
+    runs-on: [self-hosted, linux]
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Determine dev tag
+        id: version
+        run: |
+          set -euo pipefail
+          # The next release is master's version with the patch raised. Before
+          # master exists there is nothing to raise, so the first release
+          # number stands in -- and the fallback is announced rather than
+          # silent, because a wrong number here names images QA will pin.
+          if git fetch --quiet --depth=1 origin master 2>/dev/null &&
+             MASTER_VERSION=$(git show FETCH_HEAD:helm/Chart.yaml 2>/dev/null | awk '/^appVersion:/{gsub(/"/, ""); print $2}') &&
+             [ -n "${MASTER_VERSION}" ]; then
+            NEXT=$(echo "${MASTER_VERSION}" | awk -F. '{printf "%s.%s.%d", $1, $2, $3 + 1}')
+          else
+            NEXT="${FIRST_RELEASE}"
+            echo "::notice::no master branch yet; dev images are candidates for ${NEXT}"
+          fi
+          # github.run_number is monotonic per workflow and never reused, which
+          # is what an immutable name needs. It is not a commit count: two
+          # builds of one commit get two names, and that is correct -- they are
+          # two artefacts.
+          DEV_TAG="${NEXT}-dev.${GITHUB_RUN_NUMBER}"
+          echo "dev_tag=${DEV_TAG}" >> "$GITHUB_OUTPUT"
+          echo "next=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "building ${DEV_TAG}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.3.0
+        with:
+          driver: docker
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.version.outputs.dev_tag }}
+          build-args: |
+            BUILD_VERSION=${{ steps.version.outputs.dev_tag }}
+
+      - name: Prune old dev tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: ${{ env.KEEP_DEV_TAGS }}
+          FRESH: ${{ steps.version.outputs.dev_tag }}
+        run: |
+          set -euo pipefail
+          # Versions carrying a -dev. tag, newest first. Anything past KEEP is
+          # deleted; release tags and `latest` are never touched, and a version
+          # that carries both a dev tag and something else is left alone
+          # because deleting it would take the other name with it.
+          mapfile -t STALE < <(
+            gh api --paginate \
+              "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/yarilo/versions" \
+              --jq '.[] | select(.metadata.container.tags | length > 0)
+                        | select(all(.metadata.container.tags[]; test("-dev\\.")))
+                        | "\(.id) \(.metadata.container.tags | join(","))"' \
+            | tail -n "+$((KEEP + 1))"
+          )
+          if [ "${#STALE[@]}" -eq 0 ]; then
+            echo "nothing to prune"
+            exit 0
+          fi
+          for entry in "${STALE[@]}"; do
+            id="${entry%% *}"; tags="${entry#* }"
+            if [ "${tags}" = "${FRESH}" ]; then
+              echo "refusing to prune the image just built (${tags})"
+              continue
+            fi
+            echo "pruning ${tags}"
+            gh api -X DELETE \
+              "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/yarilo/versions/${id}" ||
+              echo "::warning::could not delete version ${id} (${tags})"
+          done
