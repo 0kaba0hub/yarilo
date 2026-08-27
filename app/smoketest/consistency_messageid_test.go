@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 // The reading is where this row can lie, so it is exercised against real FETCH
 // responses rather than only against a cluster. A comparison that runs only in
@@ -104,5 +108,131 @@ func TestMessageIDBracketsAllowance(t *testing.T) {
 				t.Errorf("allowance(%q, %q) = %v, want %v", tt.left, tt.right, got, tt.want)
 			}
 		})
+	}
+}
+
+// The reading of the JMAP side takes what jmapCall returns: the first method's
+// ARGUMENTS. Unwrapping the envelope a second time found no methodResponses,
+// so the list was always empty and the row failed with one message whatever the
+// server had done — on 2.3.266, which stores no id, and on the build that does.
+// A check that cannot tell two states of the world apart measures nothing.
+func TestJMAPMessageIDsReadsMethodArguments(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    string
+		want    []string
+		wantErr bool
+	}{
+		{
+			// Taken off a sandbox running the candidate, verbatim apart from
+			// the state token, which is a long opaque string this function
+			// never reads. Invented JSON would test the invention.
+			name: "a response as the server actually sends it",
+			args: `{"accountId":"u1@d00001.test","state":"<elided>",` +
+				`"list":[{"id":"ef36173eeccdd7e763f08835b7698877",` +
+				`"messageId":["e100d63a4e272736be00cd48042dc54e@yarilo"]}],"notFound":[]}`,
+			want: []string{"e100d63a4e272736be00cd48042dc54e@yarilo"},
+		},
+		{
+			name: "messageId is null — the message has no identity",
+			args: `{"accountId":"u1","state":"s1","list":[{"id":"M1","messageId":null}],"notFound":[]}`,
+			want: nil,
+		},
+		{
+			name:    "the message is not there",
+			args:    `{"accountId":"u1","state":"s1","list":[],"notFound":["M1"]}`,
+			wantErr: true,
+		},
+		{
+			name:    "handed the whole envelope instead of the arguments",
+			args:    `{"methodResponses":[["Email/get",{"list":[{"id":"M1","messageId":["abc@x"]}]},"c0"]]}`,
+			wantErr: true, // no list at this level: the caller unwrapped twice
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := jmapMessageIDs([]byte(tt.args))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("got[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// The row's own verdict must be reachable. It was not: JMAP was read first, so
+// a failure there answered before the finding this row exists to report.
+func TestTheMessageIDVerdictIsTheRowsOwn(t *testing.T) {
+	tests := []struct {
+		name    string
+		imap    string
+		wantErr bool
+	}{
+		{"stored without an id", "NIL", true},
+		{"nothing read at all", "", true},
+		{"stored with one", "<abc@x>", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newReading(surfIMAP).field("messageId", tt.imap)
+			err := messageIDVerdict(r)
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("verdict = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "delivered without a Message-ID") {
+				t.Errorf("the verdict does not say what it found: %v", err)
+			}
+		})
+	}
+}
+
+// The row's own verdict must be asked BEFORE the second surface is read.
+//
+// It was not, and the cost was precise: on a server that stores no id, the row
+// reported a JMAP parse failure — the same text it reported on a server that
+// does store one. Two states of the world, one message; the check measured
+// nothing.
+//
+// A source guard, because the ordering cannot be exercised without a server:
+// both orders compile, both return an error on a bad JMAP, and only the text
+// differs.
+func TestTheIMAPVerdictIsAskedBeforeJMAPIsRead(t *testing.T) {
+	src, err := os.ReadFile("consistency_messageid.go")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	body := string(src)
+	start := strings.Index(body, "func checkConsistencyMessageID(")
+	if start < 0 {
+		t.Fatal("cannot find checkConsistencyMessageID; this guard is watching a function that moved")
+	}
+	end := strings.Index(body[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("cannot find the end of checkConsistencyMessageID")
+	}
+	fn := body[start : start+end]
+
+	verdict := strings.Index(fn, "messageIDVerdict(")
+	jmap := strings.Index(fn, "jmapReadMessageID(")
+	switch {
+	case verdict < 0:
+		t.Fatal("the row no longer asks its own verdict, so a message stored without an id is reported as something else")
+	case jmap < 0:
+		t.Fatal("the row no longer reads the jmap side; this guard is watching the wrong function")
+	case verdict > jmap:
+		t.Error("jmap is read before the imap verdict is asked: a failure on that side would answer instead of the finding this row exists to report")
 	}
 }

@@ -21,7 +21,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: loadtest
-        image: ghcr.io/0kaba0hub/yarilo-loadtest:latest
+        image: ghcr.io/yarilomail/yarilo-loadtest:latest
         args:
         - -protocol=pop3
         - -addr=yarilo-pop3-login.yarilo-sb.svc.cluster.local:110
