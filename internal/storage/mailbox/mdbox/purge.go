@@ -208,7 +208,12 @@ func appendRecordToFile(dst *os.File, body []byte, guid [16]byte, origMailbox st
 	}
 	// File-header line precedes only the first record; later records
 	// start directly at their message header.
-	rec := buildDboxMessageRecord(body, guid, origMailbox)
+	//
+	// The size is ours without asking: every caller opens the destination
+	// O_CREATE|O_TRUNC, so compaction always writes the header line itself and
+	// the file announces what this binary writes. The save path cannot assume
+	// that -- it appends to files it did not create -- and does read M (#1525).
+	rec := buildDboxMessageRecord(body, guid, origMailbox, messageHeaderSize)
 	if pos == 0 {
 		rec = append(buildDboxFileHeader(), rec...)
 	}
