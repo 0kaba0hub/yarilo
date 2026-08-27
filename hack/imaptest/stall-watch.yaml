@@ -1,0 +1,105 @@
+# Event-triggered capture for the stall in #1517, running inside the cluster.
+#
+# It watches an imaptest run's log through the API server and snapshots both
+# backends the moment a stalled command is reported. In the cluster rather than
+# on an operator's machine on purpose: a dropped link used to end the watch at
+# exactly the moment it mattered.
+#
+#   kubectl -n yarilo-sb create configmap stall-watch --from-file=stall_watch.py=hack/imaptest/stall_watch.py
+#   kubectl -n yarilo-sb apply -f hack/imaptest/stall-watch.yaml
+#   kubectl -n yarilo-sb set env job/stall-watch TARGET=imaptest-<name>   # before apply, or edit below
+#
+# Captures land on the qa-captures volume, which outlives the pod; read them
+# with any pod that mounts it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stall-watch
+  namespace: yarilo-sb
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stall-watch
+  namespace: yarilo-sb
+rules:
+# pods to find the run and the backend addresses, pods/log to follow the run.
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stall-watch
+  namespace: yarilo-sb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: stall-watch
+subjects:
+- kind: ServiceAccount
+  name: stall-watch
+  namespace: yarilo-sb
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qa-captures
+  namespace: yarilo-sb
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stall-watch
+  namespace: yarilo-sb
+spec:
+  # No TTL: the captures are on the volume, but the log of what was seen is
+  # the pod's, and it is worth reading after the run.
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: stall-watch
+      containers:
+      - name: watch
+        image: python:3.12-alpine
+        command: ["python", "/s/stall_watch.py"]
+        env:
+        - name: TARGET
+          value: imaptest-rw1
+        - name: NS
+          value: yarilo-sb
+        # One capture per minute: a burst of stalls must not bury the first.
+        - name: COOLDOWN
+          value: "60"
+        - name: PROFILE_SECS
+          value: "30"
+        volumeMounts:
+        - name: script
+          mountPath: /s
+        - name: caps
+          mountPath: /caps
+        # Read-only, and optional in effect: without it the cgroup rows are
+        # skipped and every other capture still lands.
+        - name: cgroup
+          mountPath: /host/sys/fs/cgroup
+          readOnly: true
+        resources:
+          requests: {cpu: 20m, memory: 64Mi}
+          limits: {cpu: 200m, memory: 256Mi}
+      volumes:
+      - name: script
+        configMap: {name: stall-watch}
+      - name: caps
+        persistentVolumeClaim: {claimName: qa-captures}
+      - name: cgroup
+        hostPath: {path: /sys/fs/cgroup, type: Directory}
