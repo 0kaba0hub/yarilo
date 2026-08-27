@@ -73,6 +73,12 @@ func registerConsistency(checks *[]check) {
 		func() error { return checkConsistencyIdentity(imapUser, imapPass) },
 		imap, jmap, delivery)
 
+	// Delivery writes the identity, and nothing can add it afterwards: the
+	// header is part of the stored bytes. Only a live delivery can show it.
+	row("consistency imap<->jmap message-id of a message delivered without one",
+		func() error { return checkConsistencyMessageID(imapUser, imapPass) },
+		imap, jmap, delivery)
+
 	row("consistency imap->jmap flag becomes the keyword",
 		func() error { return checkConsistencyFlagsIMAPToJMAP(imapUser, imapPass) },
 		imap, jmap, delivery)

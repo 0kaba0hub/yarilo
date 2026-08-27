@@ -387,6 +387,13 @@ func (s *session) prependHeaders(data []byte, rcpt, finalRcpt string) []byte {
 	if s.opts.Config.AddReceivedHeader {
 		hdrs = append(hdrs, buildReceivedHeader(s.from)...)
 	}
+	// Before Sieve, before storage, before the thread sidecar: everything
+	// downstream reads the bytes this returns, so a header added here is the
+	// one they all see. Adding it later would give the stored message an
+	// identity the conversation and the Sieve script never had.
+	if s.opts.Config.AddMessageID && !hasMessageID(data) {
+		hdrs = append(hdrs, buildMessageID(s.opts.Hostname)...)
+	}
 	if len(hdrs) == 0 {
 		return data
 	}

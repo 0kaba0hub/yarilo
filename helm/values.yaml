@@ -1994,6 +1994,13 @@ protocol:
   lmtp:
     login_greeting: "Yarilo ready."
     add_received_header: true
+    # Synthesise a Message-ID when a message arrives without one. A message
+    # stored without one can never be replied to or threaded -- it is its own
+    # root for ever, and JMAP reports a null id -- and the header is part of the
+    # stored bytes, so it cannot be added later. Behind an MTA this changes
+    # nothing; fed LMTP directly it is the last place the identity can be given.
+    # An existing header is never rewritten, malformed or not.
+    add_message_id: true
     save_to_detail_mailbox: false
     hdr_delivery_address: final
     verbose_replies: false
