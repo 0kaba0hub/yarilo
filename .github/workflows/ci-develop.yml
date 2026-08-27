@@ -42,9 +42,11 @@ on:
       - ".github/workflows/**"
   workflow_dispatch:
 
+## PR pushes supersede each other; a push to develop never does, because its
+## build feeds the sandbox and must finish. Same rule as the master line.
 concurrency:
   group: ci-develop-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/yarilo
