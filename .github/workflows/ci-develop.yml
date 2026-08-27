@@ -22,24 +22,16 @@ on:
       - "go.mod"
       - "go.sum"
       - "docker/Dockerfile"
-      - ".github/workflows/ci-develop.yml"
-      - ".github/workflows/gate.yml"
-  ## The same gate a PR into master gets, on the same paths. Without this a PR
-  ## into develop ran nothing and was green because nothing had run -- and with
-  ## different paths the two lines would answer differently to the same diff,
-  ## so a docs-only PR would be checked here and deliberately not there.
+      ## Any workflow: gate.yml treats the directory as code, and a push
+      ## filter narrower than the gate's own list is a difference nobody
+      ## declared.
+      - ".github/workflows/**"
+  ## The same gate a PR into master gets. Without this a PR into develop ran
+  ## nothing and was green because nothing had run. No paths, for the reason
+  ## given in ci.yml: gate.yml holds the one list.
   pull_request:
     branches:
       - develop
-    paths:
-      - "app/**"
-      - "helm/**"
-      - "internal/**"
-      - "pkg/**"
-      - "go.mod"
-      - "go.sum"
-      - "docker/Dockerfile"
-      - ".github/workflows/**"
   workflow_dispatch:
 
 ## PR pushes supersede each other; a push to develop never does, because its
