@@ -147,3 +147,58 @@ func BenchmarkDecodeHead(b *testing.B) {
 		}
 	}
 }
+
+// A message with no Message-ID is a hit, not a miss.
+//
+// The first version of HeadAndReferences reported success as
+// `head.MessageID != ""`, which reads as "did the decode produce anything" and
+// is not: a message whose header carried no Message-ID would have been called a
+// miss and reopened on every SORT and every THREAD, for ever, while the cache
+// held a perfectly good record for it. Nothing about the output would differ --
+// only the work.
+//
+// Asked of the Handle rather than of decodeHead, because the defect was in what
+// "ok" meant, not in the bytes.
+func TestAMessageWithNoMessageIDIsAHit(t *testing.T) {
+	tests := []struct {
+		name string
+		env  *imaplib.Envelope
+	}{
+		{"no message id", &imaplib.Envelope{Subject: "Plan", Date: time.Unix(1770000000, 0).UTC()}},
+		{"no message id and nothing else", &imaplib.Envelope{}},
+		{"with a message id, the ordinary case", &imaplib.Envelope{Subject: "Plan", MessageID: "<a@x>"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx, f, m := compatFolder(t)
+			fc := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+			if fc == nil {
+				t.Fatal("cache unavailable")
+			}
+			fc.StoreEnvelope(m, tt.env)
+			fc.StoreReferences(m, []string{"<root@x>"})
+			fc.Close()
+
+			read := Open(idx, f.ID, Options{User: "u", Folder: f.Name})
+			if read == nil {
+				t.Fatal("cache unavailable")
+			}
+			defer read.Close()
+			m = reread(t, idx, f.ID, m.UID)
+
+			head, refs, ok := read.HeadAndReferences(m)
+			if !ok {
+				t.Fatal("the cached record reads as a miss, so every command would reopen the message")
+			}
+			if head.Subject != tt.env.Subject {
+				t.Errorf("Subject = %q, want %q", head.Subject, tt.env.Subject)
+			}
+			if len(refs) != 1 || refs[0] != "<root@x>" {
+				t.Errorf("References = %v, want [<root@x>]", refs)
+			}
+			if _, ok := read.Head(m); !ok {
+				t.Error("Head reads the same record as a miss")
+			}
+		})
+	}
+}

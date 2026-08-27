@@ -6,6 +6,7 @@ import (
 	"time"
 
 	imaplib "github.com/emersion/go-imap/v2"
+
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
