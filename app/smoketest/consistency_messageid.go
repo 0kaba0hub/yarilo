@@ -25,16 +25,30 @@ func checkConsistencyMessageID(user, pass string) error {
 	if err != nil {
 		return fmt.Errorf("read over imap: %w", err)
 	}
+	// This verdict first, before the other surface is even asked. The row's
+	// own finding is that the message was stored without an identity, and a
+	// failure to read the second surface would hide it behind an unrelated
+	// error -- which is exactly what happened: the row reported a JMAP parse
+	// failure on a server that did store the message without an id, and on one
+	// that did not, so it distinguished nothing.
+	if err := messageIDVerdict(left); err != nil {
+		return err
+	}
 	right, err := jmapReadMessageID(marker)
 	if err != nil {
 		return fmt.Errorf("read over jmap: %w", err)
 	}
-	if left.fields["messageId"] == "" || left.fields["messageId"] == "NIL" {
-		return fmt.Errorf("delivered without a Message-ID and stored without one: imap says %q — "+
-			"the message can never be replied to or threaded, and the header cannot be added afterwards",
-			left.fields["messageId"])
-	}
 	return judgeRow("imap<->jmap message-id of a message delivered without one", left, right, defaultAllowances())
+}
+
+// messageIDVerdict is the row's own finding, apart from the reading so it can
+// be exercised without a server.
+func messageIDVerdict(left *reading) error {
+	if id := left.fields["messageId"]; isAbsent(id) || id == "" {
+		return fmt.Errorf("delivered without a Message-ID and stored without one: imap says %q — "+
+			"the message can never be replied to or threaded, and the header cannot be added afterwards", id)
+	}
+	return nil
 }
 
 // deliverProbeWithoutMessageID sends a message whose header section has no
@@ -159,32 +173,25 @@ func jmapReadMessageID(marker string) (*reading, error) {
 	return r, nil
 }
 
-// jmapMessageIDs pulls Email/get's messageId list, which is an array of
-// header values without angle brackets, or null.
-func jmapMessageIDs(raw []byte) ([]string, error) {
-	var resp struct {
-		MethodResponses []json.RawMessage `json:"methodResponses"`
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, err
-	}
-	if len(resp.MethodResponses) == 0 {
-		return nil, fmt.Errorf("Email/get returned no method response")
-	}
-	var call []json.RawMessage
-	if err := json.Unmarshal(resp.MethodResponses[0], &call); err != nil || len(call) < 2 {
-		return nil, fmt.Errorf("Email/get response is not a method call")
-	}
-	var args struct {
+// jmapMessageIDs pulls Email/get's messageId list, which is an array of header
+// values without angle brackets, or null.
+//
+// The input is what jmapCall returns: the FIRST METHOD'S ARGUMENTS, not the
+// response envelope. Unwrapping it a second time here found no methodResponses,
+// so the list was always empty and the row always failed with the same message
+// whatever the server had done -- the mistake the contract on jmapCall was
+// written about after #1043, repeated by the caller it warns.
+func jmapMessageIDs(args []byte) ([]string, error) {
+	var got struct {
 		List []struct {
 			MessageID []string `json:"messageId"`
 		} `json:"list"`
 	}
-	if err := json.Unmarshal(call[1], &args); err != nil {
-		return nil, fmt.Errorf("decode Email/get list: %w", err)
+	if err := json.Unmarshal(args, &got); err != nil {
+		return nil, fmt.Errorf("decode Email/get arguments: %w", err)
 	}
-	if len(args.List) == 0 {
-		return nil, fmt.Errorf("Email/get returned no message")
+	if len(got.List) == 0 {
+		return nil, fmt.Errorf("Email/get returned no message: %s", args)
 	}
-	return args.List[0].MessageID, nil
+	return got.List[0].MessageID, nil
 }

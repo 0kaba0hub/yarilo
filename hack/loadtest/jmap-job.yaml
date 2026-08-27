@@ -25,7 +25,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: loadtest
-        image: ghcr.io/0kaba0hub/yarilo-loadtest:latest
+        image: ghcr.io/yarilomail/yarilo-loadtest:latest
         args:
         # A base URL, not host:port: the API endpoint is read out of the
         # session resource rather than assembled, so the run follows whatever

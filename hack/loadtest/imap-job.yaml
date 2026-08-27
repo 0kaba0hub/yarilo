@@ -19,7 +19,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: loadtest
-        image: ghcr.io/0kaba0hub/yarilo-loadtest:latest
+        image: ghcr.io/yarilomail/yarilo-loadtest:latest
         args:
         - -protocol=imap
         - -addr=yarilo-imap-login.yarilo-sb.svc.cluster.local:143
