@@ -59,6 +59,18 @@ func defaultAllowances() []allowance {
 			},
 		},
 		{
+			// IMAP hands the message id out as it stands in the header, angle
+			// brackets and all (RFC 3501 ENVELOPE); JMAP strips them, because
+			// RFC 8621 defines Email.messageId as the id without them. One
+			// identifier, two spellings -- and the brackets are punctuation,
+			// so an id that differs in anything else still fails.
+			name:  "message id brackets",
+			field: "messageId",
+			equal: func(l, r string) bool {
+				return strings.Trim(l, "<>") == strings.Trim(r, "<>") && strings.Trim(l, "<>") != ""
+			},
+		},
+		{
 			// One header, several addresses: the set is the fact, the order is
 			// not. Applies to address fields only, where a reordering cannot
 			// change meaning.

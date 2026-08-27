@@ -3,6 +3,7 @@ package lmtp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"log/slog"
@@ -161,4 +162,61 @@ func resolveMailbox(rcpt string) (username, folder string, err error) {
 func buildReceivedHeader(from string) string {
 	return fmt.Sprintf("Received: from %s by yarilo with LMTP; %s\r\n",
 		from, time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 +0000"))
+}
+
+// hasMessageID reports whether the message already carries a Message-ID.
+//
+// The header section only, up to the blank line: a body can contain anything,
+// including a quoted copy of another message's headers, and treating that as
+// this message's identity would leave the real one missing on exactly the mail
+// most likely to be a reply.
+//
+// Field names are case-insensitive (RFC 5322 §1.2.2), and only a line that
+// starts at column zero begins a field -- a leading space or tab is the
+// continuation of the one before it.
+func hasMessageID(data []byte) bool {
+	const name = "message-id:"
+	for len(data) > 0 {
+		end := bytes.IndexByte(data, '\n')
+		line := data
+		if end >= 0 {
+			line = data[:end]
+			data = data[end+1:]
+		} else {
+			data = nil
+		}
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		if len(line) == 0 {
+			return false // end of the header section
+		}
+		if line[0] == ' ' || line[0] == '\t' {
+			continue
+		}
+		if len(line) >= len(name) && strings.EqualFold(string(line[:len(name)]), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildMessageID makes an identifier for a message that arrived without one.
+//
+// 128 bits of randomness, so it is unique among all messages rather than among
+// the messages of one host or one run -- which is what RFC 5322 §3.6.4 asks
+// for, and what a counter or a hash of the recipient would not give.
+//
+// The domain part is the hostname this LMTP server announces itself with. It is
+// not read from the Received header, which carries a fixed literal rather than
+// a configured name.
+func buildMessageID(host string) string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand does not fail on any platform we run on, and a delivery
+		// is not the place to decide what to do if it did.
+		panic("lmtp: crypto/rand: " + err.Error())
+	}
+	if host == "" {
+		host = "yarilo"
+	}
+	return fmt.Sprintf("Message-ID: <%x@%s>\r\n", b, host)
 }

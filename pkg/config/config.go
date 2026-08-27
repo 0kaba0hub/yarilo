@@ -479,6 +479,23 @@ type LMTPProtocolConfig struct {
 	LoginGreeting string `koanf:"login_greeting"`
 	// AddReceivedHeader prepends a Received: header to delivered messages. Default: true.
 	AddReceivedHeader bool `koanf:"lmtp_add_received_header"`
+	// AddMessageID synthesises a Message-ID for a message that arrives without
+	// one. Default: true.
+	//
+	// A message stored without one is a message nothing can reply to and
+	// nothing can thread: it becomes its own root in the conversation sidecar,
+	// no later reply can name it, and JMAP reports messageId as null. That is
+	// permanent -- the header is part of the stored bytes, so it cannot be
+	// added afterwards without rewriting mail.
+	//
+	// The default is true because the two deployments differ in what they can
+	// lose. Behind an MTA the header is already present and this changes
+	// nothing; fed LMTP directly it is the only place the identity can still be
+	// given. false exists for an operator who wants the bytes untouched.
+	//
+	// An existing Message-ID is never rewritten, not even a malformed one:
+	// whatever a sender wrote is what a reply will quote back in References.
+	AddMessageID bool `koanf:"lmtp_add_message_id"`
 	// SaveToDetailMailbox delivers user+folder@domain to mailbox 'folder' instead of INBOX. Default: false.
 	SaveToDetailMailbox bool `koanf:"lmtp_save_to_detail_mailbox"`
 	// HdrDeliveryAddress controls the Delivered-To header: none | final | original. Default: "final".
@@ -2529,6 +2546,7 @@ func Load(path string) (*Config, error) {
 			LMTP: LMTPProtocolConfig{
 				LoginGreeting:        "Yarilo ready.",
 				AddReceivedHeader:    true,
+				AddMessageID:         true,
 				HdrDeliveryAddress:   "final",
 				ReadTimeout:          300,
 				WriteTimeout:         300,

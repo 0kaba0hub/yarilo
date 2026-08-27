@@ -146,6 +146,7 @@ data:
       lmtp:
         login_greeting: {{ .Values.protocol.lmtp.login_greeting | quote }}
         lmtp_add_received_header: {{ .Values.protocol.lmtp.add_received_header }}
+        lmtp_add_message_id: {{ .Values.protocol.lmtp.add_message_id }}
         lmtp_save_to_detail_mailbox: {{ .Values.protocol.lmtp.save_to_detail_mailbox }}
         lmtp_hdr_delivery_address: {{ .Values.protocol.lmtp.hdr_delivery_address | quote }}
         lmtp_verbose_replies: {{ .Values.protocol.lmtp.verbose_replies }}
