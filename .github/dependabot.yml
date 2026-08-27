@@ -1,7 +1,12 @@
 version: 2
+
+## All four ecosystems target develop: main receives release cuts only, so a
+## dependency PR opened against it would be a change that never reached the
+## line it was meant for (#1217).
 updates:
   - package-ecosystem: gomod
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday
@@ -13,6 +18,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday
@@ -24,6 +30,7 @@ updates:
 
   - package-ecosystem: helm
     directory: /helm
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday
@@ -41,6 +48,7 @@ updates:
   ## that cannot pass and cannot be fixed here.
   - package-ecosystem: docker
     directory: /docker
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday
