@@ -9,8 +9,8 @@ import (
 	"github.com/yarilomail/yarilo/pkg/build"
 )
 
-// The ConfigMap and the binary must come from one commit, and when they do not
-// somebody has to be told.
+// The ConfigMap and the binary must come from one chart version, and when they
+// do not somebody has to be told.
 //
 // Nothing said so: `helm upgrade --set image.tag=X` deploys a new image with
 // whatever chart the working copy holds, and a gate run got a binary reading a
@@ -42,9 +42,9 @@ func TestChartSkewIsReported(t *testing.T) {
 			wantWarn: "no chart_version",
 		},
 		{
-			name:      "two commits",
+			name:      "two chart versions",
 			builtFrom: "2.4.1", fromConfig: "2.3.266",
-			wantWarn: "different commits",
+			wantWarn: "rendered by one chart version",
 		},
 	}
 	for _, tt := range tests {

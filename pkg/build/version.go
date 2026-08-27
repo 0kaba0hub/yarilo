@@ -18,4 +18,9 @@ var Version = "dev"
 // chart's own version rather than the image tag, so they are equal on develop,
 // where the chart stands still while dev images are numbered, and on master,
 // where they rise together.
+//
+// It therefore catches a chart from another RELEASE, not every difference of
+// commit: two images built a week apart on develop carry the same value. The
+// case worth catching is the older chart, whose templates do not render keys a
+// newer binary reads.
 var ChartVersion = "dev"

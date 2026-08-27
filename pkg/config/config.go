@@ -3313,8 +3313,13 @@ func (cfg *Config) SubmissionHostname() string {
 	return cfg.Hostname
 }
 
-// warnChartSkew says so when the ConfigMap and the binary did not come from one
-// commit.
+// warnChartSkew says so when the ConfigMap was rendered by a different chart
+// version than the binary was built beside.
+//
+// Versions, not commits: dozens of commits share one chart version on develop,
+// so dev.5 and dev.10 are both silent against the same chart. What this catches
+// is a chart from another RELEASE -- most usefully an older one, whose
+// templates do not render keys this binary reads.
 //
 // `helm upgrade --set image.tag=X` deploys a new image with whatever chart the
 // working copy holds, and nothing reports the pairing. A gate run got a binary
@@ -3339,7 +3344,7 @@ func warnChartSkew(fromConfig string) {
 			"settings this version reads may be absent and silently defaulted",
 			"binary_built_from_chart", build.ChartVersion)
 	case fromConfig != build.ChartVersion:
-		slog.Warn("config: the ConfigMap and this binary came from different commits",
+		slog.Warn("config: the ConfigMap was rendered by one chart version and this binary was built beside another",
 			"configmap_chart", fromConfig, "binary_built_from_chart", build.ChartVersion)
 	}
 }
