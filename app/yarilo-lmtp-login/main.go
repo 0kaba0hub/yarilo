@@ -65,10 +65,7 @@ func main() {
 		"telemetry", cfg.Telemetry.Listen,
 	)
 
-	hostname := cfg.Protocol.Submission.Hostname
-	if hostname == "" {
-		hostname, _ = os.Hostname()
-	}
+	hostname := cfg.SubmissionHostname()
 
 	var intTLS *tls.Config
 	if cfg.InternalTLS.Enabled {

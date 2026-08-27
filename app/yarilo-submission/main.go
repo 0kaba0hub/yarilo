@@ -111,7 +111,7 @@ func main() {
 	// ---- relay proxy ----
 	var relay *submproxy.Submission
 	if cfg.Protocol.Submission.Relay.Host != "" {
-		relay = submproxy.New(cfg.Protocol.Submission.Relay, cfg.Protocol.Submission.Hostname)
+		relay = submproxy.New(cfg.Protocol.Submission.Relay, cfg.SubmissionHostname())
 	}
 
 	// ---- TLS ----

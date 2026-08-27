@@ -385,7 +385,7 @@ func (s *session) prependHeaders(data []byte, rcpt, finalRcpt string) []byte {
 		hdrs = append(hdrs, ("Delivered-To: " + rcpt + "\r\n")...)
 	}
 	if s.opts.Config.AddReceivedHeader {
-		hdrs = append(hdrs, buildReceivedHeader(s.from)...)
+		hdrs = append(hdrs, buildReceivedHeader(s.from, s.opts.Hostname)...)
 	}
 	// Before Sieve, before storage, before the thread sidecar: everything
 	// downstream reads the bytes this returns, so a header added here is the
@@ -625,7 +625,7 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 	// For proxy mode, build message with common headers (no per-rcpt Delivered-To).
 	proxyData := data
 	if s.opts.Config.AddReceivedHeader {
-		proxyData = append([]byte(buildReceivedHeader(s.from)), data...)
+		proxyData = append([]byte(buildReceivedHeader(s.from, s.opts.Hostname)), data...)
 	}
 
 	// Proxy recipients: fan-out to backends in parallel.

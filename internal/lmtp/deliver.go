@@ -159,9 +159,15 @@ func resolveMailbox(rcpt string) (username, folder string, err error) {
 	return local + "@" + domain, folder, nil
 }
 
-func buildReceivedHeader(from string) string {
-	return fmt.Sprintf("Received: from %s by yarilo with LMTP; %s\r\n",
-		from, time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 +0000"))
+// buildReceivedHeader names the host that accepted the message. The name was a
+// literal, for the same reason the Message-ID's was: nothing carried one
+// (#1506).
+func buildReceivedHeader(from, host string) string {
+	if host == "" {
+		host = "yarilo"
+	}
+	return fmt.Sprintf("Received: from %s by %s with LMTP; %s\r\n",
+		from, host, time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 +0000"))
 }
 
 // hasMessageID reports whether the message already carries a Message-ID.

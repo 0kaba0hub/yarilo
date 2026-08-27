@@ -8,6 +8,9 @@ metadata:
 data:
   yarilo.yaml: |
     mode: cluster
+    {{- if .Values.hostname }}
+    hostname: {{ .Values.hostname | quote }}
+    {{- end }}
 
     general:
       ssl:

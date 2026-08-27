@@ -294,7 +294,7 @@ func startProxies(ctx context.Context, srv *director.Server, cfg *config.Config,
 		}
 	}
 	lmtpSrv := lmtp.New(lmtp.Options{
-		Hostname:    cfg.Protocol.Submission.Hostname,
+		Hostname:    cfg.SubmissionHostname(),
 		Config:      cfg.Protocol.LMTP,
 		Router:      srv,
 		BackendPort: backendPort,
