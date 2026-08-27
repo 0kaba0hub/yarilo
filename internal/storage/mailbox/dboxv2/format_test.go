@@ -42,7 +42,7 @@ func TestMessageHeaderRejectsBadMagic(t *testing.T) {
 
 func TestMessageHeaderRejectsMissingLF(t *testing.T) {
 	raw := encodeMessageHeader(messageHeader{Size: 100})
-	raw[31] = ' '
+	raw[len(raw)-1] = ' '
 	if _, err := decodeMessageHeader(raw); err == nil {
 		t.Fatal("expected error on missing LF, got nil")
 	}
@@ -50,7 +50,7 @@ func TestMessageHeaderRejectsMissingLF(t *testing.T) {
 
 func TestEncodeFileHeaderLine(t *testing.T) {
 	got := string(encodeFileHeaderLine(0x12345678))
-	want := "2 M20 C12345678\n"
+	want := "2 M1e C12345678\n"
 	if got != want {
 		t.Errorf("file header line = %q, want %q", got, want)
 	}

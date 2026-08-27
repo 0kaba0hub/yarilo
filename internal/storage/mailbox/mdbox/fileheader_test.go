@@ -10,8 +10,10 @@ import (
 )
 
 // fileHeaderPrefix is the stable start of the dbox v2 file-header line
-// ("<version> M<hdr-size> C<stamp>\n"): version 2, message-header size 0x20.
-const fileHeaderPrefix = "2 M20 C"
+// ("<version> M<hdr-size> C<stamp>\n"): version 2, message-header size 0x1e --
+// the reference's 30 bytes. Stores written before #1522 announce M20 and are
+// still read; nothing writes M20 any more.
+const fileHeaderPrefix = "2 M1e C"
 
 // TestPeekFileHeaderLen locks the discriminator that makes the reader
 // self-describing: a message header (magic 0x01) has no file-header line, a line
@@ -24,8 +26,9 @@ func TestPeekFileHeaderLen(t *testing.T) {
 		wantOK   bool
 	}{
 		{"message header directly (no file header)", []byte{magicPreByte0, magicPreByte1, 'N', ' '}, 0, true},
-		{"file header line then message", []byte("2 M20 C1a2b3c\n\x01\x02N"), len("2 M20 C1a2b3c\n"), true},
-		{"malformed: no magic, no LF", []byte("2 M20 C no newline here"), 0, false},
+		{"file header line then message", []byte("2 M1e C1a2b3c\n\x01\x02N"), len("2 M1e C1a2b3c\n"), true},
+		{"a store written before #1522 announces M20", []byte("2 M20 C1a2b3c\n\x01\x02N"), len("2 M20 C1a2b3c\n"), true},
+		{"malformed: no magic, no LF", []byte("2 M1e C no newline here"), 0, false},
 		{"empty window", []byte{}, 0, false},
 	}
 	for _, c := range cases {

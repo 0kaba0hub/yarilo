@@ -13,8 +13,8 @@
 //
 // File format (per the internal docs):
 //
-//	<file header line, ASCII>          "2 M20 C<create_stamp_hex>\n"
-//	<dbox_message_header, 32 bytes>    magic + type + UID-slot (v2: spaces) + size
+//	<file header line, ASCII>          "2 M1e C<create_stamp_hex>\n"
+//	<dbox_message_header, M bytes>     magic + type + UID-slot (v2: spaces) + size
 //	<body, message_size bytes>         CRLF-terminated lines
 //	<dbox_metadata_header>             "\n\001\003\n"
 //	<key><value>\n  ...                G, R, Z?, V, P?, O?, B?, X?
@@ -29,9 +29,11 @@
 package dboxv2
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"strconv"
 )
 
 // File-format constants (per the dbox spec).
@@ -45,9 +47,16 @@ const (
 	// magicPost opens the metadata block.
 	magicPost = "\n\x01\x03\n"
 
-	// messageHeaderSize is the fixed on-disk size of
-	// struct dbox_message_header at format version 2.
-	messageHeaderSize = 32
+	// messageHeaderSize is what we WRITE: the reference dbox v2 message
+	// header, 30 bytes, announced as M1e in the file-header line. It is not a
+	// reader constant -- a reader takes the size from M, so a file written by
+	// another implementation, or by a build of this one from before #1522,
+	// still opens.
+	messageHeaderSize = 30
+
+	// messageHeaderSizeLegacy is what builds before #1522 wrote: 32 bytes,
+	// announced as M20. Read, never written.
+	messageHeaderSizeLegacy = 32
 
 	// messageType is the single value 'N' used today; future
 	// extensions may add other types via the canonical reader.
@@ -85,7 +94,7 @@ type messageHeader struct {
 	Size uint64 // body length in bytes
 }
 
-// encodeMessageHeader returns the 32-byte on-disk image of h.
+// encodeMessageHeader returns the on-disk image of h, at the size we write.
 //
 // The oldv1_uid_hex slot is filled with spaces — per the v2 spec.
 // Padding bytes after msg_size_hex are spaces; the trailing byte is
@@ -103,13 +112,19 @@ func encodeMessageHeader(h messageHeader) []byte {
 	// buf[12] = ' '
 	hexSize := fmt.Sprintf("%016x", h.Size)
 	copy(buf[13:29], hexSize)
-	// buf[29..30] = "  "
-	buf[31] = '\n'
+	buf[messageHeaderSize-1] = '\n'
 	return buf
 }
 
-// decodeMessageHeader parses the 32-byte header from b. Returns
-// an error when magic or layout is wrong.
+// decodeMessageHeader parses a message header of whatever size the file
+// announced. Returns an error when magic or layout is wrong.
+//
+// The trailing-LF check is over the LAST byte of b rather than over a fixed
+// offset. At a fixed 31 it refused every file the reference writes: in a
+// 30-byte header, byte 31 is the second byte of the message body, so a
+// perfectly good file failed with "missing trailing newline at offset 31"
+// (#1522). As the last byte the check keeps its purpose -- it catches a header
+// read at the wrong size -- for any size.
 func decodeMessageHeader(b []byte) (messageHeader, error) {
 	if len(b) < messageHeaderSize {
 		return messageHeader{}, fmt.Errorf("dboxv2: message header %d bytes (<%d)", len(b), messageHeaderSize)
@@ -120,8 +135,8 @@ func decodeMessageHeader(b []byte) (messageHeader, error) {
 	if b[2] != messageType {
 		return messageHeader{}, fmt.Errorf("dboxv2: unknown message type %q", b[2])
 	}
-	if b[31] != '\n' {
-		return messageHeader{}, fmt.Errorf("dboxv2: missing trailing newline at offset 31")
+	if b[len(b)-1] != '\n' {
+		return messageHeader{}, fmt.Errorf("dboxv2: message header does not end in LF")
 	}
 	hexBytes := b[13:29]
 	var size uint64
@@ -131,7 +146,7 @@ func decodeMessageHeader(b []byte) (messageHeader, error) {
 	return messageHeader{Size: size}, nil
 }
 
-// encodeFileHeaderLine returns the leading "2 M20 C<stamp>\n"
+// encodeFileHeaderLine returns the leading "2 M1e C<stamp>\n"
 // text line that every dbox file carries. stamp is the create
 // timestamp in lowercase hex.
 func encodeFileHeaderLine(createStamp uint32) []byte {
@@ -200,3 +215,29 @@ func decodeMetadataBlock(r io.Reader) ([]metadataEntry, error) {
 // 16-byte GUID — the format the canonical reader expects in the
 // G metadata entry.
 func guidHex(g [16]byte) string { return hex.EncodeToString(g[:]) }
+
+// parseFileHeaderSize reads the M field of a dbox file-header line -- the
+// message-header size in hex, "2 M1e C<stamp>". The reference reads M on every
+// open and so do we: a file written elsewhere, or by a build from before
+// #1522, announces its own size and must be read with it rather than with
+// whatever this binary writes.
+//
+// Only the two sizes that exist are accepted. A file announcing anything else
+// is not a dbox v2 file we know how to walk, and guessing would misplace the
+// body by the difference.
+func parseFileHeaderSize(line []byte) (int, error) {
+	for _, field := range bytes.Fields(line) {
+		if len(field) < 2 || field[0] != 'M' {
+			continue
+		}
+		n, err := strconv.ParseUint(string(field[1:]), 16, 16)
+		if err != nil {
+			return 0, fmt.Errorf("dboxv2: file header M field %q: %w", field, err)
+		}
+		if n != messageHeaderSize && n != messageHeaderSizeLegacy {
+			return 0, fmt.Errorf("dboxv2: file header announces M%x, which is not a message-header size we read", n)
+		}
+		return int(n), nil
+	}
+	return 0, fmt.Errorf("dboxv2: file header carries no M field: %q", line)
+}
