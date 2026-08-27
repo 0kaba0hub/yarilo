@@ -8,16 +8,9 @@ import (
 	"testing"
 )
 
-// go.mod and the Dockerfile must name the same Go patch version.
-//
-// They did not: go.mod said 1.26.2 while the Dockerfile built from
-// golang:1.26-alpine, which floats. So govulncheck, which reads go.mod,
-// reported 15 called standard-library vulnerabilities while the shipped binary
-// was built by go1.26.7 and had every one of them fixed (#1497). Neither number
-// was wrong; they were about different toolchains, and nothing said so.
-//
-// A scan is only a statement about what we ship while these two agree, and they
-// agree by accident unless something checks.
+// go.mod and the base image must name one toolchain: the scan reads go.mod,
+// the image ships the base. They disagreed silently, and both numbers were
+// right about different toolchains (#1497).
 func TestGoModAndDockerfileNameTheSameToolchain(t *testing.T) {
 	root := filepath.Join("..", "..")
 
@@ -28,27 +21,56 @@ func TestGoModAndDockerfileNameTheSameToolchain(t *testing.T) {
 	}
 	want := m[1]
 
-	dockerfile := readFile(t, filepath.Join(root, "docker", "Dockerfile"))
-	bases := regexp.MustCompile(`(?m)^FROM golang:([^ ]+) AS (\S+)`).FindAllStringSubmatch(dockerfile, -1)
-	if len(bases) == 0 {
+	stages := golangStages(t, readFile(t, filepath.Join(root, "docker", "Dockerfile")))
+	if len(stages) == 0 {
 		t.Fatal("no golang base image found in docker/Dockerfile; this guard is watching a file that moved")
 	}
-	for _, b := range bases {
-		tag, stage := b[1], b[2]
-		version := strings.TrimSuffix(tag, "-alpine")
-		if version != want {
-			t.Errorf("stage %q builds on golang:%s, go.mod says %s — a scan that reads go.mod would describe a toolchain we do not ship",
-				stage, tag, want)
+	for _, st := range stages {
+		if version := strings.TrimSuffix(st.tag, "-alpine"); version != want {
+			t.Errorf("stage %q builds on golang:%s, go.mod says %s", st.name, st.tag, want)
+		}
+		// Per stage, because ENV does not cross a FROM: without this the fts
+		// stage -- which builds a binary we ship -- could lose the line while
+		// the builder stage kept it, and the check would still pass.
+		if !strings.Contains(st.body, "ENV GOTOOLCHAIN=local") {
+			t.Errorf("stage %q does not set GOTOOLCHAIN=local, so a newer go.mod fetches a toolchain instead of failing the build", st.name)
 		}
 	}
+}
 
-	// The pin is only real while nothing is allowed to download past it.
-	for _, b := range bases {
-		if !strings.Contains(dockerfile, "ENV GOTOOLCHAIN=local") {
-			t.Errorf("stage %q is pinned but GOTOOLCHAIN is not local, so a newer toolchain can be fetched mid-build", b[2])
-			break
+type dockerStage struct {
+	name string
+	tag  string
+	body string
+}
+
+// golangStages splits the Dockerfile at each FROM and returns the golang ones,
+// each with the text that belongs to it alone.
+func golangStages(t *testing.T, dockerfile string) []dockerStage {
+	t.Helper()
+	from := regexp.MustCompile(`(?m)^FROM (\S+)(?: AS (\S+))?`)
+	locs := from.FindAllStringSubmatchIndex(dockerfile, -1)
+	var out []dockerStage
+	for i, loc := range locs {
+		end := len(dockerfile)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
 		}
+		image := dockerfile[loc[2]:loc[3]]
+		if !strings.HasPrefix(image, "golang:") {
+			continue
+		}
+		name := image
+		if loc[4] >= 0 {
+			name = dockerfile[loc[4]:loc[5]]
+		}
+		out = append(out, dockerStage{
+			name: name,
+			tag:  strings.TrimPrefix(image, "golang:"),
+			body: dockerfile[loc[0]:end],
+		})
 	}
+	return out
 }
 
 func readFile(t *testing.T, path string) string {

@@ -1,20 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
-## The base is pinned to an exact patch, not golang:1.26-alpine, and go.mod
-## names the same version. A floating base picks up toolchain security fixes
-## on its own, which sounds like a virtue until the scan disagrees with the
-## image: govulncheck reads go.mod and reported 15 called stdlib
-## vulnerabilities while the shipped binary, built from a floated base, had
-## every one of them fixed (#1497). One version, named once, is what makes a
-## scan a statement about what we ship.
-##
-## Moving it is a person's job, and dependabot's docker ecosystem opens the PR.
+## Pinned to the patch go.mod names: the scan reads go.mod, the image ships the
+## base, and a floating base makes them disagree silently (#1497). Dependabot
+## moves it.
 FROM golang:1.26.7-alpine AS builder
 
-## GOTOOLCHAIN=local so the build uses the base image's toolchain and nothing
-## else. Without it a go.mod naming a newer version would silently download one
-## mid-build, and the pin above would describe a toolchain that did not compile
-## anything.
+## A newer go.mod must fail the build, not fetch a toolchain.
 ENV GOTOOLCHAIN=local
 
 ARG BUILD_VERSION=dev

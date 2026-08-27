@@ -78,19 +78,36 @@ jobs:
         run: |
           APP_VERSION=$(awk '/^appVersion:/{gsub(/"/, ""); print $2}' helm/Chart.yaml)
           RELEASE_TAG="v${APP_VERSION}"
-          # The release, not the tag, decides whether there is work left. The
-          # tag is pushed one step before the release is created, so a failure
-          # between the two used to leave a state the pipeline could never
-          # reach again: the tag existed, so every re-run answered "already
-          # released" and skipped the step that had failed, reporting success
-          # over a missing release (#1331).
-          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            IS_RELEASE=false
+          # Where the tag points is the source of truth, and there is only one
+          # of it. Asking "does a Release exist" instead needed the answer to
+          # separate 404 from every other failure, and it did not: a merge
+          # without a version bump read as "not released yet" and walked into
+          # the tag guard (#1499).
+          #
+          # Three states:
+          #   no tag                -> a release
+          #   tag at this commit    -> the #1331 recovery: the tag was pushed
+          #                            and the Release step failed after it
+          #   tag somewhere else    -> not a release; a bump-free merge
+          if ! EXISTING=$(git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" 2>/dev/null); then
+            STATE=release
+          elif [ "$(echo "$EXISTING" | cut -f1)" = "${GITHUB_SHA}" ]; then
+            STATE=recover
           else
-            IS_RELEASE=true
+            STATE=not-a-release
+            echo "::notice::${RELEASE_TAG} already points elsewhere; this commit carries no version bump, so only the SHA tag is published"
           fi
+          # The version-tagged image belongs to the commit the version names.
+          # Publishing it from any other commit is how :2.3.265 came to exist
+          # twice, which the chart's pullPolicy: IfNotPresent relies on not
+          # happening.
+          case "${STATE}" in
+            release|recover) IS_RELEASE=true ;;
+            *)               IS_RELEASE=false ;;
+          esac
           echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "image_tag=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "state=${STATE}" >> "$GITHUB_OUTPUT"
           echo "is_release=${IS_RELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -157,26 +174,42 @@ jobs:
           OUTPUT: RELEASE_NOTES.md
 
       - name: Push git tag
-        if: steps.version.outputs.is_release == 'true'
+        if: steps.version.outputs.state == 'release'
         run: |
-          # Tolerates a tag left behind by an earlier attempt: on a re-run the
-          # tag is already there and pointing at this same commit, and failing
-          # here would strand the release again.
+          # The state was decided from this same tag one step above, so the
+          # check here is against a race, not against the ordinary case: two
+          # pushes close together could both read "no tag".
           TAG="${{ steps.version.outputs.tag }}"
           if EXISTING=$(git ls-remote --exit-code --tags origin "refs/tags/${TAG}" 2>/dev/null); then
-            EXISTING_SHA=$(echo "$EXISTING" | cut -f1)
-            if [ "${EXISTING_SHA}" != "${GITHUB_SHA}" ]; then
-              echo "::error::${TAG} already points at ${EXISTING_SHA}, not ${GITHUB_SHA} -- refusing to move a published tag"
-              exit 1
-            fi
-            echo "::notice::${TAG} already exists at this commit; continuing to the release"
-          else
-            git tag "${TAG}"
-            git push origin "${TAG}"
+            echo "::error::${TAG} appeared at $(echo "$EXISTING" | cut -f1) since this run began -- refusing to move a published tag"
+            exit 1
           fi
+          git tag "${TAG}"
+          git push origin "${TAG}"
+
+      ## Only in the recovery state, and only on an exact 404. Asking `gh
+      ## release view` whether a release exists treated every failure as
+      ## "missing", which is the fail-open that produced #1499; the status code
+      ## is the answer, and anything that is neither 200 nor 404 stops the job
+      ## rather than guessing.
+      - name: Is the Release missing
+        id: release_missing
+        if: steps.version.outputs.state == 'recover'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          CODE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+            --silent --include 2>/dev/null | head -1 | grep -oE '[0-9]{3}' | head -1 || true)
+          case "${CODE}" in
+            200) echo "missing=false" >> "$GITHUB_OUTPUT" ;;
+            404) echo "missing=true"  >> "$GITHUB_OUTPUT" ;;
+            *)   echo "::error::asking about ${TAG} answered ${CODE:-nothing}; refusing to guess whether the release exists"
+                 exit 1 ;;
+          esac
 
       - name: Create GitHub Release
-        if: steps.version.outputs.is_release == 'true'
+        if: steps.version.outputs.state == 'release' || steps.release_missing.outputs.missing == 'true'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.tag }}

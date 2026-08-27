@@ -33,9 +33,7 @@ updates:
       - dependencies
     open-pull-requests-limit: 5
 
-  ## The Go base image. Pinned to an exact patch (#1497), so the toolchain no
-  ## longer moves on its own -- which means something has to move it, and this
-  ## is that something.
+  ## The Go base image is pinned, so something has to move it (#1497).
   - package-ecosystem: docker
     directory: /docker
     schedule:
