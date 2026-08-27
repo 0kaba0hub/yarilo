@@ -38,11 +38,12 @@ func checkConsistencyFlagsIMAPToJMAP(user, pass string) error {
 	return judgeRow("imap->jmap flag visibility", left, right, defaultAllowances())
 }
 
-// The other direction, as its own row. It cannot run until Email/set exists
-// (#712), and a row that always passes because its write silently did nothing
-// reads in the report as a direction that was checked -- the softer form of the
-// pair nobody remembers is missing. Registered as a named skip instead, so the
-// day #712 lands the report itself asks for it.
+// The other direction, as its own row: a keyword written over JMAP has to be
+// the flag IMAP reports.
+//
+// A row that always passes because its write silently did nothing reads in the
+// report as a direction that was checked, which is why this was a named skip
+// while Email/set did not exist. It exists now (#1216).
 func checkConsistencyFlagsJMAPToIMAP(user, pass string) error {
 	marker := consistencyMarker("flags-back")
 	if err := deliverConsistencyProbe(user, marker); err != nil {
@@ -63,12 +64,17 @@ func checkConsistencyFlagsJMAPToIMAP(user, pass string) error {
 	if err != nil {
 		return fmt.Errorf("read flags over imap: %w", err)
 	}
-	// Narrowed to system flags on purpose while the row cannot run: IMAP sets
-	// only \Seen here, and Email/set writes $flagged. When #712 lands, put a
-	// custom keyword back into this direction too (keywords/$smokelabel over
-	// Email/set) -- non-system keywords are the vulnerable class, and losing
-	// one is what #1278 was.
-	want := newReading(surfJMAP).set("flags", []string{"$seen", "$flagged"})
+	// A custom keyword alongside the system one, because non-system keywords
+	// are the vulnerable class -- losing one is what #1278 was, and a row that
+	// only ever writes $flagged would not have seen it.
+	if err := jmapSetKeyword(id, consistencyCustomFlag); err != nil {
+		return fmt.Errorf("set custom keyword over jmap: %w", err)
+	}
+	back, err = imapReadFlags(user, pass, uid)
+	if err != nil {
+		return fmt.Errorf("read flags over imap: %w", err)
+	}
+	want := newReading(surfJMAP).set("flags", []string{"$seen", "$flagged", consistencyCustomFlag})
 	return judgeRow("jmap->imap flag visibility", want, back, defaultAllowances())
 }
 

@@ -78,6 +78,12 @@ func TestFlagRowJudgement(t *testing.T) {
 // half that works and say nothing about the half that does not exist — the
 // softer form of the missing pair this area exists to prevent.
 func TestFlagDirectionsAreSeparateRows(t *testing.T) {
+	// With the surfaces configured, or the rows are all skipped and every
+	// assertion about them holds by accident. The first version of this guard
+	// compared the two skips and passed on a mutation that turned the back
+	// direction off, because with no flags set both were off already.
+	withConsistencySurfaces(t)
+
 	var checks []check
 	registerConsistency(&checks)
 
@@ -93,12 +99,35 @@ func TestFlagDirectionsAreSeparateRows(t *testing.T) {
 	if forward == nil || back == nil {
 		t.Fatalf("both directions must be registered; forward=%v back=%v", forward != nil, back != nil)
 	}
-	if back.skip == "" {
-		t.Error("the direction that needs Email/set is not reported as a skip")
+	// Both directions are gated the same way now that Email/set exists
+	// (#1216). This used to require the back direction to be a NAMED SKIP,
+	// which was right while the write path did not exist and wrong the day it
+	// did -- the row stayed off for a release after the feature it needed had
+	// shipped.
+	//
+	// So the assertion is that the two directions are gated alike: whatever
+	// turns one off must turn the other off, and nothing may turn off the back
+	// direction alone.
+	// Both must RUN, not merely be gated alike: Email/set exists (#1216), so
+	// nothing may hold the back direction off on its own. It stayed off for a
+	// release after the feature it needed had shipped, and the report showed
+	// that as a named skip rather than as a gap.
+	if forward.skip != "" {
+		t.Errorf("the imap->jmap direction is skipped with every surface configured: %q", forward.skip)
 	}
-	for _, want := range []string{"Email/set", "#712"} {
-		if !strings.Contains(back.skip, want) {
-			t.Errorf("skip %q does not name %q", back.skip, want)
-		}
+	if back.skip != "" {
+		t.Errorf("the jmap->imap direction is skipped with every surface configured: %q — "+
+			"Email/set is implemented, so this direction goes unchecked while the report shows a skip", back.skip)
 	}
+}
+
+// withConsistencySurfaces configures the surfaces the consistency rows gate on
+// and restores them afterwards.
+func withConsistencySurfaces(t *testing.T) {
+	t.Helper()
+	prevJMAP, prevUser, prevPass, prevPort := *flagJMAP, *flagJMAPUser, *flagJMAPPass, *flagDeliveryPort
+	*flagJMAP, *flagJMAPUser, *flagJMAPPass, *flagDeliveryPort = true, "u1@example.test", "pw", "24"
+	t.Cleanup(func() {
+		*flagJMAP, *flagJMAPUser, *flagJMAPPass, *flagDeliveryPort = prevJMAP, prevUser, prevPass, prevPort
+	})
 }

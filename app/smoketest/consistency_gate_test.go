@@ -76,3 +76,34 @@ func TestConsistencyRowsAreOrdinaryChecks(t *testing.T) {
 		t.Fatal("no consistency rows registered: the area cannot appear in the report")
 	}
 }
+
+// The rows phase 2 (#1216) made possible must be registered and must run.
+//
+// State and incremental changes were served by a released build and never
+// called in the field, and the write direction stayed a named skip for a
+// release after the feature it needed had shipped. Both are the same failure:
+// the report showed a skip where there was a gap, and a skip reads as a
+// decision.
+func TestThePhaseTwoRowsAreRegisteredAndRun(t *testing.T) {
+	withConsistencySurfaces(t)
+
+	var checks []check
+	registerConsistency(&checks)
+
+	for _, want := range []string{"Email/changes", "jmap->imap keyword"} {
+		var found *check
+		for i := range checks {
+			if strings.Contains(checks[i].name, want) {
+				found = &checks[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("no consistency row covers %q; it is served and nothing asks it anything", want)
+			continue
+		}
+		if found.skip != "" {
+			t.Errorf("the row covering %q is skipped with every surface configured: %q", want, found.skip)
+		}
+	}
+}
