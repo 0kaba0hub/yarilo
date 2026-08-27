@@ -23,6 +23,8 @@ func checkConsistencyChanges(user, pass string) error {
 	if err := deliverConsistencyProbe(user, marker); err != nil {
 		return err
 	}
+	// Seen to begin with, so clearing $seen later moves unreadEmails: the
+	// mailbox half needs a change that a counter is obliged to follow.
 	if _, err := imapStoreFlags(user, pass, marker, `\Seen`); err != nil {
 		return fmt.Errorf("prepare over imap: %w", err)
 	}
@@ -67,21 +69,44 @@ func checkConsistencyChanges(user, pass string) error {
 			"so an incremental sync never converges", updatedAgain)
 	}
 
-	// Mailbox/changes over the same window: the flag write changes a mailbox's
-	// counts, so its state must move too.
+	// Mailbox/changes, over a change that must move a counter.
+	//
+	// The first version of this asked for $flagged and then checked only that
+	// newState was non-empty. Both halves were wrong: $flagged touches neither
+	// totalEmails nor unreadEmails, so RFC 8621 does not require the mailbox
+	// state to move at all -- the row could fail a correct server -- and "the
+	// state is not empty" is satisfied by a server that returns the same state
+	// every time, which is the shape this area exists to catch.
+	//
+	// Marking the message unread moves unreadEmails, so the counter changes
+	// and the state must follow.
+	inbox, err := jmapInboxID()
+	if err != nil {
+		return err
+	}
 	mailboxBefore, err := jmapMailboxState()
 	if err != nil {
 		return err
 	}
-	if err := jmapSetKeyword(id, "$flagged"); err != nil {
-		return fmt.Errorf("set second keyword over jmap: %w", err)
+	if err := jmapClearKeyword(id, "$seen"); err != nil {
+		return fmt.Errorf("mark unread over jmap: %w", err)
 	}
-	mailboxAfter, err := jmapMailboxChangesState(mailboxBefore)
+	mailboxUpdated, mailboxAfter, err := jmapMailboxChanges(mailboxBefore)
 	if err != nil {
 		return err
 	}
-	if mailboxAfter == "" {
-		return fmt.Errorf("Mailbox/changes returned no newState from %s", mailboxBefore)
+	if mailboxAfter == mailboxBefore {
+		return fmt.Errorf("Mailbox/changes returns the state it was given (%s) after unreadEmails changed", mailboxBefore)
+	}
+	if !slices.Contains(mailboxUpdated, inbox) {
+		return fmt.Errorf("Mailbox/changes does not report the inbox (%s) as updated after unreadEmails changed; updated=%v", inbox, mailboxUpdated)
+	}
+	mailboxAgain, _, err := jmapMailboxChanges(mailboxAfter)
+	if err != nil {
+		return err
+	}
+	if len(mailboxAgain) != 0 {
+		return fmt.Errorf("Mailbox/changes from the state it just returned still reports %v: the state does not advance", mailboxAgain)
 	}
 	return nil
 }
@@ -140,17 +165,60 @@ func jmapMailboxState() (string, error) {
 	return got.State, nil
 }
 
-func jmapMailboxChangesState(sinceState string) (string, error) {
+// jmapMailboxChanges returns the mailbox ids reported as updated since
+// sinceState, and the state handed back.
+func jmapMailboxChanges(sinceState string) ([]string, string, error) {
 	raw, err := jmapCall(`{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],` +
 		`"methodCalls":[["Mailbox/changes",{"accountId":"` + *flagJMAPUser + `","sinceState":"` + sinceState + `"},"c0"]]}`)
 	if err != nil {
-		return "", fmt.Errorf("Mailbox/changes: %w", err)
+		return nil, "", fmt.Errorf("Mailbox/changes: %w", err)
 	}
 	var got struct {
-		NewState string `json:"newState"`
+		NewState string   `json:"newState"`
+		Updated  []string `json:"updated"`
 	}
 	if err := json.Unmarshal(raw, &got); err != nil {
-		return "", fmt.Errorf("decode Mailbox/changes: %w", err)
+		return nil, "", fmt.Errorf("decode Mailbox/changes: %w", err)
 	}
-	return got.NewState, nil
+	return got.Updated, got.NewState, nil
+}
+
+// jmapInboxID is the mailbox the probe is delivered to.
+func jmapInboxID() (string, error) {
+	raw, err := jmapCall(`{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],` +
+		`"methodCalls":[["Mailbox/query",{"accountId":"` + *flagJMAPUser + `","filter":{"role":"inbox"}},"c0"]]}`)
+	if err != nil {
+		return "", fmt.Errorf("Mailbox/query for the inbox: %w", err)
+	}
+	var got struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		return "", fmt.Errorf("decode Mailbox/query: %w", err)
+	}
+	if len(got.IDs) != 1 {
+		return "", fmt.Errorf("role:inbox matched %d mailboxes, want 1", len(got.IDs))
+	}
+	return got.IDs[0], nil
+}
+
+// jmapClearKeyword removes a keyword, which is how the row moves a counter:
+// unreadEmails changes when $seen does.
+func jmapClearKeyword(id, keyword string) error {
+	raw, err := jmapCall(`{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],` +
+		`"methodCalls":[["Email/set",{"accountId":"` + *flagJMAPUser + `","update":{"` + id + `":` +
+		`{"keywords/` + keyword + `":null}}},"c0"]]}`)
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		NotUpdated map[string]json.RawMessage `json:"notUpdated"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("decode Email/set: %w", err)
+	}
+	if len(resp.NotUpdated) > 0 {
+		return fmt.Errorf("Email/set refused to clear %s: %v", keyword, resp.NotUpdated)
+	}
+	return nil
 }

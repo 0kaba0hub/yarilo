@@ -57,20 +57,15 @@ func checkConsistencyFlagsJMAPToIMAP(user, pass string) error {
 	if err != nil {
 		return err
 	}
-	if err := jmapSetKeyword(id, "$flagged"); err != nil {
-		return fmt.Errorf("set keyword over jmap: %w", err)
-	}
-	back, err := imapReadFlags(user, pass, uid)
-	if err != nil {
-		return fmt.Errorf("read flags over imap: %w", err)
-	}
 	// A custom keyword alongside the system one, because non-system keywords
 	// are the vulnerable class -- losing one is what #1278 was, and a row that
 	// only ever writes $flagged would not have seen it.
-	if err := jmapSetKeyword(id, consistencyCustomFlag); err != nil {
-		return fmt.Errorf("set custom keyword over jmap: %w", err)
+	for _, keyword := range []string{"$flagged", consistencyCustomFlag} {
+		if err := jmapSetKeyword(id, keyword); err != nil {
+			return fmt.Errorf("set %s over jmap: %w", keyword, err)
+		}
 	}
-	back, err = imapReadFlags(user, pass, uid)
+	back, err := imapReadFlags(user, pass, uid)
 	if err != nil {
 		return fmt.Errorf("read flags over imap: %w", err)
 	}
