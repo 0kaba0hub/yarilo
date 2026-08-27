@@ -84,15 +84,40 @@ func imapReadMessageID(user, pass, marker string) (*reading, error) {
 // envelopeMessageID takes the last field of the ENVELOPE, which RFC 3501 §7.4.2
 // defines as the message id. Read positionally rather than by pattern: a body
 // or a subject can contain something that looks like one.
+//
+// The envelope's own closing paren is found by counting depth from its opening
+// one. The last paren in the response closes the FETCH, not the ENVELOPE, and
+// reading to it would return the id with a paren stuck to it -- and the address
+// lists in between are nested parens, so a scan for the first close is wrong in
+// the other direction.
+//
+// Quoting is honoured while counting, because a subject may contain a paren.
 func envelopeMessageID(body string) string {
-	open := strings.Index(body, "ENVELOPE (")
-	if open < 0 {
+	start := strings.Index(body, "ENVELOPE (")
+	if start < 0 {
 		return ""
 	}
-	rest := body[open+len("ENVELOPE ("):]
-	// The message id is the last quoted string before the closing paren of the
-	// envelope, and NIL when there is none.
-	end := strings.LastIndex(rest, ")")
+	rest := body[start+len("ENVELOPE ("):]
+	depth, inQuotes, end := 1, false, -1
+	for i := 0; i < len(rest); i++ {
+		switch c := rest[i]; {
+		case c == '\\' && inQuotes:
+			i++ // an escaped character inside a quoted string
+		case c == '"':
+			inQuotes = !inQuotes
+		case inQuotes:
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				end = i
+			}
+		}
+		if end >= 0 {
+			break
+		}
+	}
 	if end < 0 {
 		return ""
 	}
@@ -100,8 +125,9 @@ func envelopeMessageID(body string) string {
 	if len(fields) == 0 {
 		return ""
 	}
-	last := fields[len(fields)-1]
-	return strings.Trim(last, `"`)
+	// NIL is a value here, not a parse failure: it is how IMAP says the
+	// message has no id, which is exactly the state this row exists to catch.
+	return strings.Trim(fields[len(fields)-1], `"`)
 }
 
 func jmapReadMessageID(marker string) (*reading, error) {
@@ -126,7 +152,10 @@ func jmapReadMessageID(marker string) (*reading, error) {
 		r.field("messageId", "null")
 		return r, nil
 	}
-	r.field("messageId", strings.Trim(ids[0], "<>"))
+	// As JMAP spells it, brackets already stripped by the protocol. The
+	// allowance holds the two spellings together; normalising here would hide
+	// a difference before the judge saw it.
+	r.field("messageId", ids[0])
 	return r, nil
 }
 

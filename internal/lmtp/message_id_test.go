@@ -2,10 +2,12 @@ package lmtp
 
 import (
 	"bytes"
+	"context"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/yarilomail/yarilo/internal/sieve"
 	"github.com/yarilomail/yarilo/internal/userstate/threads"
 	"github.com/yarilomail/yarilo/pkg/config"
 )
@@ -211,4 +213,53 @@ func messageIDOf(t *testing.T, raw []byte) string {
 		}
 	}
 	return ""
+}
+
+// A Sieve script must see the synthesised header.
+//
+// The other half of "before Sieve, before storage, before the sidecar": the
+// threading test proves the sidecar sees it, and this proves the script does.
+// Both halves matter because a header added between them would satisfy one and
+// not the other, and neither the delivered mail nor the log would say so.
+//
+// The script tests exactly the fact: a message with no id of its own is filed
+// by a rule that matches on message-id.
+func TestASynthesisedMessageIDIsVisibleToSieve(t *testing.T) {
+	home := t.TempDir()
+	ctx := context.Background()
+	engine := sieve.New(config.SieveConfig{
+		Enabled: true, MaxRedirects: 32, MaxScriptSize: 65536,
+		DefaultName: sieve.FallbackDefaultName,
+	}, nil, nil, nil)
+	store := &sieve.FsScriptStore{DefaultName: sieve.FallbackDefaultName}
+	script := []byte(`require "fileinto";
+if header :contains "message-id" "@" { fileinto "seen"; }`)
+	if err := store.SaveScript(ctx, "u1", home, "test", script); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetActive(ctx, "u1", home, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &session{opts: Options{
+		Hostname: "mx.example.test",
+		Config:   config.LMTPProtocolConfig{AddMessageID: true, HdrDeliveryAddress: "none"},
+	}}
+	// No Message-ID of its own: without the synthesis the rule cannot match.
+	msg := s.prependHeaders([]byte("From: a@x\r\nTo: u1@example.com\r\nSubject: hi\r\n\r\nbody\r\n"), "u1@example.com", "u1@example.com")
+
+	result, err := engine.Filter(ctx, sieve.FilterOptions{
+		Username: "u1", HomeDir: home,
+		EnvFrom: "a@x", EnvTo: "u1@example.com",
+		MsgRaw: msg,
+	})
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	if result == nil || len(result.Deliveries) != 1 {
+		t.Fatalf("expected one delivery, got %+v", result)
+	}
+	if got := result.Deliveries[0].Folder; got != "seen" {
+		t.Errorf("filed into %q, want seen; the script did not see a message-id, so the header reaches storage without ever reaching Sieve", got)
+	}
 }
