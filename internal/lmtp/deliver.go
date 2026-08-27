@@ -159,12 +159,18 @@ func resolveMailbox(rcpt string) (username, folder string, err error) {
 	return local + "@" + domain, folder, nil
 }
 
-// buildReceivedHeader names the host that accepted the message. The name was a
-// literal, for the same reason the Message-ID's was: nothing carried one
-// (#1506).
+// unnamedHost is what a header says when the installation has no name.
+//
+// It exists only for a hostname explicitly configured as empty: the default is
+// os.Hostname(), so reaching this means an operator asked for it. Not a
+// sensible name and not meant to be -- it is visible enough in a Received
+// header and a Message-ID that the missing setting gets found (#1506).
+const unnamedHost = "yarilo"
+
+// buildReceivedHeader names the host that accepted the message.
 func buildReceivedHeader(from, host string) string {
 	if host == "" {
-		host = "yarilo"
+		host = unnamedHost
 	}
 	return fmt.Sprintf("Received: from %s by %s with LMTP; %s\r\n",
 		from, host, time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 +0000"))
@@ -222,7 +228,7 @@ func buildMessageID(host string) string {
 		panic("lmtp: crypto/rand: " + err.Error())
 	}
 	if host == "" {
-		host = "yarilo"
+		host = unnamedHost
 	}
 	return fmt.Sprintf("Message-ID: <%x@%s>\r\n", b, host)
 }

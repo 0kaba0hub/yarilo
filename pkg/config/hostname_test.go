@@ -51,7 +51,18 @@ func TestSubmissionHostnameFallsBackToTheInstallationName(t *testing.T) {
 			wantSubmission: "smtp.example.com",
 		},
 		{
+			// The named behaviour change: a deployment that set only
+			// submission's key was giving that name to LMTP as well. The
+			// installation now keeps its own, and only submission answers
+			// with the other one. On the old wiring this row's global would
+			// have been smtp.example.com.
 			name:           "submission alone does not become the installation's name",
+			body:           "protocol:\n  submission:\n    hostname: smtp.example.com\n",
+			wantGlobal:     thisHost(t),
+			wantSubmission: "smtp.example.com",
+		},
+		{
+			name:           "an empty submission key falls through, it does not blank the name",
 			body:           "hostname: mx.example.com\nprotocol:\n  submission:\n    hostname: \"\"\n",
 			wantGlobal:     "mx.example.com",
 			wantSubmission: "mx.example.com",
@@ -71,4 +82,14 @@ func TestSubmissionHostnameFallsBackToTheInstallationName(t *testing.T) {
 			}
 		})
 	}
+}
+
+// thisHost is what an unset hostname resolves to.
+func thisHost(t *testing.T) string {
+	t.Helper()
+	h, err := os.Hostname()
+	if err != nil {
+		t.Skip("this machine has no hostname to compare against")
+	}
+	return h
 }

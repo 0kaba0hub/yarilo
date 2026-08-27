@@ -65,7 +65,9 @@ func main() {
 		"telemetry", cfg.Telemetry.Listen,
 	)
 
-	hostname := cfg.SubmissionHostname()
+	// The LMTP proxy announces this installation. submission's key overrides
+	// submission alone (#1506).
+	hostname := cfg.Hostname
 
 	var intTLS *tls.Config
 	if cfg.InternalTLS.Enabled {
