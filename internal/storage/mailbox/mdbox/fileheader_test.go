@@ -141,7 +141,7 @@ func TestReaderAcceptsLegacyAndNewLayout(t *testing.T) {
 	var modern bytes.Buffer
 	modern.Write(buildDboxFileHeader())
 	for _, b := range bodies {
-		modern.Write(buildDboxMessageRecord(b, randomGUID(), "INBOX"))
+		modern.Write(buildDboxMessageRecord(b, randomGUID(), "INBOX", messageHeaderSize))
 	}
 
 	for _, tc := range []struct {

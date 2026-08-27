@@ -593,8 +593,12 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	if guid == noGUID {
 		guid = randomGUID()
 	}
-	msgRecord := buildDboxMessageRecord(body, guid, folder)
-	recLen := uint32(len(msgRecord))
+	// The record cannot be built yet: its header size belongs to the file it
+	// will land in, and which file that is depends on rotation below. Only the
+	// length is needed for the rotation arithmetic, and the two header sizes
+	// differ by two bytes -- a rotation decision that close to the boundary is
+	// not one this can get wrong, so the larger of the two is used.
+	recLen := uint32(dboxRecordLen(body, guid, folder, messageHeaderSizeLegacy))
 
 	fileID := m.HighestFileID()
 	if fileID == 0 {
@@ -626,7 +630,9 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	}
 
 	tOpen := time.Now()
-	f, err := os.OpenFile(u.mfilePath(fileID), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	// O_RDWR, not O_WRONLY: an append has to read the file's header line to
+	// learn the header size it must write at (#1525).
+	f, err := os.OpenFile(u.mfilePath(fileID), os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return "", 0, noGUID, fmt.Errorf("mdbox/save: open m.%d: %w", fileID, err)
 	}
@@ -640,6 +646,23 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	}
 	offset := uint32(st.Size())
 	mailboxmetrics.ObserveSavePart(driverName, "open", time.Since(tOpen))
+
+	// The file decides the header size, not this binary.
+	//
+	// Appending a 30-byte header to a file whose header line says M20 writes a
+	// record no reader can find: every reader takes the size from M, reads 32
+	// bytes of a 30-byte header, and lands two bytes into the body. LMTP still
+	// answers Saved, the message occupies quota, and every FETCH of it returns
+	// empty -- silent loss, and purge does not bring it back (#1525).
+	hdrSize := messageHeaderSize
+	if offset > 0 {
+		hdrSize, err = fileHeaderSizeOf(f)
+		if err != nil {
+			f.Close() //nolint:errcheck
+			return "", 0, noGUID, fmt.Errorf("mdbox/save: m.%d: %w", fileID, err)
+		}
+	}
+	msgRecord := buildDboxMessageRecord(body, guid, folder, hdrSize)
 	// The dbox file-header line is a file-level header: emit it only for the first
 	// record in a new physical file (offset 0). Appended records start directly at
 	// their message header, matching the dbox v2 layout.
@@ -846,13 +869,46 @@ func readRecordHeader(f *os.File, offset uint32) (bodyOff int64, size uint64, er
 		return 0, 0, fmt.Errorf("read message header: %w", err)
 	}
 	if err := checkMessageHeader(mh); err != nil {
-		return 0, 0, err
+		// The file announced one size and the record was written at the other.
+		// Builds between #1523 and #1525 appended a 30-byte header to files
+		// whose line says M20, so those messages were stored intact and read
+		// as empty -- delivered, charged to quota, invisible.
+		//
+		// Recovering them here rather than by rewriting mail: the record is
+		// undamaged, only the size assumed for it was wrong, and the trailing
+		// LF says which one is right. Purge does not repair those messages, so
+		// without this they stay lost.
+		recovered, rerr := readMessageHeaderAtOtherSize(f, hdrOff, hdrSize)
+		if rerr != nil {
+			return 0, 0, err
+		}
+		slog.Warn("mdbox: record written at a header size the file does not announce; read at the other size",
+			"file", f.Name(), "offset", offset, "announced", hdrSize, "actual", len(recovered))
+		mh, hdrSize = recovered, len(recovered)
 	}
 	size, err = strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("%w: parse size: %v", errCorruptRecord, err)
 	}
 	return hdrOff + int64(hdrSize), size, nil
+}
+
+// readMessageHeaderAtOtherSize re-reads the header at the size the file did
+// not announce, and returns it only when it passes the same check. Two sizes
+// exist, so there is exactly one alternative and no searching.
+func readMessageHeaderAtOtherSize(f *os.File, hdrOff int64, announced int) ([]byte, error) {
+	other := messageHeaderSize
+	if announced == messageHeaderSize {
+		other = messageHeaderSizeLegacy
+	}
+	mh := make([]byte, other)
+	if _, err := f.ReadAt(mh, hdrOff); err != nil {
+		return nil, err
+	}
+	if err := checkMessageHeader(mh); err != nil {
+		return nil, err
+	}
+	return mh, nil
 }
 
 // checkMessageHeader is the reference's own test of a message header: the two
@@ -1050,14 +1106,14 @@ func buildDboxFileHeader() []byte {
 // a rebuild can route an orphaned copy back to its home folder. Compaction
 // passes the value recovered from the source trailer; a fresh Save passes the
 // destination folder.
-func buildDboxMessageRecord(body []byte, guid [16]byte, origMailbox string) []byte {
+func buildDboxMessageRecord(body []byte, guid [16]byte, origMailbox string, hdrSize int) []byte {
 	size := uint64(len(body))
 	now := uint32(time.Now().Unix())
 
 	var buf bytes.Buffer
 	// The reference message header: magic + 'N' + spaces, the 16-char hex
 	// size at 13..29, and LF as the LAST byte.
-	hdr := make([]byte, messageHeaderSize)
+	hdr := make([]byte, hdrSize)
 	for i := range hdr {
 		hdr[i] = ' '
 	}
@@ -1065,7 +1121,7 @@ func buildDboxMessageRecord(body []byte, guid [16]byte, origMailbox string) []by
 	hdr[1] = magicPreByte1
 	hdr[2] = 'N'
 	copy(hdr[13:29], fmt.Sprintf("%016x", size))
-	hdr[messageHeaderSize-1] = '\n'
+	hdr[hdrSize-1] = '\n'
 	buf.Write(hdr)
 	buf.Write(body)
 	// Metadata trailer.
@@ -1090,7 +1146,31 @@ func buildDboxMessageRecord(body []byte, guid [16]byte, origMailbox string) []by
 // for the single-record case and for tests that construct the legacy
 // per-record-header layout the reader still accepts.
 func buildDboxRecord(body []byte, guid [16]byte, origMailbox string) []byte {
-	return append(buildDboxFileHeader(), buildDboxMessageRecord(body, guid, origMailbox)...)
+	return append(buildDboxFileHeader(), buildDboxMessageRecord(body, guid, origMailbox, messageHeaderSize)...)
+}
+
+// dboxRecordLen is what the record will occupy, for the rotation arithmetic
+// that runs before the target file is known.
+func dboxRecordLen(body []byte, guid [16]byte, origMailbox string, hdrSize int) int {
+	return len(buildDboxMessageRecord(body, guid, origMailbox, hdrSize))
+}
+
+// fileHeaderSizeOf reads M from an open file's first line.
+func fileHeaderSizeOf(f *os.File) (int, error) {
+	first := make([]byte, 64)
+	n, err := f.ReadAt(first, 0)
+	if err != nil && n == 0 {
+		return 0, fmt.Errorf("read file header: %w", err)
+	}
+	lf := bytes.IndexByte(first[:n], '\n')
+	if lf < 0 {
+		return 0, fmt.Errorf("%w: file carries no header line", errCorruptRecord)
+	}
+	size, ok := parseFileHeaderSize(first[:lf+1])
+	if !ok {
+		return 0, fmt.Errorf("%w: file carries no usable M", errCorruptRecord)
+	}
+	return size, nil
 }
 
 // peekFileHeaderLen reports how many leading bytes of the record window belong
