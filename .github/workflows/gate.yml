@@ -10,8 +10,54 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  ## The one list of paths that decide whether this gate has anything to do.
+  ##
+  ## It used to be a `paths:` filter on each caller's pull_request trigger,
+  ## which meant a docs-only PR started no run at all -- fine while nothing was
+  ## required, and a permanent "expected" that can never arrive once Lint and
+  ## Test are required checks. A skipped job counts as passed, a job that never
+  ## starts does not.
+  ##
+  ## So the filter moved here, where both lines read it instead of keeping two
+  ## copies that agree by inspection.
+  changes:
+    name: Changes
+    runs-on: [self-hosted, linux]
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.check.outputs.code }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Does this change any code
+        id: check
+        run: |
+          # A push has already been filtered by the caller's own paths, and a
+          # manual run is asked for deliberately: only a pull request has a
+          # base to compare against.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          CHANGED=$(git diff --name-only "${BASE}...${GITHUB_SHA}")
+          echo "changed files:"
+          echo "${CHANGED}"
+          if echo "${CHANGED}" | grep -qE '^(app/|helm/|internal/|pkg/|go\.mod$|go\.sum$|docker/Dockerfile$|\.github/workflows/)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no code paths touched; lint and test are skipped, which satisfies them as required checks"
+          fi
+
   lint:
     name: Lint
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: [self-hosted, linux]
     permissions:
       contents: read
@@ -82,6 +128,8 @@ jobs:
 
   test:
     name: Test
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: [self-hosted, linux]
     permissions:
       checks: write
