@@ -6,10 +6,10 @@ package proxy
 import (
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/emersion/go-sasl"
@@ -124,7 +124,7 @@ func (s *Submission) probeCapabilities(c *goSmtp.Client) capabilities {
 }
 
 func (s *Submission) dial() (*goSmtp.Client, error) {
-	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
+	addr := net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port))
 	ct := s.connectTimeout()
 
 	var c *goSmtp.Client

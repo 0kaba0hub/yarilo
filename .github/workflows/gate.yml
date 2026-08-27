@@ -101,6 +101,22 @@ jobs:
       ## Twice, because the image is built with -tags flatcurve: an untagged
       ## scan leaves the cgo/xapian branch and everything it imports out of the
       ## call graph, so it would not be about what we ship (#1497).
+      ## go vet, both tag sets, because the linter does not run these checks
+      ## and CI did not run vet at all: six addresses built with "%s:%d" and
+      ## handed to net.Dial -- which silently dials elsewhere for an IPv6
+      ## literal -- sat there until someone typed the command by hand (#1508).
+      ##
+      ## Both sets for the same reason govulncheck runs twice: one of the six
+      ## was only visible under -tags flatcurve, and it was the relay dial.
+      - name: Run go vet
+        run: |
+          go vet ./...
+          if ! dpkg -s libxapian-dev >/dev/null 2>&1 || ! command -v g++ >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libxapian-dev g++
+          fi
+          CGO_ENABLED=1 go vet -tags flatcurve ./...
+
       - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest

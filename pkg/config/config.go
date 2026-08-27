@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/yarilomail/yarilo/pkg/build"
 
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 	"github.com/yarilomail/yarilo/pkg/quota"
@@ -28,7 +31,10 @@ type Config struct {
 	//
 	// Default: os.Hostname(). A literal would be wrong on every deployment
 	// equally, which reads as a setting nobody has to think about.
-	Hostname           string                       `koanf:"hostname"`
+	Hostname string `koanf:"hostname"`
+	// ChartVersion is written by the chart. Compared at load against the
+	// version the binary was built from, and never read for anything else.
+	ChartVersion       string                       `koanf:"chart_version"`
 	General            GeneralConfig                `koanf:"general"`
 	Services           ServicesConfig               `koanf:"services"`
 	Protocol           ProtocolConfig               `koanf:"protocol"`
@@ -2777,6 +2783,7 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	warnRetiredKeys(k, retiredKeys())
+	warnChartSkew(cfg.ChartVersion)
 	if err := refuseInvertedPairs(cfg); err != nil {
 		return nil, err
 	}
@@ -3304,4 +3311,35 @@ func (cfg *Config) SubmissionHostname() string {
 		return cfg.Protocol.Submission.Hostname
 	}
 	return cfg.Hostname
+}
+
+// warnChartSkew says so when the ConfigMap and the binary did not come from one
+// commit.
+//
+// `helm upgrade --set image.tag=X` deploys a new image with whatever chart the
+// working copy holds, and nothing reports the pairing. A gate run got a binary
+// that reads a config key the chart in the checkout did not render: the key was
+// simply absent, the binary used its default, and the symptom -- three pod
+// names where one configured hostname was expected -- read as the code taking
+// the wrong knob (#1509).
+//
+// Both values are the CHART's version, not the image tag, so they are equal on
+// develop, where the chart stands still while dev images are numbered, and on
+// master, where the two rise together.
+//
+// A warning rather than a refusal: an operator may have a reason, and a mail
+// server that will not start because two strings differ is a worse failure than
+// the one being guarded.
+func warnChartSkew(fromConfig string) {
+	switch {
+	case build.ChartVersion == "dev":
+		// A local build, which is not deployed from a chart.
+	case fromConfig == "":
+		slog.Warn("config: the ConfigMap carries no chart_version, so it was rendered by a chart older than this binary; "+
+			"settings this version reads may be absent and silently defaulted",
+			"binary_built_from_chart", build.ChartVersion)
+	case fromConfig != build.ChartVersion:
+		slog.Warn("config: the ConfigMap and this binary came from different commits",
+			"configmap_chart", fromConfig, "binary_built_from_chart", build.ChartVersion)
+	}
 }

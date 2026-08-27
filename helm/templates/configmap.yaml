@@ -8,6 +8,9 @@ metadata:
 data:
   yarilo.yaml: |
     mode: cluster
+    ## The chart's own version, so a process can say whether the ConfigMap
+    ## beside it came from the same commit as its binary (#1509).
+    chart_version: {{ .Chart.Version | quote }}
     {{- if .Values.hostname }}
     hostname: {{ .Values.hostname | quote }}
     {{- end }}

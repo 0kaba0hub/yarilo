@@ -101,6 +101,10 @@ jobs:
           # builds of one commit get two names, and that is correct -- they are
           # two artefacts.
           DEV_TAG="${NEXT}-dev.${GITHUB_RUN_NUMBER}"
+          # The chart's own version, stamped into the image so a pod can say
+          # whether the ConfigMap beside it came from the same commit (#1509).
+          CHART_VERSION=$(awk '/^version:/{print $2}' helm/Chart.yaml)
+          echo "chart_version=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
           echo "dev_tag=${DEV_TAG}" >> "$GITHUB_OUTPUT"
           echo "next=${NEXT}" >> "$GITHUB_OUTPUT"
           echo "building ${DEV_TAG}"
@@ -129,6 +133,7 @@ jobs:
             ${{ env.IMAGE }}:${{ steps.version.outputs.dev_tag }}
           build-args: |
             BUILD_VERSION=${{ steps.version.outputs.dev_tag }}
+            BUILD_CHART_VERSION=${{ steps.version.outputs.chart_version }}
 
       - name: Prune old dev tags
         env:
