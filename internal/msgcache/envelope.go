@@ -434,7 +434,7 @@ func (fc *Handle) References(m *mailbox.MessageMeta) ([]string, bool) {
 	if len(data) == 0 {
 		return nil, true // cached, and the message has none
 	}
-	return strings.Split(string(data), "\n"), true
+	return splitRefs(data), true
 }
 
 // EnvelopeAndReferences reads both in ONE pass over the message's record.
@@ -464,7 +464,7 @@ func (fc *Handle) EnvelopeAndReferences(m *mailbox.MessageMeta) (*imaplib.Envelo
 	if len(refsData) == 0 {
 		return env, nil, true // cached, and the message has none
 	}
-	return env, strings.Split(string(refsData), "\n"), true
+	return env, splitRefs(refsData), true
 }
 
 // StoreReferences caches the References of a message. An empty list is stored
