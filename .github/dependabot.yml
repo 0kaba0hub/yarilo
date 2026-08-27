@@ -34,6 +34,11 @@ updates:
     open-pull-requests-limit: 5
 
   ## The Go base image is pinned, so something has to move it (#1497).
+  ##
+  ## Patches only: go.mod names the same version, and dependabot cannot move
+  ## both. A patch is mechanical and the guard proves the pair still agree; a
+  ## minor is a language release, and #1501 showed it arriving as a weekly PR
+  ## that cannot pass and cannot be fixed here.
   - package-ecosystem: docker
     directory: /docker
     schedule:
@@ -41,6 +46,11 @@ updates:
       day: monday
       time: "09:00"
       timezone: UTC
+    ignore:
+      - dependency-name: golang
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
     labels:
       - dependencies
     open-pull-requests-limit: 5

@@ -22,13 +22,23 @@ on:
       - "go.mod"
       - "go.sum"
       - "docker/Dockerfile"
-      - ".github/workflows/ci-develop.yml"
-      - ".github/workflows/gate.yml"
+      ## Any workflow: gate.yml treats the directory as code, and a push
+      ## filter narrower than the gate's own list is a difference nobody
+      ## declared.
+      - ".github/workflows/**"
+  ## The same gate a PR into master gets. Without this a PR into develop ran
+  ## nothing and was green because nothing had run. No paths, for the reason
+  ## given in ci.yml: gate.yml holds the one list.
+  pull_request:
+    branches:
+      - develop
   workflow_dispatch:
 
+## PR pushes supersede each other; a push to develop never does, because its
+## build feeds the sandbox and must finish. Same rule as the master line.
 concurrency:
   group: ci-develop-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/yarilo
@@ -54,6 +64,10 @@ jobs:
 
   build:
     name: Build & Push (develop)
+    ## Pushes only. A pull_request event now reaches this workflow, and without
+    ## this a PR would publish a dev image from its own head -- a candidate tag
+    ## naming a commit that is not on the branch.
+    if: github.event_name != 'pull_request'
     needs: [gate]
     runs-on: [self-hosted, linux]
     permissions:

@@ -12,26 +12,18 @@ on:
       - "go.mod"
       - "go.sum"
       - "docker/Dockerfile"
-      - ".github/workflows/ci.yml"
+      ## Any workflow: gate.yml treats the directory as code, and a push
+      ## filter narrower than the gate's own list is a difference nobody
+      ## declared.
+      - ".github/workflows/**"
+  ## No paths here. The filter lives in gate.yml, which decides whether the
+  ## lint and test jobs have anything to do -- a docs-only PR skips them, and a
+  ## skipped job satisfies a required check while a run that never starts
+  ## leaves it "expected" for ever.
   pull_request:
     branches:
       - main
-    paths:
-      - "app/**"
-      - "helm/**"
-      - "internal/**"
-      - "pkg/**"
-      - "go.mod"
-      - "go.sum"
-      - "docker/Dockerfile"
-      ## A change to the pipeline is validated by the pipeline. Without this a
-      ## PR that rewrites how the gate is assembled gets no checks at all, and
-      ## the first thing to exercise it is whatever merges next.
-      - ".github/workflows/**"
 
-## Cancel superseded runs on the same ref. PR pushes supersede each other, so
-## an in-flight run for an older commit is wasted work. Runs on main are never
-## cancelled: build/push and the release it triggers must complete.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
