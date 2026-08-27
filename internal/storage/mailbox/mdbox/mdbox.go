@@ -726,12 +726,12 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 		mdboxmap.ObserveReadPart("open", time.Since(openStart))
 		if ferr == nil {
 			bodyStart := time.Now()
-			body, berr := readRecordBody(f, entry.Offset)
+			rc, berr := openRecordBody(f, entry.Offset)
 			mdboxmap.ObserveReadPart("body", time.Since(bodyStart))
-			_ = f.Close()
 			if berr == nil {
-				return io.NopCloser(bytes.NewReader(body)), nil
+				return rc, nil
 			}
+			_ = f.Close()
 		}
 	}
 
@@ -755,13 +755,88 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 	}
 	mdboxmap.ObserveReadPart("open", time.Since(openStart))
 	bodyStart := time.Now()
-	body, err := readRecordBody(f, entry.Offset)
+	rc, err := openRecordBody(f, entry.Offset)
 	mdboxmap.ObserveReadPart("body", time.Since(bodyStart))
-	_ = f.Close()
 	if err != nil {
+		_ = f.Close()
 		return nil, corruptFetchErr(entry.FileID, err)
 	}
-	return io.NopCloser(bytes.NewReader(body)), nil
+	return rc, nil
+}
+
+// openRecordBody positions f on the message body of the record at offset and
+// returns a reader over exactly that body. It reads the record header only;
+// the body is read by whoever consumes the reader, and only as far as they go.
+//
+// It used to read the whole body into memory first. A FETCH of
+// HEADER.FIELDS on a 500 KB message then allocated and read 500 KB to hand
+// back 2 KB, and under a one-CPU quota that garbage is what parked FETCH
+// commands for whole seconds: the goroutine captured at a stall stood on the
+// make([]byte, size) with GC at ~28% of the profile (#1517). maildir never
+// had the problem because it returns the file itself.
+//
+// Truncation is still reported here, from Fetch, rather than surfacing later
+// as an EOF on a reader nobody classifies: the body's end is checked against
+// the file's size before the reader is returned.
+func openRecordBody(f *os.File, offset uint32) (io.ReadCloser, error) {
+	bodyOff, size, err := readRecordHeader(f, offset)
+	if err != nil {
+		return nil, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat: %w", err)
+	}
+	if bodyOff+int64(size) > st.Size() {
+		return nil, fmt.Errorf("read body: %w", io.ErrUnexpectedEOF)
+	}
+	return &sectionCloser{
+		SectionReader: io.NewSectionReader(f, bodyOff, int64(size)),
+		f:             f,
+	}, nil
+}
+
+// sectionCloser closes the file the section was cut from.
+type sectionCloser struct {
+	*io.SectionReader
+	f *os.File
+}
+
+func (s *sectionCloser) Close() error { return s.f.Close() }
+
+// readRecordHeader seeks to offset, skips the file-header line if present (the
+// first record in a physical file carries it; legacy files carry it per
+// record), parses the 32-byte message header, and returns where the body
+// starts and how long it is.
+func readRecordHeader(f *os.File, offset uint32) (bodyOff int64, size uint64, err error) {
+	if _, err = f.Seek(int64(offset), io.SeekStart); err != nil {
+		return 0, 0, fmt.Errorf("seek: %w", err)
+	}
+	window := make([]byte, 64)
+	n, err := f.Read(window)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read record start: %w", err)
+	}
+	skip, ok := peekFileHeaderLen(window[:n])
+	if !ok {
+		return 0, 0, fmt.Errorf("%w: malformed record @%d", errCorruptRecord, offset)
+	}
+	hdrOff := int64(offset) + int64(skip)
+	if _, err = f.Seek(hdrOff, io.SeekStart); err != nil {
+		return 0, 0, fmt.Errorf("seek to message header: %w", err)
+	}
+	mh := make([]byte, messageHeaderSize)
+	if _, err = io.ReadFull(f, mh); err != nil {
+		return 0, 0, fmt.Errorf("read message header: %w", err)
+	}
+	if mh[0] != magicPreByte0 || mh[1] != magicPreByte1 {
+		return 0, 0, fmt.Errorf("%w: bad message magic", errCorruptRecord)
+	}
+	size, err = strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%w: parse size: %v", errCorruptRecord, err)
+	}
+	return hdrOff + int64(messageHeaderSize), size, nil
 }
 
 // corruptFetchErr classifies a record-read failure: a truncated read
@@ -1012,37 +1087,15 @@ func peekFileHeaderLen(window []byte) (skip int, ok bool) {
 	return 0, false
 }
 
-// readRecordBody seeks to offset, skips the file-header line if present (the
-// first record in a physical file carries it; legacy files carry it per record),
-// parses the 32-byte message header, and returns the message body bytes.
+// readRecordBody returns the whole body of the record at offset. Kept for
+// callers that genuinely need every byte; Fetch does not, and streams instead.
 func readRecordBody(f *os.File, offset uint32) ([]byte, error) {
-	if _, err := f.Seek(int64(offset), io.SeekStart); err != nil {
-		return nil, fmt.Errorf("seek: %w", err)
-	}
-	// A file-header line ("2 M20 C…\n") precedes the message header only for the
-	// file's first record; an appended record starts at the message header.
-	window := make([]byte, 64)
-	n, err := f.Read(window)
+	bodyOff, size, err := readRecordHeader(f, offset)
 	if err != nil {
-		return nil, fmt.Errorf("read record start: %w", err)
+		return nil, err
 	}
-	skip, ok := peekFileHeaderLen(window[:n])
-	if !ok {
-		return nil, fmt.Errorf("%w: malformed record @%d", errCorruptRecord, offset)
-	}
-	if _, err := f.Seek(int64(offset)+int64(skip), io.SeekStart); err != nil {
-		return nil, fmt.Errorf("seek to message header: %w", err)
-	}
-	mh := make([]byte, messageHeaderSize)
-	if _, err := io.ReadFull(f, mh); err != nil {
-		return nil, fmt.Errorf("read message header: %w", err)
-	}
-	if mh[0] != magicPreByte0 || mh[1] != magicPreByte1 {
-		return nil, fmt.Errorf("%w: bad message magic", errCorruptRecord)
-	}
-	size, err := strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
-	if err != nil {
-		return nil, fmt.Errorf("%w: parse size: %v", errCorruptRecord, err)
+	if _, err := f.Seek(bodyOff, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("seek to body: %w", err)
 	}
 	body := make([]byte, size)
 	if _, err := io.ReadFull(f, body); err != nil {
