@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,7 +20,7 @@ const (
 // probeIMAP dials ip:port and performs a plain-text IMAP LOGIN check.
 // An empty user skips the login step and returns probeOK after greeting.
 func probeIMAP(ip string, port int, user, pass string, timeout time.Duration) probeResult {
-	addr := fmt.Sprintf("%s:%d", ip, port)
+	addr := net.JoinHostPort(ip, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return probeRefused
@@ -57,7 +58,7 @@ func probeIMAP(ip string, port int, user, pass string, timeout time.Duration) pr
 // probePOP3 dials ip:port and performs a POP3 USER/PASS check.
 // An empty user skips authentication and returns probeOK after greeting.
 func probePOP3(ip string, port int, user, pass string, timeout time.Duration) probeResult {
-	addr := fmt.Sprintf("%s:%d", ip, port)
+	addr := net.JoinHostPort(ip, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return probeRefused
@@ -93,7 +94,7 @@ func probePOP3(ip string, port int, user, pass string, timeout time.Duration) pr
 // delivering a test message. For a lightweight health check, verifying that
 // the server responds to LHLO is sufficient.
 func probeLMTP(ip string, port int, timeout time.Duration) probeResult {
-	addr := fmt.Sprintf("%s:%d", ip, port)
+	addr := net.JoinHostPort(ip, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return probeRefused

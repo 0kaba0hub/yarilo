@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,7 +73,7 @@ func main() {
 // dialSubmissionSTARTTLS performs EHLO + STARTTLS + EHLO and returns the
 // upgraded TLS connection ready for AUTH.
 func dialSubmissionSTARTTLS() (*tls.Conn, *bufio.Reader, error) {
-	addr := fmt.Sprintf("%s:%d", *flagHost, *flagSubmissionPort)
+	addr := net.JoinHostPort(*flagHost, strconv.Itoa(*flagSubmissionPort))
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial: %w", err)
@@ -155,7 +156,7 @@ func checkSubmissionAuthLogin() error {
 const testSubject = "yarilo-smoketest"
 
 func deliverLMTP() error {
-	addr := fmt.Sprintf("%s:%d", *flagHost, *flagLMTPPort)
+	addr := net.JoinHostPort(*flagHost, strconv.Itoa(*flagLMTPPort))
 	conn, err := net.DialTimeout("tcp", addr, *flagTimeout)
 	if err != nil {
 		return fmt.Errorf("dial lmtp: %w", err)
@@ -196,7 +197,7 @@ func deliverLMTP() error {
 // imapVerifyINBOX dials IMAPS, runs the supplied authentication, and asserts
 // INBOX contains at least one message.
 func imapVerifyINBOX(auth func(*imapclient.Client) error) error {
-	addr := fmt.Sprintf("%s:%d", *flagHost, *flagIMAPSPort)
+	addr := net.JoinHostPort(*flagHost, strconv.Itoa(*flagIMAPSPort))
 	tlsCfg := &tls.Config{
 		ServerName:         *flagHost,
 		InsecureSkipVerify: *flagInsecure, //nolint:gosec
@@ -238,7 +239,7 @@ func readViaIMAPS_AuthenticatePlain() error {
 // pop3VerifyRETR dials POP3S, runs the supplied auth, then runs STAT + RETR 1
 // and verifies the test subject appears in the message body.
 func pop3VerifyRETR(auth func(net.Conn, *bufio.Reader) error) error {
-	addr := fmt.Sprintf("%s:%d", *flagHost, *flagPOP3SPort)
+	addr := net.JoinHostPort(*flagHost, strconv.Itoa(*flagPOP3SPort))
 	tlsCfg := &tls.Config{
 		ServerName:         *flagHost,
 		InsecureSkipVerify: *flagInsecure, //nolint:gosec
