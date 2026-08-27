@@ -1,5 +1,12 @@
 ## yarilo Helm chart values
 
+## What this installation calls itself: the domain part of a synthesised
+## Message-ID, the LHLO banner, the Received header. Empty means each pod uses
+## its own hostname, which is right for one node and wrong for a cluster, where
+## every pod would answer with a different name -- so set it to the name your
+## mail is seen under (#1506).
+hostname: ""
+
 image:
   repository: ghcr.io/yarilomail/yarilo
   tag: ""

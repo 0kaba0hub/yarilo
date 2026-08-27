@@ -414,7 +414,7 @@ func New(cfg *config.Config) (*Server, error) {
 
 		var submissionProxy *submproxy.Submission
 		if cfg.Protocol.Submission.Relay.Host != "" {
-			submissionProxy = submproxy.New(cfg.Protocol.Submission.Relay, cfg.Protocol.Submission.Hostname)
+			submissionProxy = submproxy.New(cfg.Protocol.Submission.Relay, cfg.SubmissionHostname())
 		}
 
 		if primary.SSLMode != "no" && primary.SSLMode != "" {
@@ -457,7 +457,12 @@ func New(cfg *config.Config) (*Server, error) {
 			return nil, fmt.Errorf("backend: lmtp acl global: %w", err)
 		}
 		lmtpOpts := lmtp.Options{
-			Hostname:             cfg.Protocol.Submission.Hostname,
+			// The installation's name, not submission's. It reached the LHLO
+			// banner, the Received header and the synthesised Message-ID
+			// through protocol.submission.hostname, which is a submission
+			// setting and is empty on a deployment that does not use it
+			// (#1506).
+			Hostname:             cfg.Hostname,
 			Config:               cfg.Protocol.LMTP,
 			Mailbox:              mbox,
 			Index:                idx,

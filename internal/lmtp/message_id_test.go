@@ -263,3 +263,35 @@ if header :contains "message-id" "@" { fileinto "seen"; }`)
 		t.Errorf("filed into %q, want seen; the script did not see a message-id, so the header reaches storage without ever reaching Sieve", got)
 	}
 }
+
+// One name in all three places delivery writes: the Message-ID, the Received
+// header and the LHLO banner take it from the same field, so a deployment
+// cannot answer with one name and stamp another.
+//
+// The banner is asserted through the same option the server reads, since
+// building a server here would test the wiring of a test.
+func TestOneHostnameNamesEveryHeaderDeliveryWrites(t *testing.T) {
+	const host = "mx.example.test"
+	s := &session{
+		from: "sender@elsewhere.invalid",
+		opts: Options{
+			Hostname: host,
+			Config: config.LMTPProtocolConfig{
+				AddMessageID: true, AddReceivedHeader: true, HdrDeliveryAddress: "none",
+			},
+		},
+	}
+	out := string(s.prependHeaders([]byte("From: a@x\r\nTo: b@y\r\n\r\nbody\r\n"), "b@y", "b@y"))
+
+	id := messageIDOf(t, []byte(out))
+	if !strings.HasSuffix(id, "@"+host+">") {
+		t.Errorf("Message-ID is %q, want it at %s", id, host)
+	}
+	if !strings.Contains(out, "by "+host+" with LMTP") {
+		t.Errorf("Received does not name %s:\n%s", host, out)
+	}
+	// The literal is what both used to carry, so it must not be anywhere.
+	if strings.Contains(out, "by yarilo with LMTP") || strings.Contains(id, "@yarilo>") {
+		t.Errorf("the literal fallback is still in the headers:\n%s", out)
+	}
+}

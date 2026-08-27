@@ -17,7 +17,18 @@ import (
 
 // Config is the top-level yarilo configuration.
 type Config struct {
-	Mode               string                       `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
+	Mode string `koanf:"mode"` // legacy single-binary; ignored by multi-process binaries
+	// Hostname is what this installation calls itself: the domain part of a
+	// synthesised Message-ID, the LHLO banner, the Received header.
+	//
+	// One key rather than one per consumer. There were four consumers and no
+	// source: the backend LMTP filled nothing, so the Message-ID came out at a
+	// literal, and a top-level `hostname` in values-sandbox.yaml was read by
+	// nothing at all (#1506).
+	//
+	// Default: os.Hostname(). A literal would be wrong on every deployment
+	// equally, which reads as a setting nobody has to think about.
+	Hostname           string                       `koanf:"hostname"`
 	General            GeneralConfig                `koanf:"general"`
 	Services           ServicesConfig               `koanf:"services"`
 	Protocol           ProtocolConfig               `koanf:"protocol"`
@@ -2484,7 +2495,8 @@ func Load(path string) (*Config, error) {
 	}
 	defaultTrustedNets := []string{"127.0.0.1/32", "10.0.0.0/8"}
 	cfg := &Config{
-		Mode: "single",
+		Mode:     "single",
+		Hostname: defaultHostname(),
 		General: GeneralConfig{
 			SSL: SSLConfig{SSLMinProtocol: "TLS1.2"},
 			HAProxy: HAProxyConfig{
@@ -3264,4 +3276,32 @@ func ValidateFTSIndexRoot(root string) error {
 		return fmt.Errorf("config: fts_index_root %q has no path after the driver", root)
 	}
 	return nil
+}
+
+// defaultHostname is what this host calls itself when nothing says otherwise.
+//
+// os.Hostname rather than a literal: a literal is wrong on every deployment
+// equally, which is how "yarilo" ended up in the domain part of message
+// identifiers that outlive the deployment (#1506). An empty result is left
+// empty for validate to refuse, rather than papered over here.
+func defaultHostname() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return h
+}
+
+// SubmissionHostname is the name submission announces: its own key when set,
+// otherwise the installation's.
+//
+// Resolved here rather than at each call site, because "when set" cannot be
+// read off the struct: a submission hostname of "" is indistinguishable from
+// an absent one once unmarshalled, and four call sites deciding that
+// separately is four chances to decide it differently.
+func (cfg *Config) SubmissionHostname() string {
+	if cfg.Protocol.Submission.Hostname != "" {
+		return cfg.Protocol.Submission.Hostname
+	}
+	return cfg.Hostname
 }
