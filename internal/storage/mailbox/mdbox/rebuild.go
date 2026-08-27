@@ -257,21 +257,28 @@ func scanMFileForAlt(path string) ([]physRecord, error) {
 			return nil, fmt.Errorf("malformed record @%d", pos)
 		}
 		bodyStart := pos + uint32(skip)
+		// By M, like every other reader: a store written elsewhere, or by a
+		// build from before #1522, announces its own header size, and a scan
+		// that assumed ours would misplace every body in the file.
+		hdrSize, herr := recordHeaderSize(f, window[:n], skip)
+		if herr != nil {
+			return nil, fmt.Errorf("header size @%d: %w", bodyStart, herr)
+		}
 		if _, err := f.Seek(int64(bodyStart), io.SeekStart); err != nil {
 			return nil, fmt.Errorf("seek msg header @%d: %w", bodyStart, err)
 		}
-		mh := make([]byte, messageHeaderSize)
+		mh := make([]byte, hdrSize)
 		if _, err := io.ReadFull(f, mh); err != nil {
 			return nil, fmt.Errorf("read msg header @%d: %w", bodyStart, err)
 		}
-		if mh[0] != magicPreByte0 || mh[1] != magicPreByte1 {
-			return nil, fmt.Errorf("bad magic @%d", bodyStart)
+		if herr := checkMessageHeader(mh); herr != nil {
+			return nil, fmt.Errorf("@%d: %w", bodyStart, herr)
 		}
 		size, err := strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
 		if err != nil {
 			return nil, fmt.Errorf("parse size @%d: %w", bodyStart, err)
 		}
-		bodyEnd := bodyStart + messageHeaderSize + uint32(size)
+		bodyEnd := bodyStart + uint32(hdrSize) + uint32(size)
 		if bodyEnd > total {
 			return nil, fmt.Errorf("body @%d exceeds file size", bodyStart)
 		}

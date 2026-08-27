@@ -459,11 +459,18 @@ func (u *userMailbox) Fetch(folder, filename string, _ bool) (io.ReadCloser, err
 		return nil, fmt.Errorf("sdbox/fetch: open %s: %w", path, err)
 	}
 	br := bufio.NewReader(f)
-	if _, err := br.ReadBytes('\n'); err != nil {
+	fileHdr, err := br.ReadBytes('\n')
+	if err != nil {
 		_ = f.Close()
 		return nil, corruptRead("read file header", path, err)
 	}
-	hdrBuf := make([]byte, messageHeaderSize)
+	// The header's size comes from M, not from what this binary writes.
+	hdrSize, err := parseFileHeaderSize(fileHdr)
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("sdbox/fetch %s: %w: %w", path, err, mailbox.ErrCorruptStorage)
+	}
+	hdrBuf := make([]byte, hdrSize)
 	if _, err := io.ReadFull(br, hdrBuf); err != nil {
 		_ = f.Close()
 		return nil, corruptRead("read message header", path, err)
@@ -744,10 +751,15 @@ func readMetadata(path string) ([16]byte, uint32, time.Time, error) {
 	}
 	defer f.Close()
 	br := bufio.NewReader(f)
-	if _, err := br.ReadBytes('\n'); err != nil {
+	fileHdr, err := br.ReadBytes('\n')
+	if err != nil {
 		return [16]byte{}, 0, time.Time{}, err
 	}
-	hdrBuf := make([]byte, messageHeaderSize)
+	hdrSize, err := parseFileHeaderSize(fileHdr)
+	if err != nil {
+		return [16]byte{}, 0, time.Time{}, err
+	}
+	hdrBuf := make([]byte, hdrSize)
 	if _, err := io.ReadFull(br, hdrBuf); err != nil {
 		return [16]byte{}, 0, time.Time{}, err
 	}
