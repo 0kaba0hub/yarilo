@@ -691,8 +691,9 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 	// Three parts with fixed boundaries, so the totals reconcile and the
 	// comparison with maildir says which step costs: lookup resolves the map
 	// entry (a freshness check included, when the map misses), open opens the
-	// packed file, body seeks to the record and reads it. In maildir the first
-	// two are one open by name and the third does not exist (#1205).
+	// packed file, record seeks to the record and reads its header. In maildir
+	// the first two are one open by name and the third does not exist (#1205).
+	// The body itself is streamed to the caller and is not timed here (#1517).
 	lookupStart := time.Now()
 	entry, ok, err := m.Lookup(mapUID)
 	mdboxmap.ObserveReadPart("lookup", time.Since(lookupStart))
@@ -725,9 +726,9 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 		f, ferr := os.Open(alt)
 		mdboxmap.ObserveReadPart("open", time.Since(openStart))
 		if ferr == nil {
-			bodyStart := time.Now()
+			recordStart := time.Now()
 			rc, berr := openRecordBody(f, entry.Offset)
-			mdboxmap.ObserveReadPart("body", time.Since(bodyStart))
+			mdboxmap.ObserveReadPart("record", time.Since(recordStart))
 			if berr == nil {
 				return rc, nil
 			}
@@ -754,9 +755,9 @@ func (u *userMailbox) Fetch(_, filename string, altTier bool) (io.ReadCloser, er
 		}
 	}
 	mdboxmap.ObserveReadPart("open", time.Since(openStart))
-	bodyStart := time.Now()
+	recordStart := time.Now()
 	rc, err := openRecordBody(f, entry.Offset)
-	mdboxmap.ObserveReadPart("body", time.Since(bodyStart))
+	mdboxmap.ObserveReadPart("record", time.Since(recordStart))
 	if err != nil {
 		_ = f.Close()
 		return nil, corruptFetchErr(entry.FileID, err)

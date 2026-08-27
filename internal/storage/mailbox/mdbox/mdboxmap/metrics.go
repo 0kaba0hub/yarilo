@@ -132,9 +132,17 @@ var (
 	// One Fetch can record "open" twice: a message flagged as living on the
 	// alt tier is opened there first and falls back to the primary when that
 	// fails. The sample count is therefore not the number of reads.
+	//
+	// "record" was called "body" until Fetch stopped reading the body into
+	// memory (#1517). It timed io.ReadFull of the whole message then and it
+	// times positioning on the record now -- reading its header and bounding
+	// the body -- so the old name would have kept a series whose meaning had
+	// changed underneath it. The body's own transfer is no longer timed here
+	// at all: the caller reads as much of it as it wants, and how far that
+	// goes is the caller's business.
 	metricReadPart = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "mdbox_read_part_seconds",
-		Help:    "Time in one part of serving a message body: lookup, open or body.",
+		Help:    "Time in one part of serving a message body: lookup, open or record.",
 		Buckets: prometheus.ExponentialBuckets(0.00001, 4, 11),
 	}, []string{"part"})
 )
