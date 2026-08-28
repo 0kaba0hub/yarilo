@@ -2668,7 +2668,10 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		// read. A body criterion cannot match what was never read, so without
 		// this an unreadable mailbox and an empty one answer identically
 		// (#1283).
-		unreadable  []uint32
+		unreadable []uint32
+		// byReason splits those between a message that is gone and one that is
+		// there and unreadable: only the second says the store is damaged.
+		byReason    = map[string]int{}
 		lastReadErr error
 	)
 	for i, m := range msgs {
@@ -2688,6 +2691,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 		matched, _, readErr := s.matchMessage(seqNum, m, matchCrit, needRaw)
 		if readErr != nil {
 			unreadable = append(unreadable, m.UID)
+			byReason[unreadableReason(readErr)]++
 			lastReadErr = readErr
 			continue
 		}
@@ -2729,7 +2733,9 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 	// a line per record. WARN because the answer the client is about to get is
 	// incomplete and nothing else says so.
 	if len(unreadable) > 0 {
-		metricUnreadable.WithLabelValues("search").Add(float64(len(unreadable)))
+		for reason, n := range byReason {
+			metricUnreadable.WithLabelValues("search", reason).Add(float64(n))
+		}
 		slog.Warn("imap: search could not read some messages; the result is incomplete",
 			"user", s.userInfo.Username,
 			"folder", s.folder.Name,
@@ -3002,7 +3008,16 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		// than per attribute: one message the server answered short is one
 		// event, whether it lost the envelope, the structure, or the body.
 		var unreadable []string
-		mark := func(what string) { unreadable = append(unreadable, what) }
+		// The reason is the worst one seen: an attribute that could not be read
+		// from a file that is there says more than one lost because the message
+		// had been expunged, and a message that produced both is the first.
+		reason := ""
+		mark := func(what string, err error) {
+			unreadable = append(unreadable, what)
+			if r := unreadableReason(err); reason == "" || r == reasonUnreadable {
+				reason = r
+			}
+		}
 		// Implicit \Seen: update index before writing FLAGS so the response
 		// carries the new flag set (whether or not the client asked for FLAGS).
 		seenJustSet := false
@@ -3046,7 +3061,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 					// The size still goes out, from the index. It is the one
 					// attribute here that has a second source, which is why
 					// this is the quietest way to answer wrongly.
-					mark("rfc822.size")
+					mark("rfc822.size", ferr)
 				}
 			}
 			mw.WriteRFC822Size(int64(size))
@@ -3074,7 +3089,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 				mw.WriteEnvelope(env)
 				envCache.StoreEnvelope(m, env)
 			} else {
-				mark("envelope")
+				mark("envelope", ferr)
 			}
 		}
 		if opts.BodyStructure != nil && m.Filename != "" {
@@ -3086,7 +3101,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 				mw.WriteBodyStructure(bs)
 				envCache.StoreBodyStructure(m, bs)
 			} else {
-				mark("bodystructure")
+				mark("bodystructure", ferr)
 			}
 		}
 		for _, section := range opts.BodySection {
@@ -3113,7 +3128,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 						"err", ferr,
 					)
 				}
-				mark("body[" + string(section.Specifier) + "]")
+				mark("body["+string(section.Specifier)+"]", ferr)
 				break
 			}
 			extracted := imapserver.ExtractBodySection(rc, section)
@@ -3126,7 +3141,9 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 				// lets us put here, so the reason goes to the log rather than
 				// nowhere -- a client seeing {0} has no way to tell "empty"
 				// from "we could not".
-				mark("body[" + string(section.Specifier) + "]")
+				// The file read fine and the section could not be produced,
+				// so this is never the expunge race.
+				mark("body["+string(section.Specifier)+"]", nil)
 				extracted = []byte{}
 			}
 			if slog.Default().Enabled(context.Background(), slog.LevelDebug) &&
@@ -3163,7 +3180,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			}
 			rc, ferr := s.fetchSelected(m)
 			if ferr != nil {
-				mark("binary[]")
+				mark("binary[]", ferr)
 				break
 			}
 			body, _ := io.ReadAll(rc)
@@ -3190,10 +3207,11 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			mw.WriteBinarySectionSize(section, uint32(len(decoded)))
 		}
 		if len(unreadable) > 0 {
-			metricUnreadable.WithLabelValues("fetch").Inc()
+			metricUnreadable.WithLabelValues("fetch", reason).Inc()
 			slog.Warn("imap: fetch answered without attributes it could not read",
 				"user", s.userInfo.Username, "folder", s.folder.Name,
-				"uid", m.UID, "file", m.Filename, "missing", strings.Join(unreadable, ","))
+				"uid", m.UID, "file", m.Filename, "reason", reason,
+				"missing", strings.Join(unreadable, ","))
 		}
 		mw.Close() //nolint:errcheck
 	}
