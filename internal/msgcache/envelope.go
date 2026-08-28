@@ -408,24 +408,46 @@ func (fc *Handle) flush() {
 		return
 	}
 	r := fc.reopen
-	indexID, resetID, ok, err := r.ic.CachePairIdentity(r.fid)
-	if err != nil || !ok || indexID != r.indexID || resetID != r.resetID {
-		slog.Debug("msgcache: cache generation moved while the response was written; dropping cached fields",
-			"trace_id", r.opts.TraceID, "pending", len(fc.pending))
-		return
-	}
-
 	second := Open(r.idx, r.fid, Options{
 		Locker: r.opts.Locker, User: r.opts.User, Folder: r.opts.Folder, TraceID: r.opts.TraceID,
 	})
 	if second == nil {
 		return
 	}
-	// The fields were resolved against the first window's file; the second one
-	// resolves its own, and they can differ only if the pair was recreated,
-	// which the identity check above already refused.
+	// Checked here and not before opening: the identity read outside the lock
+	// is stale the moment it is read, and a bump landing between that read and
+	// this Open would put these records into a generation they were not
+	// computed against. second read its own identity while holding both locks,
+	// so this comparison is the one that decides.
+	if second.reopen.indexID != r.indexID || second.reopen.resetID != r.resetID {
+		slog.Debug("msgcache: cache generation moved while the response was written; dropping cached fields",
+			"trace_id", r.opts.TraceID, "pending", len(fc.pending))
+		second.Close()
+		return
+	}
+
+	// Chain heads are re-read, not carried over. Between the two windows
+	// another session may have appended a record for one of these UIDs and
+	// stamped a new head; chaining from the offset this request saw would hop
+	// over that record and leave it unreachable. Losing a cached field is only
+	// a re-parse, but it is exactly the "tolerate what somebody else wrote"
+	// that splitting the window promised (#1545).
+	heads := map[uint32]uint32{}
+	if msgs, merr := r.idx.GetMessages(r.fid, mailbox.SeqSet{}); merr == nil {
+		for _, m := range msgs {
+			heads[m.UID] = m.CacheOffset
+		}
+	} else {
+		slog.Debug("msgcache: could not re-read chain heads; dropping cached fields",
+			"trace_id", r.opts.TraceID, "err", merr)
+		second.Close()
+		return
+	}
 	for _, p := range fc.pending {
 		meta := p.meta
+		if off, ok := heads[meta.UID]; ok {
+			meta.CacheOffset = off
+		}
 		second.storeField(&meta, p.fieldID, p.data)
 	}
 	second.Close()

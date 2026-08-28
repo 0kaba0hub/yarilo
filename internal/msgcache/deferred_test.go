@@ -134,3 +134,55 @@ func TestADeferredHandleDropsItsWritesWhenTheGenerationMoved(t *testing.T) {
 		t.Errorf("a record written against the old generation was kept: %q", env.Subject)
 	}
 }
+
+// A record another session wrote between the two windows is not hopped over.
+//
+// The deferred handle carries the chain head it saw when the request started.
+// If another session appends for the same UID and stamps a new head in the
+// meantime, chaining from the old offset writes a record whose next pointer
+// skips theirs, and theirs becomes unreachable -- a silent cache loss, and the
+// exact thing splitting the window has to tolerate rather than cause.
+//
+// Two different fields on one message, so the assertion is which of them
+// survive: the second window's own value is trivially there, and the other
+// one is what the chain either keeps or loses.
+func TestADeferredHandleDoesNotHopOverAnotherSessionsRecord(t *testing.T) {
+	idx, fid, m := newFolder(t)
+
+	first := Open(idx, fid, Options{DeferWrites: true})
+	if first == nil {
+		t.Fatal("no cache handle")
+	}
+	first.StoreEnvelope(m, &imaplib.Envelope{Subject: "mine"})
+
+	// Another session, in the gap: same message, a different field.
+	other := Open(idx, fid, Options{})
+	if other == nil {
+		t.Fatal("no second handle")
+	}
+	msgs, err := idx.GetMessages(fid, mailbox.SeqSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.StoreReferences(msgs[0], []string{"<ref@example.com>"})
+	other.Close()
+
+	first.Close()
+
+	msgs, err = idx.GetMessages(fid, mailbox.SeqSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	back := Open(idx, fid, Options{})
+	if back == nil {
+		t.Fatal("no handle for the read")
+	}
+	defer back.Close()
+
+	if env := back.Envelope(msgs[0]); env == nil || env.Subject != "mine" {
+		t.Errorf("the deferred handle's own field is missing: %+v", env)
+	}
+	if refs, ok := back.References(msgs[0]); !ok || len(refs) != 1 {
+		t.Errorf("the other session's record was hopped over and is unreachable: refs=%v ok=%v", refs, ok)
+	}
+}
