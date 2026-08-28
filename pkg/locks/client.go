@@ -569,7 +569,7 @@ func Acquire(ctx context.Context, l Locker, resource, owner string, ttl time.Dur
 		if !errors.Is(err, ErrBusy) {
 			return Lock{}, err
 		}
-		clientBusyRetries.Inc()
+		clientBusyRetries.WithLabelValues(resourceClass(resource)).Inc()
 		// Jitter by ±25% so concurrent retriers do not synchronise.
 		jitter := time.Duration(int64(backoff) / 4)
 		wait := backoff - jitter + time.Duration(time.Now().UnixNano()%int64(2*jitter+1))
@@ -601,7 +601,7 @@ func AcquireShared(ctx context.Context, l Locker, resource, owner string, ttl ti
 		if !errors.Is(err, ErrBusy) {
 			return Lock{}, err
 		}
-		clientBusyRetries.Inc()
+		clientBusyRetries.WithLabelValues(resourceClass(resource)).Inc()
 		jitter := time.Duration(int64(backoff) / 4)
 		wait := backoff - jitter + time.Duration(time.Now().UnixNano()%int64(2*jitter+1))
 		select {
