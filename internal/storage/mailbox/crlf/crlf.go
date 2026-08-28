@@ -73,8 +73,10 @@ func (c *Reader) Read(p []byte) (int, error) {
 	out, used := c.convert(p, held)
 	if used < len(held) {
 		c.held = held[used:]
-		// The read error, if any, is not lost: it surfaces once everything
-		// held has been handed out and the next Read reaches the source again.
+		// The read error is dropped here and rediscovered on the next read of
+		// the source, which assumes the source repeats it. io.SectionReader and
+		// bytes.Reader do, and they are what both drivers hand us. A source
+		// that reported io.EOF once and then blocked would hang here.
 		return out, nil
 	}
 	return out, err
