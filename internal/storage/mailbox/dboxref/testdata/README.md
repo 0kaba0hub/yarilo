@@ -50,9 +50,18 @@ Two things the reference settled that we had guessed at:
 ## Direction two: our bytes against these
 
 There is no reference process reading our files in these tests. What is
-checked instead is that a record we write is byte-for-byte the same as one of
-these, apart from the fields that cannot match — the GUID, the received stamp,
-and the create stamp in the file-header line.
+checked instead is that a record we write agrees with one of these — but not
+uniformly, because only part of a record is positional.
+
+The file-header line and the message header are compared **byte for byte**,
+apart from the create stamp: every byte of them has a fixed place, and they are
+what the other implementation reads before it appends.
+
+The trailer is compared as **the same set of keys and the same values**, not as
+bytes. It is keyed lines, and the two do not write them in the same order —
+`R`, `V`, `G`, `B` there against `G`, `R`, `V`, `B` here. Comparing the bytes
+would assert an order the format does not require and that our writer does not
+produce.
 
 That is a proxy, and it is worth naming as one. It says the reference will
 parse our record by construction, because our record *is* its record; it does
