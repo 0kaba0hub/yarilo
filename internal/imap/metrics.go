@@ -1,6 +1,9 @@
 package imap
 
 import (
+	"errors"
+	"io/fs"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -81,5 +84,34 @@ var (
 // at zero through both of them.
 var metricUnreadable = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "imap_unreadable_messages_total",
-	Help: "Messages a command could not read, and therefore silently left out of its answer.",
-}, []string{"command"})
+	Help: "Messages a command could not read, and therefore silently left out of its answer. reason=unreadable is a message that is there and could not be read; reason=gone is one the index lists and the store does not.",
+}, []string{"command", "reason"})
+
+// Reasons a message could not be read, kept apart because only one of them
+// means something is wrong with the stored mail.
+//
+// reasonGone: the file is not there. One connection expunging while another
+// reads from an index snapshot taken before it produces exactly this, and a
+// clean gate produced 239 of them (#1538). Counted rather than dropped -- the
+// same shape is also index/store divergence, and the rate says which -- but it
+// cannot share a series with the other one, or an alert fires on ordinary
+// traffic and gets switched off.
+//
+// reasonUnreadable: the file is there and could not be served. This is the one
+// that matters, and the one that counted nothing during #1525.
+const (
+	reasonGone       = "gone"
+	reasonUnreadable = "unreadable"
+)
+
+// unreadableReason classifies a driver read error.
+//
+// Drivers wrap a vanished file in their own corruption sentinel on purpose --
+// an index that still references it has diverged from the store -- so this
+// looks underneath for the original fs.ErrNotExist rather than at the sentinel.
+func unreadableReason(err error) string {
+	if errors.Is(err, fs.ErrNotExist) {
+		return reasonGone
+	}
+	return reasonUnreadable
+}

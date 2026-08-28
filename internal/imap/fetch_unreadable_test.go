@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // A message the driver cannot read is answered as an empty FETCH, and that has
@@ -127,5 +129,119 @@ func appendRawMessage(t *testing.T, rc *rawConn, body string) {
 		if strings.HasPrefix(rc.readLine(), tag+" ") {
 			return
 		}
+	}
+}
+
+// unreadableByReason reads one command's count for one reason. Summing the
+// reasons would defeat the point of splitting them.
+func unreadableByReason(t *testing.T, command, reason string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "imap_unreadable_messages_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			var gotCmd, gotReason string
+			for _, l := range m.GetLabel() {
+				switch l.GetName() {
+				case "command":
+					gotCmd = l.GetValue()
+				case "reason":
+					gotReason = l.GetValue()
+				}
+			}
+			if gotCmd == command && gotReason == reason {
+				return m.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
+// The two reasons are told apart by what is on disk, and this is the pair that
+// makes the counter usable.
+//
+// A message removed while a client fetches it is ordinary: one connection
+// expunges, another is working from an index snapshot taken before that, and a
+// clean gate produced 239 of them. A message that is still there and cannot be
+// read is the fault the counter exists for -- and before this split an alert on
+// the counter fired on both, which is an alert that gets switched off (#1538).
+//
+// Both rows drive the same code down to the last step. The only difference is
+// whether the file is gone or merely unreadable, which is exactly the
+// distinction under test.
+func TestTheTwoReasonsAreToldApart(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		damage func(t *testing.T, path string)
+		reason string
+		other  string
+	}{
+		{
+			name:   "the message was removed while it was being fetched",
+			damage: func(t *testing.T, path string) { mustRemove(t, path) },
+			reason: "gone",
+			other:  "unreadable",
+		},
+		{
+			name: "the message is there and cannot be read",
+			damage: func(t *testing.T, path string) {
+				if err := os.Chmod(path, 0); err != nil {
+					t.Fatal(err)
+				}
+			},
+			reason: "unreadable",
+			other:  "gone",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, addr := startEnvelopeCacheServer(t)
+			c := dialRaw(t, addr)
+			c.login()
+			appendEnvelopeMsg(t, c)
+			c.cmd(`SELECT INBOX`)
+			tc.damage(t, storedMessagePath(t, root))
+
+			before := unreadableByReason(t, "fetch", tc.reason)
+			beforeOther := unreadableByReason(t, "fetch", tc.other)
+			out := c.cmd(`FETCH 1 (ENVELOPE BODY.PEEK[TEXT])`)
+			if strings.Contains(out, "alice") {
+				t.Fatalf("the message was readable, so this proves nothing:\n%s", out)
+			}
+
+			if got := unreadableByReason(t, "fetch", tc.reason) - before; got != 1 {
+				t.Errorf("counted %v under reason=%s, want 1", got, tc.reason)
+			}
+			if got := unreadableByReason(t, "fetch", tc.other) - beforeOther; got != 0 {
+				t.Errorf("counted %v under reason=%s, which is the other thing entirely", got, tc.other)
+			}
+		})
+	}
+}
+
+func storedMessagePath(t *testing.T, root string) string {
+	t.Helper()
+	var found string
+	_ = filepath.Walk(root, func(p string, info os.FileInfo, _ error) error {
+		if info != nil && !info.IsDir() &&
+			(strings.Contains(p, "/cur/") || strings.Contains(p, "/new/")) {
+			found = p
+		}
+		return nil
+	})
+	if found == "" {
+		t.Fatal("message file not found on disk")
+	}
+	return found
+}
+
+func mustRemove(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
 	}
 }

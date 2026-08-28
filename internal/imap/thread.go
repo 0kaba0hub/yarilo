@@ -108,8 +108,12 @@ func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.Sea
 	needsBody := searchCriteriaHasBody(criteria)
 
 	var (
-		unreadable  []uint32
-		detached    []uint32
+		unreadable []uint32
+		detached   []uint32
+		// byReason splits both lists between a message that is gone and one
+		// that is there and unreadable: only the second says the store is
+		// damaged.
+		byReason    = map[string]int{}
 		lastReadErr error
 	)
 	// One handle per command, as FETCH opens one: misses are parsed and
@@ -137,6 +141,7 @@ func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.Sea
 		if readErr != nil {
 			// Excluded, not silently matched: see matchMessage (#1283).
 			unreadable = append(unreadable, m.UID)
+			byReason[unreadableReason(readErr)]++
 			lastReadErr = readErr
 			continue
 		}
@@ -158,6 +163,7 @@ func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.Sea
 			// it loses is everything the ordering is based on -- ancestry for
 			// THREAD, subject and addresses for SORT -- hence the count.
 			detached = append(detached, m.UID)
+			byReason[unreadableReason(headerErr)]++
 			lastReadErr = headerErr
 		}
 		out = append(out, one)
@@ -167,7 +173,9 @@ func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.Sea
 	// message, and at WARN because the answer the client is about to receive
 	// is wrong about those messages and nothing in it says so.
 	if len(unreadable) > 0 || len(detached) > 0 {
-		metricUnreadable.WithLabelValues(command).Add(float64(len(unreadable) + len(detached)))
+		for reason, n := range byReason {
+			metricUnreadable.WithLabelValues(command, reason).Add(float64(n))
+		}
 		example := append(append([]uint32(nil), unreadable...), detached...)[0]
 		slog.Warn("imap: could not read some messages; the answer is wrong about them",
 			"command", command,
