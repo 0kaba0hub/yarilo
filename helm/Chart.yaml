@@ -6,6 +6,10 @@ type: application
 version: 2.3.266
 appVersion: "2.3.266"
 
+# Release status of the line this chart deploys. beta until the 2.4.1 cut.
+annotations:
+  yarilo.mail/status: beta
+
 keywords:
   - imap
   - submission

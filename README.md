@@ -14,7 +14,7 @@ Multi-binary architecture — each protocol component is a separate process. Kub
      out one per row while Safari kept them inline, from the same GitHub-rendered
      HTML; as a top-level paragraph they get the full README width and both
      browsers agree. Keep them here, on one line. -->
-[![CI](https://github.com/yarilomail/yarilo/actions/workflows/ci.yml/badge.svg)](https://github.com/yarilomail/yarilo/actions/workflows/ci.yml) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![Platform](https://img.shields.io/badge/platform-linux%2Famd64-blue)](https://github.com/yarilomail/yarilo) [![License: AGPL v3](https://img.shields.io/badge/license-AGPLv3-blue.svg)](LICENSE) ![Status: stable](https://img.shields.io/badge/status-stable-brightgreen)
+[![CI](https://github.com/yarilomail/yarilo/actions/workflows/ci.yml/badge.svg)](https://github.com/yarilomail/yarilo/actions/workflows/ci.yml) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![Platform](https://img.shields.io/badge/platform-linux%2Famd64-blue)](https://github.com/yarilomail/yarilo) [![License: AGPL v3](https://img.shields.io/badge/license-AGPLv3-blue.svg)](LICENSE) ![Status: beta](https://img.shields.io/badge/status-beta-orange)
 
 ---
 
