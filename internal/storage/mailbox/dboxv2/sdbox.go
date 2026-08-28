@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/yarilomail/yarilo/internal/storage/idxrebuild"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/crlf"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
 	"github.com/yarilomail/yarilo/internal/storage/mailboxmetrics"
 	"github.com/yarilomail/yarilo/pkg/locks"
@@ -487,7 +488,10 @@ func (u *userMailbox) Fetch(folder, filename string, _ bool) (io.ReadCloser, err
 		return nil, corruptRead("read body", path, err)
 	}
 	_ = f.Close()
-	return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+	// Through crlf.New: a record this server wrote is already CRLF and comes
+	// out unchanged, while one written by another implementation can be stored
+	// with bare LF and must not reach the wire that way (#1527).
+	return io.NopCloser(crlf.New(bytes.NewReader(bodyBytes))), nil
 }
 
 // corruptRead classifies a read error: a truncated file (EOF / unexpected EOF)

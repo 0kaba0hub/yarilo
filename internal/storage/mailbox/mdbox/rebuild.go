@@ -24,6 +24,10 @@ type parsedTrailer struct {
 	guid         [16]byte
 	internalDate time.Time
 	origMailbox  string
+	// vsize is V: the size the message occupies once every line ends CRLF.
+	// Zero when the trailer carries no V, which a record this server wrote
+	// always does.
+	vsize uint32
 }
 
 // scanTrailer reads a dbox v2 metadata trailer at the current reader position.
@@ -68,6 +72,10 @@ func scanTrailer(r io.Reader, limit uint32) (uint32, parsedTrailer, error) {
 		case 'R':
 			if v, derr := strconv.ParseUint(val, 16, 32); derr == nil {
 				out.internalDate = time.Unix(int64(v), 0).UTC()
+			}
+		case 'V':
+			if v, derr := strconv.ParseUint(val, 16, 32); derr == nil {
+				out.vsize = uint32(v)
 			}
 		case metaOrigMailbox:
 			// Verbatim, not space-trimmed: a folder name may contain spaces.
@@ -396,7 +404,12 @@ func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
 		}
 		rec := scanRecord{
 			scan: mailbox.ScanRecord{
-				Size:  uint32(size),
+				Size: uint32(size),
+				// VSize is filled from the trailer's V below, once it is
+				// parsed. The header size is physical, and the two differ for
+				// a record another implementation wrote with bare LF -- which
+				// Fetch now serves as CRLF, so reporting the physical size
+				// would promise fewer octets than go out (#1527).
 				VSize: uint32(size),
 			},
 			physicalOffset: pos,
@@ -413,6 +426,9 @@ func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
 		rec.scan.GUID = parsed.guid
 		rec.scan.InternalDate = parsed.internalDate
 		rec.scan.OrigMailbox = parsed.origMailbox
+		if parsed.vsize > 0 {
+			rec.scan.VSize = parsed.vsize
+		}
 		out = append(out, rec)
 		pos = bodyEnd + trailerEnd
 	}

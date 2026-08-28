@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/crlf"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
 	"github.com/yarilomail/yarilo/internal/storage/mailboxmetrics"
@@ -825,14 +826,23 @@ func openRecordBody(f *os.File, offset uint32) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("read body: %w", io.ErrUnexpectedEOF)
 	}
 	return &sectionCloser{
-		SectionReader: io.NewSectionReader(f, bodyOff, int64(size)),
-		f:             f,
+		Reader: crlf.New(io.NewSectionReader(f, bodyOff, int64(size))),
+		f:      f,
 	}, nil
 }
 
 // sectionCloser closes the file the section was cut from.
+//
+// The body goes out through crlf.New, which terminates every line with CRLF as
+// the bytes are copied. A record this server wrote is already CRLF and passes
+// through unchanged; one written by another implementation can be stored with
+// bare LF, and serving those bytes as they lie puts bare LF on the wire (#1527).
+//
+// Wrapping rather than choosing: deciding per record would mean reading the
+// trailer to compare V against the physical size, which is a second read on the
+// path #1517 exists to keep to one.
 type sectionCloser struct {
-	*io.SectionReader
+	io.Reader
 	f *os.File
 }
 
