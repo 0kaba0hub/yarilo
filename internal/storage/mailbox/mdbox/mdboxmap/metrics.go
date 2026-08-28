@@ -31,11 +31,20 @@ func (m *Map) observePart(part string, d time.Duration) {
 // them they separate queueing for the lock service from work done under the
 // lock, and the cost of writing from the slowing of reads.
 var (
-	// Waiting for the cross-process lock, and holding it, counted apart: the
-	// first is somebody else's write, the second is our own work.
-	metricMapLockWait = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "mdbox_map_lock_wait_seconds",
-		Help:    "Time one map operation waited for the cross-process map lock.",
+	// Acquiring the cross-process lock, and holding it, counted apart. The
+	// first is a round trip to the lock service; the second is our own work
+	// under the lock.
+	//
+	// Named for the round trip and not for waiting, because that is what it
+	// times: the call is made, and paid for, when nothing holds the lock at
+	// all. It was called a wait for three releases and was read as contention
+	// every time -- 59-80x the hold, in every window ever measured, with the
+	// summed holds of every process that takes this lock accounting for 2.5%
+	// of it. Roughly 7 ms of the 8.8 is transport and scheduling; the lock
+	// service answers in 1.5 (#1533).
+	metricMapLockAcquire = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "mdbox_map_lock_acquire_seconds",
+		Help:    "Round trip to acquire the cross-process map lock, including any retries. Paid on every acquisition, contended or not.",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 10), // 100us .. ~26s
 	})
 	metricMapLockHold = promauto.NewHistogram(prometheus.HistogramOpts{
