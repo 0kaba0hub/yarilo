@@ -2979,6 +2979,12 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			User:    s.userInfo.Username,
 			Folder:  s.folder.Name,
 			TraceID: s.sid,
+			// The response below reads bodies from storage and writes them to
+			// a socket. Holding the cache locks across that made one client on
+			// a slow link block every other session of the same user on this
+			// folder (#1545). Deferred, they are held to read the file and
+			// again to write what was parsed, and not in between.
+			DeferWrites: true,
 		})
 		defer envCache.Close()
 	}

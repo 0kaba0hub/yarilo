@@ -223,6 +223,30 @@ type Handle struct {
 	// writer has since extended -- a fully valid-looking record for a
 	// DIFFERENT message, which no invalidation level can see.
 	unlock []func()
+
+	// Deferred mode: what the request parsed, kept until Close can take the
+	// locks again. Order matters -- two fields for one message chain, so they
+	// must be appended in the order they were produced.
+	deferred bool
+	pending  []pendingField
+	// reopen carries what the second window needs to prove it is looking at
+	// the same cache generation the first one read.
+	reopen struct {
+		idx     mailbox.UserIndex
+		ic      Index
+		fid     uint64
+		opts    Options
+		path    string
+		indexID uint32
+		resetID uint32
+	}
+}
+
+// pendingField is one field value a deferred handle has not written yet.
+type pendingField struct {
+	meta    mailbox.MessageMeta
+	fieldID uint32
+	data    []byte
 }
 
 // openFolderCache opens (or lazily creates) the folder's cache pair. Any
@@ -235,6 +259,17 @@ type Options struct {
 	User    string
 	Folder  string
 	TraceID string
+	// DeferWrites releases the cache locks as soon as the file has been read
+	// into memory, and takes them again in Close to append what the request
+	// parsed.
+	//
+	// For a caller that writes its response while holding the handle. FETCH
+	// does: it opened the pair, then read bodies from storage and wrote them
+	// to a socket, all inside the locked window, so one client on a slow link
+	// held both tiers -- the in-process path mutex and the cross-process
+	// mailbox lock -- for as long as its transfer took. Every other session of
+	// that user on that folder waited (#1545).
+	DeferWrites bool
 }
 
 // Open returns a handle on the folder's cache, or nil when none can be
@@ -341,7 +376,59 @@ func Open(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle {
 		}
 		*want.dst = id
 	}
+	fc.reopen.idx, fc.reopen.ic = idx, ic
+	fc.reopen.fid, fc.reopen.opts = folderID, opts
+	fc.reopen.path, fc.reopen.indexID, fc.reopen.resetID = path, indexID, resetID
+	if opts.DeferWrites {
+		// Reads come from memory from here on, so the locks are not protecting
+		// anything the caller still does. What they do protect -- appending
+		// under a second descriptor, and remove-and-recreate -- happens in
+		// Close, under a fresh window.
+		//
+		// A snapshot going stale is a cache miss and nothing worse: another
+		// session's append is simply not in it, and the message is re-parsed.
+		fc.file.Preload()
+		fc.deferred = true
+		fc.release()
+	}
 	return fc
+}
+
+// flush writes what a deferred handle collected, under a second window.
+//
+// The generation is re-checked rather than assumed. Between the two windows
+// another session may have found the file invalid and bumped it, and appending
+// into a new generation at offsets computed against the old one would stamp the
+// index at positions where some other message's record will land -- a valid
+// record for the wrong message, which is the one failure no invalidation level
+// can see. A changed generation drops the writes: they are derived data, and
+// the next read re-parses.
+func (fc *Handle) flush() {
+	if len(fc.pending) == 0 {
+		return
+	}
+	r := fc.reopen
+	indexID, resetID, ok, err := r.ic.CachePairIdentity(r.fid)
+	if err != nil || !ok || indexID != r.indexID || resetID != r.resetID {
+		slog.Debug("msgcache: cache generation moved while the response was written; dropping cached fields",
+			"trace_id", r.opts.TraceID, "pending", len(fc.pending))
+		return
+	}
+
+	second := Open(r.idx, r.fid, Options{
+		Locker: r.opts.Locker, User: r.opts.User, Folder: r.opts.Folder, TraceID: r.opts.TraceID,
+	})
+	if second == nil {
+		return
+	}
+	// The fields were resolved against the first window's file; the second one
+	// resolves its own, and they can differ only if the pair was recreated,
+	// which the identity check above already refused.
+	for _, p := range fc.pending {
+		meta := p.meta
+		second.storeField(&meta, p.fieldID, p.data)
+	}
+	second.Close()
 }
 
 // head is the message's current chain head: the offset stamped earlier in
@@ -377,6 +464,13 @@ func (fc *Handle) read(m *mailbox.MessageMeta) map[uint32][]byte {
 // storeField appends one field value for a message and moves the chain head.
 func (fc *Handle) storeField(m *mailbox.MessageMeta, fieldID uint32, data []byte) {
 	if fc == nil {
+		return
+	}
+	if fc.deferred {
+		// Copied: the caller's buffer belongs to the response being written.
+		buf := make([]byte, len(data))
+		copy(buf, data)
+		fc.pending = append(fc.pending, pendingField{meta: *m, fieldID: fieldID, data: buf})
 		return
 	}
 	off, err := fc.file.AppendRecord(fc.head(m), []mailindex.CacheFieldValue{
@@ -522,6 +616,16 @@ func (fc *Handle) StoreBodyStructure(m *mailbox.MessageMeta, bs imaplib.BodyStru
 // only then drops the locks: the stamp is part of the guarded window.
 func (fc *Handle) Close() {
 	if fc == nil {
+		return
+	}
+	if fc.deferred {
+		if fc.file != nil {
+			if err := fc.file.Close(); err != nil {
+				slog.Debug("msgcache: cache close failed", "err", err)
+			}
+			fc.file = nil
+		}
+		fc.flush()
 		return
 	}
 	if len(fc.stamps) > 0 {
