@@ -488,7 +488,7 @@ func (m *Map) withMapLock(fn func() error) error {
 	defer cancel()
 	start := time.Now()
 	lk, err := locks.Acquire(ctx, m.locker, key, m.owner, 30*time.Second)
-	metricMapLockWait.Observe(time.Since(start).Seconds())
+	metricMapLockAcquire.Observe(time.Since(start).Seconds())
 	if err != nil {
 		return fmt.Errorf("mdboxmap/lock: %w", err)
 	}

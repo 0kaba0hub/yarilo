@@ -62,6 +62,38 @@ func (l *slowLocker) IncrementCounter(context.Context, string, int64) (int64, er
 }
 func (l *slowLocker) Close() error { return nil }
 
+// The acquisition round trip is paid when nothing holds the lock.
+//
+// This is the property the old name hid. `mdbox_map_lock_wait_seconds` read as
+// time spent behind another holder, so a ratio of 59-80x against the hold read
+// as contention -- three times, in three separate investigations. There is no
+// other holder anywhere in this test: one map, one goroutine, one append. The
+// histogram is observed all the same, because what it times is the call to the
+// lock service (#1533).
+func TestTheAcquisitionIsPaidWithNoOtherHolder(t *testing.T) {
+	const delay = 60 * time.Millisecond
+	dir := t.TempDir()
+	m, err := Open(dir, "alice@example.com", WithLocker(&slowLocker{delay: delay}), WithOwner("test"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	before, countBefore := histSum(t, metricMapLockAcquire)
+	if _, err := m.AppendRecord(1, 0, 10, [16]byte{1}); err != nil {
+		t.Fatalf("AppendRecord: %v", err)
+	}
+	got, count := histSum(t, metricMapLockAcquire)
+
+	if count != countBefore+1 {
+		t.Fatalf("an uncontended append produced %d acquisitions, want 1 -- if it produced none, the histogram is a contention counter and the name is right after all",
+			count-countBefore)
+	}
+	if d := got - before; d < delay.Seconds() {
+		t.Errorf("recorded %.3fs for a round trip that took %v, with nobody else holding the lock", d, delay)
+	}
+}
+
 // Waiting for the lock service and working under the lock are different
 // findings, so they must not land in one number: an optimisation aimed at the
 // wrong one is what an undivided measurement buys.
@@ -74,14 +106,14 @@ func TestLockWaitAndHoldAreCountedApart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = m.Close() })
 
-	waitBefore, waitCountBefore := histSum(t, metricMapLockWait)
+	waitBefore, waitCountBefore := histSum(t, metricMapLockAcquire)
 	holdBefore, holdCountBefore := histSum(t, metricMapLockHold)
 
 	if _, err := m.AppendRecord(1, 0, 10, [16]byte{1}); err != nil {
 		t.Fatalf("AppendRecord: %v", err)
 	}
 
-	wait, waitCount := histSum(t, metricMapLockWait)
+	wait, waitCount := histSum(t, metricMapLockAcquire)
 	hold, holdCount := histSum(t, metricMapLockHold)
 	if waitCount != waitCountBefore+1 || holdCount != holdCountBefore+1 {
 		t.Fatalf("one append produced %d waits and %d holds, want one of each",
