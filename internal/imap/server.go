@@ -2992,6 +2992,29 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		}
 		threadIDs = s.threadIDs(msgs)
 	}
+	// Keywords are announced once, before the first message writer is opened.
+	//
+	// It used to be announced from inside the message block, and that block
+	// holds the connection's encoder: CreateMessage takes it and Close releases
+	// it. Writing an untagged response from in there asks the same goroutine
+	// for the same encoder a second time and it stops there for good -- with
+	// the msgcache handle still open, so every other session of that user
+	// queued behind it (#1543). The holder is invisible in a goroutine dump
+	// because the holder is the blocked goroutine itself.
+	//
+	// Announced for every message in the list, not only the ones the filters
+	// below will return: FLAGS names what the mailbox supports, so a keyword
+	// belonging to a message that is skipped is still true of the mailbox.
+	if opts.Flags || markSeen {
+		var kws []string
+		for _, fe := range fetchList {
+			kws = append(kws, fe.msg.Keywords...)
+		}
+		if err := s.announceNewKeywords(w, kws); err != nil {
+			return err
+		}
+	}
+
 	for _, fe := range fetchList {
 		m := fe.msg
 		// CHANGEDSINCE filter — skip messages whose modseq has not moved
@@ -3033,9 +3056,6 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			}
 		}
 		if opts.Flags || seenJustSet {
-			if err := s.announceNewKeywords(w, m.Keywords); err != nil {
-				return err
-			}
 			mw.WriteFlags(toImapFlags(append(m.Flags, m.Keywords...)))
 		}
 		if opts.UID {
