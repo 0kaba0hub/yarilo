@@ -19,9 +19,34 @@ mail_path   = <home>/mdbox
 
 | file | what it is |
 |---|---|
-| `mdbox-m.1` | one storage file, three records at offsets 16, 168 and 4690 |
+| `mdbox-m.1` | one storage file, three records at offsets 16, 168 and 4690 (see below) |
 | `sdbox-u.1` | one message, 63-byte body |
 | `sdbox-u.2` | one message, 4431-byte body |
+
+## Where the offsets come from
+
+The three offsets are not something our reader worked out. They are what the
+reference itself recorded for this file, read back out of the map index it
+wrote beside it:
+
+```
+dump <store>/storage/<map index>
+...
+RECORD: seq=1 ... offset = 16    size = 152
+RECORD: seq=2 ... offset = 168   size = 4522
+RECORD: seq=3 ... offset = 4690  size = 159
+```
+
+(The sizes there are whole records — header, body and trailer. The body sizes
+the tests assert come from each record's own size field, which the reference
+also wrote.)
+
+**Rule for re-taking these fixtures: read the offsets from there again, never
+from our reader.** A number that came out of the implementation under test is
+not a check on it, and a test repaired by copying whatever our parser now
+reports has been quietly turned into a tautology. The numbers are constants in
+the test on purpose -- a re-taken fixture should break it loudly -- and this is
+the only legitimate place to get the replacements.
 
 ## What each one covers
 
