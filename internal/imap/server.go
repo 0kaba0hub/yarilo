@@ -2998,6 +2998,11 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			continue
 		}
 		mw := w.CreateMessage(seqNum)
+		// What this response could not produce, gathered per message rather
+		// than per attribute: one message the server answered short is one
+		// event, whether it lost the envelope, the structure, or the body.
+		var unreadable []string
+		mark := func(what string) { unreadable = append(unreadable, what) }
 		// Implicit \Seen: update index before writing FLAGS so the response
 		// carries the new flag set (whether or not the client asked for FLAGS).
 		seenJustSet := false
@@ -3037,6 +3042,11 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 						size = virtualSizeFromRaw(raw)
 					}
 					rc.Close()
+				} else {
+					// The size still goes out, from the index. It is the one
+					// attribute here that has a second source, which is why
+					// this is the quietest way to answer wrongly.
+					mark("rfc822.size")
 				}
 			}
 			mw.WriteRFC822Size(int64(size))
@@ -3063,6 +3073,8 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 				env := imapserver.ExtractEnvelope(hdr)
 				mw.WriteEnvelope(env)
 				envCache.StoreEnvelope(m, env)
+			} else {
+				mark("envelope")
 			}
 		}
 		if opts.BodyStructure != nil && m.Filename != "" {
@@ -3073,6 +3085,8 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 				rc.Close()
 				mw.WriteBodyStructure(bs)
 				envCache.StoreBodyStructure(m, bs)
+			} else {
+				mark("bodystructure")
 			}
 		}
 		for _, section := range opts.BodySection {
@@ -3099,6 +3113,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 						"err", ferr,
 					)
 				}
+				mark("body[" + string(section.Specifier) + "]")
 				break
 			}
 			extracted := imapserver.ExtractBodySection(rc, section)
@@ -3111,10 +3126,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 				// lets us put here, so the reason goes to the log rather than
 				// nowhere -- a client seeing {0} has no way to tell "empty"
 				// from "we could not".
-				slog.Warn("imap: fetch produced no data for a body section",
-					"user", s.userInfo.Username, "folder", s.folder.Name,
-					"uid", m.UID, "file", m.Filename,
-					"specifier", string(section.Specifier), "part", section.Part)
+				mark("body[" + string(section.Specifier) + "]")
 				extracted = []byte{}
 			}
 			if slog.Default().Enabled(context.Background(), slog.LevelDebug) &&
@@ -3151,6 +3163,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			}
 			rc, ferr := s.fetchSelected(m)
 			if ferr != nil {
+				mark("binary[]")
 				break
 			}
 			body, _ := io.ReadAll(rc)
@@ -3175,6 +3188,12 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			rc.Close()
 			decoded := decodeBinarySection(body, section.Part)
 			mw.WriteBinarySectionSize(section, uint32(len(decoded)))
+		}
+		if len(unreadable) > 0 {
+			metricUnreadable.WithLabelValues("fetch").Inc()
+			slog.Warn("imap: fetch answered without attributes it could not read",
+				"user", s.userInfo.Username, "folder", s.folder.Name,
+				"uid", m.UID, "file", m.Filename, "missing", strings.Join(unreadable, ","))
 		}
 		mw.Close() //nolint:errcheck
 	}

@@ -66,12 +66,20 @@ var (
 	}, []string{"result"}) // scanned | skipped
 )
 
-// metricUnreadable counts messages a command could not read while scanning.
-// The event is one event -- the server answered with less than it knows, and
-// nothing in the answer says so (#1283) -- so it is one series with the
-// command as a label. An alert on it is one expression, not a sum of series
-// that someone must remember to extend when a third command starts scanning.
+// metricUnreadable counts messages a command answered short because it could
+// not read them. The event is one event -- the server answered with less than
+// it knows, and nothing in the answer says so (#1283) -- so it is one series
+// with the command as a label. An alert on it is one expression, not a sum of
+// series that someone must remember to extend when a third command starts
+// scanning.
+//
+// FETCH counts here too, and did not until #1532. A message whose record the
+// driver cannot read is answered as `* n FETCH ()` -- present in the mailbox,
+// counted by SELECT, its size served from the index, and every content section
+// empty. That is indistinguishable to a client from an empty message, and it
+// is what both format faults we have ever had looked like: this counter stayed
+// at zero through both of them.
 var metricUnreadable = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "imap_unreadable_messages_total",
-	Help: "Messages a command's scan could not read, and therefore silently left out of its answer.",
+	Help: "Messages a command could not read, and therefore silently left out of its answer.",
 }, []string{"command"})
