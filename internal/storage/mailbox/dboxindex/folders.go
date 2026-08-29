@@ -24,6 +24,15 @@ const dboxMailsDir = "dbox-Mails"
 
 // WalkFolders finds every folder under a store's mailboxes directory.
 //
+// One layout only: the reference's default for dbox, where a folder is a
+// directory under <home>/mdbox/mailboxes and its messages live in a dbox-Mails
+// beneath it. Anything else -- a Maildir++ tree with dotted names, or a
+// deployment whose folder list lives in an index rather than in directories --
+// is not read here, and is not silently half-read either: nothing outside this
+// shape looks like a folder to this walk, so such a store comes back empty
+// rather than wrong. Said out loud because somebody will point the importer at
+// one.
+//
 // A folder is a directory containing dbox-Mails; that directory is where its
 // index and its messages live, and the folder's own children sit beside it.
 // So the walk cannot stop at the first hit and cannot treat every directory as
