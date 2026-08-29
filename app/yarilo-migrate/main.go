@@ -126,6 +126,16 @@ func main() {
 		slog.Error("source format", "err", err)
 		os.Exit(1)
 	}
+	// The dbox-ref importer has two branches and they do not carry the same
+	// thing, so the run has to say how much came from each. A count of
+	// "migrated" alone would look identical whether every flag in the account
+	// survived or none did.
+	var refStats *ImportStats
+	if w, ok := walker.(dboxRefWalker); ok {
+		refStats = &ImportStats{}
+		w.Stats = refStats
+		walker = w
+	}
 	box, err := pickBackend(*flagDst)
 	if err != nil {
 		slog.Error("destination format", "err", err)
@@ -153,6 +163,18 @@ func main() {
 	if err != nil {
 		slog.Error("migration failed", "err", err)
 		os.Exit(1)
+	}
+	if refStats != nil {
+		slog.Info("migration complete", "migrated", migrated, "skipped", skipped,
+			"src", *flagSrc, "dst", *flagDst,
+			"from_index", refStats.FromIndex, "from_store_scan", refStats.FromRecords,
+			"folders_with_index", refStats.FoldersIndexed, "folders_scanned", refStats.FoldersScanned)
+		if refStats.FromRecords > 0 {
+			slog.Warn("some mail was recovered from the store rather than read through a folder index; "+
+				"those messages arrive with no flags and no keywords, and in the folder each was first saved to",
+				"messages", refStats.FromRecords, "folders", refStats.FoldersScanned)
+		}
+		return
 	}
 	slog.Info("migration complete", "migrated", migrated, "skipped", skipped, "src", *flagSrc, "dst", *flagDst)
 }
