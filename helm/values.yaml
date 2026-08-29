@@ -7,6 +7,13 @@
 ## mail is seen under (#1506).
 hostname: ""
 
+## Which config keys this chart's templates render. Bumped in the same commit
+## as a template that starts or stops rendering a key, and never otherwise --
+## the binary compares it against what it needs and says which settings it will
+## be defaulting silently. The chart version cannot do this job: it does not
+## move on develop (#1528).
+config_schema_version: 1
+
 image:
   repository: ghcr.io/yarilomail/yarilo
   tag: ""

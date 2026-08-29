@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,29 +35,32 @@ type Config struct {
 	Hostname string `koanf:"hostname"`
 	// ChartVersion is written by the chart. Compared at load against the
 	// version the binary was built from, and never read for anything else.
-	ChartVersion       string                       `koanf:"chart_version"`
-	General            GeneralConfig                `koanf:"general"`
-	Services           ServicesConfig               `koanf:"services"`
-	Protocol           ProtocolConfig               `koanf:"protocol"`
-	Auth               AuthConfig                   `koanf:"auth"`
-	InternalTLS        InternalTLSConfig            `koanf:"internal_tls"`
-	AuthService        AuthServiceConfig            `koanf:"auth_service"`
-	WardenService      WardenServiceConfig          `koanf:"warden_service"`
-	DirectorService    DirectorServiceConfig        `koanf:"director_service"`
-	BackendRegister    BackendRegisterConfig        `koanf:"backend_register"`
-	IMAPLoginService   IMAPLoginServiceConfig       `koanf:"imap_login_service"`
-	POP3LoginService   POP3LoginServiceConfig       `koanf:"pop3_login_service"`
-	JMAPLoginService   JMAPLoginServiceConfig       `koanf:"jmap_login_service"`
-	JMAPService        JMAPServiceConfig            `koanf:"jmap_service"`
-	SubmissionLoginSvc SubmissionLoginServiceConfig `koanf:"submission_login_service"`
-	LMTPLoginService   LMTPLoginServiceConfig       `koanf:"lmtp_login_service"`
-	LocksService       LocksServiceConfig           `koanf:"locks_service"`
-	FTS                FTSConfig                    `koanf:"fts"`
-	AuthClient         AuthClientConfig             `koanf:"auth_client"`
-	Threading          ThreadingConfig              `koanf:"threading"`
-	LocksClient        LocksClientConfig            `koanf:"locks_client"`
-	Storage            StorageConfig                `koanf:"storage"`
-	Namespaces         []NamespaceConfig            `koanf:"namespaces"`
+	ChartVersion string `koanf:"chart_version"`
+	// ConfigSchemaVersion is the chart's statement of which config keys its
+	// templates render. Zero means a chart from before this existed.
+	ConfigSchemaVersion int                          `koanf:"config_schema_version"`
+	General             GeneralConfig                `koanf:"general"`
+	Services            ServicesConfig               `koanf:"services"`
+	Protocol            ProtocolConfig               `koanf:"protocol"`
+	Auth                AuthConfig                   `koanf:"auth"`
+	InternalTLS         InternalTLSConfig            `koanf:"internal_tls"`
+	AuthService         AuthServiceConfig            `koanf:"auth_service"`
+	WardenService       WardenServiceConfig          `koanf:"warden_service"`
+	DirectorService     DirectorServiceConfig        `koanf:"director_service"`
+	BackendRegister     BackendRegisterConfig        `koanf:"backend_register"`
+	IMAPLoginService    IMAPLoginServiceConfig       `koanf:"imap_login_service"`
+	POP3LoginService    POP3LoginServiceConfig       `koanf:"pop3_login_service"`
+	JMAPLoginService    JMAPLoginServiceConfig       `koanf:"jmap_login_service"`
+	JMAPService         JMAPServiceConfig            `koanf:"jmap_service"`
+	SubmissionLoginSvc  SubmissionLoginServiceConfig `koanf:"submission_login_service"`
+	LMTPLoginService    LMTPLoginServiceConfig       `koanf:"lmtp_login_service"`
+	LocksService        LocksServiceConfig           `koanf:"locks_service"`
+	FTS                 FTSConfig                    `koanf:"fts"`
+	AuthClient          AuthClientConfig             `koanf:"auth_client"`
+	Threading           ThreadingConfig              `koanf:"threading"`
+	LocksClient         LocksClientConfig            `koanf:"locks_client"`
+	Storage             StorageConfig                `koanf:"storage"`
+	Namespaces          []NamespaceConfig            `koanf:"namespaces"`
 	// ACL is shared across protocols (IMAP RFC 4314, LMTP, POP3),
 	// so it lives at the top level rather than under protocol.imap.
 	ACL                     ACLConfig                     `koanf:"acl"`
@@ -2784,6 +2788,7 @@ func Load(path string) (*Config, error) {
 	}
 	warnRetiredKeys(k, retiredKeys())
 	warnChartSkew(cfg.ChartVersion)
+	warnConfigSchemaSkew(cfg.ConfigSchemaVersion)
 	if err := refuseInvertedPairs(cfg); err != nil {
 		return nil, err
 	}
@@ -3335,6 +3340,54 @@ func (cfg *Config) SubmissionHostname() string {
 // A warning rather than a refusal: an operator may have a reason, and a mail
 // server that will not start because two strings differ is a worse failure than
 // the one being guarded.
+// minConfigSchema is the schema this binary needs the ConfigMap to have been
+// rendered at. Raised in the same commit that starts reading a key the chart
+// did not render before, together with the entry in schemaAdditions below and
+// the bump in values.yaml.
+const minConfigSchema = 1
+
+// schemaAdditions names what each schema version started rendering, so a
+// warning can say which settings are being defaulted rather than only that a
+// number is behind. Keyed by the version that introduced them.
+//
+// Empty at version 1: it is the first statement of the contract, not a change
+// to it.
+var schemaAdditions = map[int][]string{}
+
+// warnConfigSchemaSkew says which settings this binary reads that the chart
+// that rendered the ConfigMap does not write.
+//
+// warnChartSkew cannot answer this. It compares chart versions, and the chart
+// version does not move on develop -- dozens of template changes share one
+// number, so a ConfigMap rendered from a stale checkout of that same number is
+// silent. That is not a corner case: it is every change between two releases,
+// and it once cost a day, with three pod names where one configured hostname
+// was expected reading as a code defect (#1528).
+func warnConfigSchemaSkew(fromConfig int) {
+	if build.ChartVersion == "dev" {
+		// A local build is not deployed from a chart.
+		return
+	}
+	if fromConfig >= minConfigSchema {
+		return
+	}
+	missing := defaultedByOlderSchema(fromConfig, minConfigSchema, schemaAdditions)
+	slog.Warn("config: the ConfigMap was rendered by a chart older than this binary needs; the settings named below are absent and silently defaulted",
+		"configmap_schema", fromConfig, "binary_needs", minConfigSchema, "defaulted", strings.Join(missing, ","))
+}
+
+// defaultedByOlderSchema names the settings a chart at have does not render
+// that a binary needing want reads. Separate from the warning so the part with
+// the arithmetic in it can be tested at versions this build does not have.
+func defaultedByOlderSchema(have, want int, additions map[int][]string) []string {
+	var missing []string
+	for v := have + 1; v <= want; v++ {
+		missing = append(missing, additions[v]...)
+	}
+	slices.Sort(missing)
+	return missing
+}
+
 func warnChartSkew(fromConfig string) {
 	switch {
 	case build.ChartVersion == "dev":

@@ -11,6 +11,11 @@ data:
     ## The chart's own version, so a process can say whether the ConfigMap
     ## beside it came from the same commit as its binary (#1509).
     chart_version: {{ .Chart.Version | quote }}
+    ## Bumped when a template starts or stops rendering a config key, and never
+    ## for anything else. The chart version cannot carry this: it does not move
+    ## on develop, so every key added between two releases would share a number
+    ## with the chart that did not render it (#1528).
+    config_schema_version: {{ .Values.config_schema_version | default 1 }}
     {{- if .Values.hostname }}
     hostname: {{ .Values.hostname | quote }}
     {{- end }}
