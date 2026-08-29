@@ -95,6 +95,12 @@ func ParseHeader(b []byte) (Header, error) {
 type Record struct {
 	UID   uint32
 	Flags uint8
+
+	// Raw is the whole record, so an extension can be read out of it at the
+	// offset its own table entry gives. Kept rather than copied out field by
+	// field: which extensions a store carries is the store's business, and a
+	// reader that decided in advance would have to be changed for every one.
+	Raw []byte
 }
 
 // ParseRecords reads the base index's record array.
@@ -116,7 +122,8 @@ func ParseRecords(b []byte, h Header) ([]Record, error) {
 	out := make([]Record, 0, h.MessagesCount)
 	for i := uint32(0); i < h.MessagesCount; i++ {
 		r := area[i*h.RecordSize:]
-		out = append(out, Record{UID: binary.LittleEndian.Uint32(r), Flags: r[4]})
+		rec := r[:h.RecordSize]
+		out = append(out, Record{UID: binary.LittleEndian.Uint32(rec), Flags: rec[4], Raw: rec})
 	}
 	return out, nil
 }
