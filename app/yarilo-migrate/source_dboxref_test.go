@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxv2"
 )
 
 // A store the reference wrote, walked end to end.
@@ -64,6 +66,10 @@ func TestWalkingAReferenceStoreCarriesFlagsAndKeywords(t *testing.T) {
 		"INBOX [$HasNoAttachment \\Seen] msg1",
 		"INBOX [$HasNoAttachment \\Answered] msg2",
 		"INBOX [$HasNoAttachment $Important] msg3",
+		// The Archive folder's index is not in this store, so its message
+		// comes from the scan: placed by the folder its record names, and with
+		// no flags, because a record carries none.
+		"Archive [] archived",
 	}
 	sort.Strings(want)
 
@@ -161,36 +167,64 @@ func TestOnlyTheFiveSystemFlagsAreCarried(t *testing.T) {
 	}
 }
 
-// A folder without an index stops the import; it does not come back empty.
+// A folder without an index is recovered from the store, and the difference is
+// visible in the summary.
 //
-// Reading the stored records and placing each message by the folder its
-// trailer names is the second branch of #1524 and is not written. Until it is,
-// the only safe answer is to refuse: a folder imported as empty is the one
-// outcome nobody checks, because the folder is there, the count is zero, and
-// nothing in the output says the mail was not read.
-func TestAFolderWithoutAnIndexIsRefusedRatherThanImportedEmpty(t *testing.T) {
-	home := referenceStore(t)
-
-	// A second folder with messages on disk and no index, which is what a
-	// store looks like when its indexes were never copied.
-	archive := filepath.Join(home, "mdbox", "mailboxes", "Archive", "dbox-Mails")
-	if err := os.MkdirAll(archive, 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	var seen int
-	err := dboxRefWalker{}.Walk(home, func(sourceMessage) error {
-		seen++
+// This is the second branch. What it delivers is bodies placed by the folder
+// each record names -- which is where the message was first saved, not
+// necessarily where it is now -- and nothing else: no flags, no keywords.
+//
+// The counters are the point. Without them the two branches are
+// indistinguishable in the output, and an operator whose folder indexes did not
+// come across would have lost every flag in the account with nothing saying so.
+func TestAFolderWithoutAnIndexIsRecoveredFromTheStore(t *testing.T) {
+	stats := &ImportStats{}
+	var fromScan []sourceMessage
+	err := dboxRefWalker{Stats: stats}.Walk(referenceStore(t), func(m sourceMessage) error {
+		if m.Folder == "Archive" {
+			fromScan = append(fromScan, m)
+		}
 		return nil
 	})
-	if err == nil {
-		t.Fatalf("the walk finished after visiting %d messages, and said nothing about the folder it could not read", seen)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Archive") {
-		t.Errorf("the error does not name the folder: %v", err)
+
+	if stats.FromIndex != 4 {
+		t.Errorf("%d messages from an index, want 4", stats.FromIndex)
 	}
-	if !strings.Contains(err.Error(), "no index") {
-		t.Errorf("the error does not say what is missing: %v", err)
+	if stats.FromRecords != 1 {
+		t.Errorf("%d messages from the store scan, want 1", stats.FromRecords)
+	}
+	if stats.FoldersIndexed != 1 {
+		t.Errorf("%d folders read from an index, want 1", stats.FoldersIndexed)
+	}
+
+	if len(fromScan) != 1 {
+		t.Fatalf("the scan delivered %d messages into Archive, want 1", len(fromScan))
+	}
+	if len(fromScan[0].Flags) != 0 {
+		t.Errorf("a scanned message came with flags %v; a record carries none, so they were invented", fromScan[0].Flags)
+	}
+	if fromScan[0].GUID == ([16]byte{}) {
+		t.Error("a scanned message lost its guid, which the record does carry")
+	}
+}
+
+// A message the index branch delivered is not delivered again by the scan.
+func TestTheScanDoesNotRedeliverWhatTheIndexAlreadyGave(t *testing.T) {
+	seen := map[string]int{}
+	err := dboxRefWalker{}.Walk(referenceStore(t), func(m sourceMessage) error {
+		seen[subject(m.Body)]++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	for subj, n := range seen {
+		if n != 1 {
+			t.Errorf("%s was delivered %d times", subj, n)
+		}
 	}
 }
 
@@ -210,5 +244,39 @@ func TestAnUnreadableIndexIsAnErrorOfItsOwn(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "no index") {
 		t.Errorf("an unreadable index is reported as a missing one: %v", err)
+	}
+}
+
+// The folder a record names is a storage name, not the one a client sees.
+//
+// The reference writes box->name into the B trailer key, which is modified
+// UTF-7 for anything that is not plain ASCII (mdbox-save.c). Taken raw, a
+// message from "Вхідні/Робота" is delivered into a folder literally called
+// "&BBIENQQ0BDwEPQVW-/&BCAEPgQxBD4EQgQw-": found, no error, and not where the
+// user had it. The fixture cannot show this -- its folders are Archive and
+// INBOX, where the encoded and decoded forms are the same string.
+func TestTheFolderInARecordIsDecoded(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		b    string
+		want string
+	}{
+		{"plain ascii is itself", "Archive", "Archive"},
+		{"a cyrillic name", "&BBIERQRWBDQEPQRW-", "Вхідні"},
+		{"a nested cyrillic name", "&BBIERQRWBDQEPQRW-/&BCAEPgQxBD4EQgQw-", "Вхідні/Робота"},
+		{"no folder named", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := folderFromRecord(dboxv2.StoredRecord{OrigMailbox: tc.b})
+			if err != nil {
+				t.Fatalf("decode %q: %v", tc.b, err)
+			}
+			if got != tc.want {
+				t.Errorf("record naming %q gives folder %q, want %q", tc.b, got, tc.want)
+			}
+			if strings.Contains(got, "&") {
+				t.Errorf("the folder name is still encoded: %q", got)
+			}
+		})
 	}
 }

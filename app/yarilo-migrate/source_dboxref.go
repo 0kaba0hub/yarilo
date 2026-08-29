@@ -2,13 +2,16 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxindex"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxv2"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
 )
 
 // dboxRefWalker reads an mdbox store another dbox v2 implementation wrote.
@@ -22,7 +25,25 @@ import (
 // UIDs are not carried in either case. The messages go through the destination
 // driver's own save path, so they are allocated fresh, and UIDVALIDITY with
 // them -- the same as every other conversion this tool does.
-type dboxRefWalker struct{}
+type dboxRefWalker struct {
+	// Stats is filled as the walk runs, so the summary can say how each
+	// message arrived. Without it the two branches are indistinguishable in
+	// the output, and an operator who lost every flag in the account has no
+	// way to know it happened.
+	Stats *ImportStats
+}
+
+// ImportStats counts how the messages were found.
+type ImportStats struct {
+	// FromIndex is messages read through a folder index: flags and keywords
+	// carried. FromRecords is messages recovered by scanning the store:
+	// neither carried, and placed by the folder the record names.
+	FromIndex   int
+	FromRecords int
+
+	FoldersIndexed int
+	FoldersScanned int
+}
 
 // systemFlagBits is the five flags an IMAP client knows.
 //
@@ -58,7 +79,7 @@ func flagNames(b uint8) []string {
 	return out
 }
 
-func (dboxRefWalker) Walk(home string, visit func(sourceMessage) error) error {
+func (w dboxRefWalker) Walk(home string, visit func(sourceMessage) error) error {
 	root := filepath.Join(home, "mdbox")
 	storage := filepath.Join(root, "storage")
 
@@ -84,25 +105,132 @@ func (dboxRefWalker) Walk(home string, visit func(sourceMessage) error) error {
 		}
 	}()
 
+	// Which messages the index branch has already delivered, by map uid. The
+	// scan below covers what it did not, and without this a folder that was
+	// read from its index would have its messages delivered twice: once from
+	// there and once from the store.
+	done := map[uint32]bool{}
+
 	for _, folder := range folders {
-		recs, exts, ferr := readReferenceFolder(filepath.Join(mailboxes, folder.Path, "dbox-Mails"))
+		dir := filepath.Join(mailboxes, folder.Path, "dbox-Mails")
+		recs, exts, ferr := readReferenceFolder(dir)
 		if ferr != nil {
-			return ferr
+			if !errors.Is(ferr, errNoIndex) {
+				return ferr
+			}
+			// The second branch. This folder has no index, so its messages are
+			// found by scanning the store instead: without flags, without
+			// keywords, and placed by the folder their record names -- which is
+			// where each was first saved, not necessarily where it is now.
+			w.count(func(s *ImportStats) { s.FoldersScanned++ })
+			continue
 		}
+		w.count(func(s *ImportStats) { s.FoldersIndexed++ })
+
 		for _, r := range recs {
-			msg, merr := buildMessage(folder.Name, r, exts, byMapUID, storage, open)
+			msg, mapUID, merr := buildMessage(folder.Name, r, exts, byMapUID, storage, open)
 			if merr != nil {
 				return merr
-			}
-			if msg == nil {
-				continue
 			}
 			if err := visit(*msg); err != nil {
 				return err
 			}
+			done[mapUID] = true
+			w.count(func(s *ImportStats) { s.FromIndex++ })
+		}
+	}
+
+	return w.scanStore(storage, byMapUID, done, visit)
+}
+
+// scanStore delivers what the index branch did not: every referenced record the
+// folders did not account for.
+//
+// mdbox only. The placement comes from the B trailer key, and only mdbox writes
+// it -- sdbox passes NULL there (sdbox-save.c), because a single-message file
+// already sits inside its folder's directory and needs no hint. So a store of
+// that shape has nothing to recover from here, and does not need this branch:
+// its folder is its path.
+//
+// The record names the folder it was first saved to, and that is the only
+// placement available here. A message moved since then arrives where it
+// started, which is why this is a recovery path and not a migration.
+func (w dboxRefWalker) scanStore(storage string, byMapUID map[uint32]dboxindex.MapEntry,
+	done map[uint32]bool, visit func(sourceMessage) error) error {
+
+	// Offsets of the records still wanted, per file.
+	wanted := map[uint32]map[int64]uint32{}
+	for uid, e := range byMapUID {
+		if done[uid] || e.RefCount == 0 {
+			// Already delivered, or referenced by nothing: a zero refcount is
+			// a message waiting for a purge, and restoring it would undelete
+			// somebody's mail.
+			continue
+		}
+		if wanted[e.FileID] == nil {
+			wanted[e.FileID] = map[int64]uint32{}
+		}
+		wanted[e.FileID][int64(e.Offset)] = uid
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+
+	fileIDs := make([]uint32, 0, len(wanted))
+	for id := range wanted {
+		fileIDs = append(fileIDs, id)
+	}
+	sort.Slice(fileIDs, func(i, j int) bool { return fileIDs[i] < fileIDs[j] })
+
+	for _, id := range fileIDs {
+		path := filepath.Join(storage, fmt.Sprintf("m.%d", id))
+		f, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("dbox-ref: open %s: %w", path, err)
+		}
+		info, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return fmt.Errorf("dbox-ref: stat %s: %w", path, err)
+		}
+		err = dboxv2.WalkRecords(f, info.Size(), func(rec dboxv2.StoredRecord) error {
+			if _, want := wanted[id][rec.Offset]; !want {
+				return nil
+			}
+			folder, ferr := folderFromRecord(rec)
+			if ferr != nil {
+				return fmt.Errorf("dbox-ref: %s offset %d: %w", path, rec.Offset, ferr)
+			}
+			if folder == "" {
+				// Nothing says where it belongs. INBOX is a guess, and a guess
+				// is worse than a refusal here: the message would land in a
+				// folder it was never in and nobody would know which ones.
+				//
+				// sdbox writes no B at all, so a store of that shape never
+				// reaches this branch usefully -- see the note on scanStore.
+				return fmt.Errorf("dbox-ref: %s offset %d: the record names no folder, so it cannot be placed", path, rec.Offset)
+			}
+			w.count(func(s *ImportStats) { s.FromRecords++ })
+			return visit(sourceMessage{
+				Folder:       folder,
+				Body:         rec.Body,
+				InternalDate: rec.Received,
+				GUID:         rec.GUID,
+			})
+		})
+		_ = f.Close()
+		if err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// count applies f to the stats when the caller asked for them.
+func (w dboxRefWalker) count(f func(*ImportStats)) {
+	if w.Stats != nil {
+		f(w.Stats)
+	}
 }
 
 // readReferenceMap reads the store's map, from its base when it has one and
@@ -131,6 +259,10 @@ func readReferenceMap(storage string) ([]dboxindex.MapEntry, error) {
 	return dboxindex.ReadMap(raw, int(lh.HeaderSize), seed)
 }
 
+// errNoIndex says a folder has no index of its own, which sends its messages
+// down the scanning branch rather than stopping the import.
+var errNoIndex = errors.New("no index; its messages are recovered from the store, without flags or keywords")
+
 // readReferenceFolder returns the folder's messages, with flags and keywords.
 //
 // A missing index is an error, and deliberately so. The second branch of
@@ -143,7 +275,7 @@ func readReferenceFolder(dir string) ([]dboxindex.Record, []dboxindex.Extension,
 	raw, err := os.ReadFile(filepath.Join(dir, "dovecot.index"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("dbox-ref: %s has no index; importing a folder without one is not available yet, and importing it as empty would lose its mail silently", dir)
+			return nil, nil, fmt.Errorf("dbox-ref: %s: %w", dir, errNoIndex)
 		}
 		return nil, nil, fmt.Errorf("dbox-ref: read index %s: %w", dir, err)
 	}
@@ -183,22 +315,22 @@ func readReferenceFolder(dir string) ([]dboxindex.Record, []dboxindex.Extension,
 // buildMessage turns one index record into a message, reading its body through
 // the map.
 func buildMessage(folder string, r dboxindex.Record, exts []dboxindex.Extension,
-	byMapUID map[uint32]dboxindex.MapEntry, storage string, open map[uint32]*os.File) (*sourceMessage, error) {
+	byMapUID map[uint32]dboxindex.MapEntry, storage string, open map[uint32]*os.File) (*sourceMessage, uint32, error) {
 
 	mdbox, ok := dboxindex.Find(exts, "mdbox")
 	if !ok {
-		return nil, fmt.Errorf("dbox-ref: folder %s uid %d: no mdbox extension, so its bytes cannot be found", folder, r.UID)
+		return nil, 0, fmt.Errorf("dbox-ref: folder %s uid %d: no mdbox extension, so its bytes cannot be found", folder, r.UID)
 	}
 	field, ok := dboxindex.FieldOf(r, mdbox)
 	if !ok || len(field) < 8 {
-		return nil, fmt.Errorf("dbox-ref: folder %s uid %d: mdbox field is %d bytes", folder, r.UID, len(field))
+		return nil, 0, fmt.Errorf("dbox-ref: folder %s uid %d: mdbox field is %d bytes", folder, r.UID, len(field))
 	}
 	mapUID := binary.LittleEndian.Uint32(field)
 	saveDate := binary.LittleEndian.Uint32(field[4:])
 
 	entry, ok := byMapUID[mapUID]
 	if !ok {
-		return nil, fmt.Errorf("dbox-ref: folder %s uid %d references map uid %d, which the map does not carry", folder, r.UID, mapUID)
+		return nil, 0, fmt.Errorf("dbox-ref: folder %s uid %d references map uid %d, which the map does not carry", folder, r.UID, mapUID)
 	}
 
 	f, ok := open[entry.FileID]
@@ -206,17 +338,17 @@ func buildMessage(folder string, r dboxindex.Record, exts []dboxindex.Extension,
 		path := filepath.Join(storage, fmt.Sprintf("m.%d", entry.FileID))
 		var err error
 		if f, err = os.Open(path); err != nil {
-			return nil, fmt.Errorf("dbox-ref: open %s: %w", path, err)
+			return nil, 0, fmt.Errorf("dbox-ref: open %s: %w", path, err)
 		}
 		open[entry.FileID] = f
 	}
 	hdrSize, err := dboxv2.FileHeaderSize(f)
 	if err != nil {
-		return nil, fmt.Errorf("dbox-ref: m.%d: %w", entry.FileID, err)
+		return nil, 0, fmt.Errorf("dbox-ref: m.%d: %w", entry.FileID, err)
 	}
 	body, err := dboxv2.ReadRecordBodyAt(f, int64(entry.Offset), hdrSize)
 	if err != nil {
-		return nil, fmt.Errorf("dbox-ref: folder %s uid %d: %w", folder, r.UID, err)
+		return nil, 0, fmt.Errorf("dbox-ref: folder %s uid %d: %w", folder, r.UID, err)
 	}
 
 	msg := &sourceMessage{
@@ -230,5 +362,25 @@ func buildMessage(folder string, r dboxindex.Record, exts []dboxindex.Extension,
 			copy(msg.GUID[:], raw)
 		}
 	}
-	return msg, nil
+	return msg, mapUID, nil
+}
+
+// folderFromRecord is the folder a stored record belongs to, as a client would
+// name it.
+//
+// B is the storage name and not the one a client sees: the reference writes
+// box->name, which is modified UTF-7 for any folder whose name is not plain
+// ASCII. Used raw, a message from "Вхідні/Робота" is delivered into a folder
+// literally called "&BBIENQQ0BDwEPQVW-/&BCAEPgQxBD4EQgQw-" -- found, no error,
+// and not where the user had it. The same decoding the folder walk applies to
+// names on disk applies here.
+func folderFromRecord(rec dboxv2.StoredRecord) (string, error) {
+	if rec.OrigMailbox == "" {
+		return "", nil
+	}
+	name, err := mboxenc.FromModUTF7(rec.OrigMailbox)
+	if err != nil {
+		return "", fmt.Errorf("folder name %q does not decode: %w", rec.OrigMailbox, err)
+	}
+	return name, nil
 }
