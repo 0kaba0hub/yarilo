@@ -29,6 +29,26 @@ func MdboxFile(t *testing.T) []byte { return read(t, "testdata/mdbox-m.1") }
 func SdboxShort(t *testing.T) []byte { return read(t, "testdata/sdbox-u.1") }
 func SdboxLong(t *testing.T) []byte  { return read(t, "testdata/sdbox-u.2") }
 
+// The index fixtures: a mailbox's state rather than one message's format.
+//
+// IndexBase is a snapshot synchronised up to a log position; IndexLog is what
+// came after it and IndexLogRotated is what came before and has been rotated
+// away. Reading any one of them alone loses part of the state, which is the
+// point of having all three (#1524).
+func IndexBase(t *testing.T) []byte       { return read(t, "testdata/index-inbox.index") }
+func IndexLog(t *testing.T) []byte        { return read(t, "testdata/index-inbox.log") }
+func IndexLogRotated(t *testing.T) []byte { return read(t, "testdata/index-inbox.log.2") }
+
+// MapLog is the mdbox map's transaction log. No base accompanies it, because
+// this store's map log has not rotated and the base is rewritten only once
+// enough log has been read since the last rewrite -- so a reader must handle
+// both a map with a base and a map without one. This fixture is the second
+// case.
+func MapLog(t *testing.T) []byte { return read(t, "testdata/map.log") }
+
+// StoreFile is the storage file the index fixtures describe.
+func StoreFile(t *testing.T) []byte { return read(t, "testdata/store-m.1") }
+
 func read(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := files.ReadFile(name)
