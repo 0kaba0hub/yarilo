@@ -118,3 +118,75 @@ The same reasoning covers appending: the check the reference makes before it
 appends to an existing file is on the first line, `version == 2` and `M == 30`.
 Our file-header line matches these byte for byte apart from the create stamp,
 so that check passes. There is a test that says exactly this and nothing wider.
+
+---
+
+# Index fixtures (#1524)
+
+A second store, captured for the import work. The record fixtures above are
+about the *format of one message*; these are about the *state of a mailbox* --
+which messages exist, what flags they carry, and where that state actually
+lives.
+
+| file | what it is |
+|---|---|
+| `index-inbox.index` | the base index of INBOX, 704 bytes |
+| `index-inbox.log` | the current transaction log |
+| `index-inbox.log.2` | the rotated one |
+| `map.log` | the mdbox map's transaction log |
+| `store-m.1` | the storage file the index above describes |
+
+## The state they carry
+
+Four messages in INBOX and one in a second folder:
+
+| uid | state |
+|---|---|
+| 1 | `\Seen` |
+| 2 | `\Answered` |
+| 3 | keyword `$Important` |
+| 4 | **expunged** |
+| 5 | nothing |
+| Archive, uid 1 | one message in a folder that is not INBOX |
+
+Each row is there to fail something: a reader that ignores flag updates keeps 1
+and 2 plain, one that cannot read the keyword extension loses 3, one that
+replays appends without expunges brings 4 back, and one that assumes INBOX
+misses the Archive message entirely.
+
+## Two things the capture established
+
+**The log alone is not the state, and neither is the base.** `index-inbox.log.2`
+exists because the log rotated: what it held is in the base now, and what came
+after is in `index-inbox.log`. A reader that takes only the log loses everything
+older than the rotation; one that takes only the base loses everything newer
+than `log_file_tail_offset`.
+
+**The map has no base at all.** `dovecot.map.index` was never written -- not for
+three messages, and not for this store after eight hundred transactions. Only
+`map.log` is on disk. So the map branch cannot be "parse the base and optionally
+replay": there is nothing to parse.
+
+## How they were made
+
+The same local install of the reference implementation, version 2.4.4, driven
+through its `save`, `flags` and `expunge` commands with no daemon.
+
+Two settings were changed from their defaults, and only to make the rotation
+happen in seconds instead of at the end of a working day:
+
+```
+mail_index_log_rotate_min_age = 0
+mail_index_log_rotate_max_size = 20 k
+```
+
+The rotation was forced by toggling `\Flagged` on uid 5 seven hundred times.
+An earlier attempt added seven hundred *keywords* instead, which rotated the log
+just as well and left a keyword table larger than everything else in the file --
+a fixture whose shape said more about how it was made than about what it is.
+The thresholds are timing knobs; nothing about the format on disk depends on
+them.
+
+**Re-taking these:** the state above is the fixture. Read it back with the
+reference's own `fetch` command, as it was recorded here, and never from our
+reader -- same rule as the record offsets above.
