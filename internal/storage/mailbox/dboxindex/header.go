@@ -96,6 +96,11 @@ type Record struct {
 	UID   uint32
 	Flags uint8
 
+	// Keywords is filled by the caller from the keywords extension before
+	// changes are applied: the base carries them as a bitmask and the log
+	// names them, so they only become one thing when both have been read.
+	Keywords []string
+
 	// Raw is the whole record, so an extension can be read out of it at the
 	// offset its own table entry gives. Kept rather than copied out field by
 	// field: which extensions a store carries is the store's business, and a

@@ -89,7 +89,7 @@ func TestTheOverlapBetweenTailAndHeadIsNotAppliedTwice(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := uids(dboxindex.Apply(base, tc.changes))
+			got := uids(dboxindex.Apply(base, tc.changes, nil))
 			if !same(got, tc.want...) {
 				t.Errorf("mailbox is %v, want %v", got, tc.want)
 			}
@@ -112,7 +112,7 @@ func TestApplyDoesNotWriteThroughTheCallersBase(t *testing.T) {
 	backing[0], backing[1], backing[2] = dboxindex.Record{UID: 1}, dboxindex.Record{UID: 2}, dboxindex.Record{UID: 3}
 	base := backing[:3]
 
-	got := uids(dboxindex.Apply(base, []dboxindex.Change{{Type: dboxindex.Appended, UID: 9}}))
+	got := uids(dboxindex.Apply(base, []dboxindex.Change{{Type: dboxindex.Appended, UID: 9}}, nil))
 	if !same(got, 1, 2, 3, 9) {
 		t.Fatalf("mailbox is %v, want [1 2 3 9]", got)
 	}
@@ -140,11 +140,11 @@ func TestApplyingTheReferenceTailGivesTheMailbox(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	once := uids(dboxindex.Apply(base, changes))
+	once := uids(dboxindex.Apply(base, changes, nil))
 	if !same(once, 1, 2, 3, 6) {
 		t.Errorf("mailbox is %v, want [1 2 3 6]", once)
 	}
-	twice := uids(dboxindex.Apply(dboxindex.Apply(base, changes), changes))
+	twice := uids(dboxindex.Apply(dboxindex.Apply(base, changes, nil), changes, nil))
 	if !same(twice, once...) {
 		t.Errorf("applying the tail twice gives %v and once gives %v", twice, once)
 	}
