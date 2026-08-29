@@ -64,6 +64,19 @@ reader that walks the file from one that got lucky.
 **A folder other than INBOX.** Record 3 was saved to `Archive`, so its trailer
 carries `BArchive` where the other two carry `BINBOX`.
 
+Two things about `B` that these fixtures cannot show, because every folder in
+them is plain ASCII and mdbox:
+
+- it is the **storage** name, not the one a client sees. The reference writes
+  `box->name` (`mdbox-save.c`), which is modified UTF-7 for anything not plain
+  ASCII, so `Вхідні/Робота` appears as `&BBIERQRWBDQEPQRW-/&BCAEPgQxBD4EQgQw-`.
+  For `Archive` and `INBOX` the encoded and decoded forms are the same string,
+  which is exactly why a reader that skipped the decoding passes on these
+  files;
+- **sdbox does not write it at all** (`sdbox-save.c` passes NULL). A
+  single-message file already sits in its folder's directory, so it needs no
+  hint -- and a recovery that depends on `B` is an mdbox thing only.
+
 Two things the reference settled that we had guessed at:
 
 - the trailer keys come in the order `R`, `V`, `G`, `B` — our hand-built

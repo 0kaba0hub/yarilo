@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxv2"
 )
 
 // A store the reference wrote, walked end to end.
@@ -242,5 +244,39 @@ func TestAnUnreadableIndexIsAnErrorOfItsOwn(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "no index") {
 		t.Errorf("an unreadable index is reported as a missing one: %v", err)
+	}
+}
+
+// The folder a record names is a storage name, not the one a client sees.
+//
+// The reference writes box->name into the B trailer key, which is modified
+// UTF-7 for anything that is not plain ASCII (mdbox-save.c). Taken raw, a
+// message from "Вхідні/Робота" is delivered into a folder literally called
+// "&BBIENQQ0BDwEPQVW-/&BCAEPgQxBD4EQgQw-": found, no error, and not where the
+// user had it. The fixture cannot show this -- its folders are Archive and
+// INBOX, where the encoded and decoded forms are the same string.
+func TestTheFolderInARecordIsDecoded(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		b    string
+		want string
+	}{
+		{"plain ascii is itself", "Archive", "Archive"},
+		{"a cyrillic name", "&BBIERQRWBDQEPQRW-", "Вхідні"},
+		{"a nested cyrillic name", "&BBIERQRWBDQEPQRW-/&BCAEPgQxBD4EQgQw-", "Вхідні/Робота"},
+		{"no folder named", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := folderFromRecord(dboxv2.StoredRecord{OrigMailbox: tc.b})
+			if err != nil {
+				t.Fatalf("decode %q: %v", tc.b, err)
+			}
+			if got != tc.want {
+				t.Errorf("record naming %q gives folder %q, want %q", tc.b, got, tc.want)
+			}
+			if strings.Contains(got, "&") {
+				t.Errorf("the folder name is still encoded: %q", got)
+			}
+		})
 	}
 }

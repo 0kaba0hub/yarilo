@@ -11,6 +11,7 @@ import (
 
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxindex"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxv2"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
 )
 
 // dboxRefWalker reads an mdbox store another dbox v2 implementation wrote.
@@ -145,6 +146,12 @@ func (w dboxRefWalker) Walk(home string, visit func(sourceMessage) error) error 
 // scanStore delivers what the index branch did not: every referenced record the
 // folders did not account for.
 //
+// mdbox only. The placement comes from the B trailer key, and only mdbox writes
+// it -- sdbox passes NULL there (sdbox-save.c), because a single-message file
+// already sits inside its folder's directory and needs no hint. So a store of
+// that shape has nothing to recover from here, and does not need this branch:
+// its folder is its path.
+//
 // The record names the folder it was first saved to, and that is the only
 // placement available here. A message moved since then arrives where it
 // started, which is why this is a recovery path and not a migration.
@@ -190,11 +197,17 @@ func (w dboxRefWalker) scanStore(storage string, byMapUID map[uint32]dboxindex.M
 			if _, want := wanted[id][rec.Offset]; !want {
 				return nil
 			}
-			folder := rec.OrigMailbox
+			folder, ferr := folderFromRecord(rec)
+			if ferr != nil {
+				return fmt.Errorf("dbox-ref: %s offset %d: %w", path, rec.Offset, ferr)
+			}
 			if folder == "" {
 				// Nothing says where it belongs. INBOX is a guess, and a guess
 				// is worse than a refusal here: the message would land in a
 				// folder it was never in and nobody would know which ones.
+				//
+				// sdbox writes no B at all, so a store of that shape never
+				// reaches this branch usefully -- see the note on scanStore.
 				return fmt.Errorf("dbox-ref: %s offset %d: the record names no folder, so it cannot be placed", path, rec.Offset)
 			}
 			w.count(func(s *ImportStats) { s.FromRecords++ })
@@ -350,4 +363,24 @@ func buildMessage(folder string, r dboxindex.Record, exts []dboxindex.Extension,
 		}
 	}
 	return msg, mapUID, nil
+}
+
+// folderFromRecord is the folder a stored record belongs to, as a client would
+// name it.
+//
+// B is the storage name and not the one a client sees: the reference writes
+// box->name, which is modified UTF-7 for any folder whose name is not plain
+// ASCII. Used raw, a message from "Вхідні/Робота" is delivered into a folder
+// literally called "&BBIENQQ0BDwEPQVW-/&BCAEPgQxBD4EQgQw-" -- found, no error,
+// and not where the user had it. The same decoding the folder walk applies to
+// names on disk applies here.
+func folderFromRecord(rec dboxv2.StoredRecord) (string, error) {
+	if rec.OrigMailbox == "" {
+		return "", nil
+	}
+	name, err := mboxenc.FromModUTF7(rec.OrigMailbox)
+	if err != nil {
+		return "", fmt.Errorf("folder name %q does not decode: %w", rec.OrigMailbox, err)
+	}
+	return name, nil
 }
