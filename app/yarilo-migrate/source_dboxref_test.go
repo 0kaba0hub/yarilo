@@ -160,3 +160,55 @@ func TestOnlyTheFiveSystemFlagsAreCarried(t *testing.T) {
 		})
 	}
 }
+
+// A folder without an index stops the import; it does not come back empty.
+//
+// Reading the stored records and placing each message by the folder its
+// trailer names is the second branch of #1524 and is not written. Until it is,
+// the only safe answer is to refuse: a folder imported as empty is the one
+// outcome nobody checks, because the folder is there, the count is zero, and
+// nothing in the output says the mail was not read.
+func TestAFolderWithoutAnIndexIsRefusedRatherThanImportedEmpty(t *testing.T) {
+	home := referenceStore(t)
+
+	// A second folder with messages on disk and no index, which is what a
+	// store looks like when its indexes were never copied.
+	archive := filepath.Join(home, "mdbox", "mailboxes", "Archive", "dbox-Mails")
+	if err := os.MkdirAll(archive, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var seen int
+	err := dboxRefWalker{}.Walk(home, func(sourceMessage) error {
+		seen++
+		return nil
+	})
+	if err == nil {
+		t.Fatalf("the walk finished after visiting %d messages, and said nothing about the folder it could not read", seen)
+	}
+	if !strings.Contains(err.Error(), "Archive") {
+		t.Errorf("the error does not name the folder: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no index") {
+		t.Errorf("the error does not say what is missing: %v", err)
+	}
+}
+
+// An index that is there and unreadable is a different error, and also not
+// silence: a permission problem on one folder must not look like an empty one.
+func TestAnUnreadableIndexIsAnErrorOfItsOwn(t *testing.T) {
+	home := referenceStore(t)
+	idx := filepath.Join(home, "mdbox", "mailboxes", "INBOX", "dbox-Mails", "dovecot.index")
+	if err := os.Chmod(idx, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(idx, 0o600) })
+
+	err := dboxRefWalker{}.Walk(home, func(sourceMessage) error { return nil })
+	if err == nil {
+		t.Fatal("an unreadable index was treated as an absent one, and the folder came back empty")
+	}
+	if strings.Contains(err.Error(), "no index") {
+		t.Errorf("an unreadable index is reported as a missing one: %v", err)
+	}
+}

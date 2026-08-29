@@ -131,17 +131,21 @@ func readReferenceMap(storage string) ([]dboxindex.MapEntry, error) {
 	return dboxindex.ReadMap(raw, int(lh.HeaderSize), seed)
 }
 
-// readReferenceFolder returns the folder's messages, with flags and keywords
-// when the index is there.
+// readReferenceFolder returns the folder's messages, with flags and keywords.
 //
-// A folder whose index is missing or unreadable is not an error: that is the
-// second branch, where the records themselves are all there is. The caller
-// finds no messages for it here and the store scan picks them up by their
-// original mailbox instead.
+// A missing index is an error, and deliberately so. The second branch of
+// #1524 -- scanning the stored records and placing each message by the folder
+// its trailer names -- is not written yet, and until it is, a folder without an
+// index has to stop the import rather than come back empty. Empty is the one
+// answer nobody checks: the folder appears, the message count is zero, and the
+// mail is gone with nothing in the output saying so.
 func readReferenceFolder(dir string) ([]dboxindex.Record, []dboxindex.Extension, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, "dovecot.index"))
 	if err != nil {
-		return nil, nil, nil
+		if os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("dbox-ref: %s has no index; importing a folder without one is not available yet, and importing it as empty would lose its mail silently", dir)
+		}
+		return nil, nil, fmt.Errorf("dbox-ref: read index %s: %w", dir, err)
 	}
 	h, err := dboxindex.ParseHeader(raw)
 	if err != nil {
