@@ -3350,9 +3350,13 @@ const minConfigSchema = 1
 // warning can say which settings are being defaulted rather than only that a
 // number is behind. Keyed by the version that introduced them.
 //
-// Empty at version 1: it is the first statement of the contract, not a change
-// to it.
-var schemaAdditions = map[int][]string{}
+// Version 1 is what a chart that never heard of the schema does not render.
+// Not empty: a ConfigMap from such a chart reports 0, and a warning that named
+// nobody would be the "N is lower than M" the version number alone already
+// gives.
+var schemaAdditions = map[int][]string{
+	1: {"chart_version", "config_schema_version", "hostname", "lmtp_add_message_id"},
+}
 
 // warnConfigSchemaSkew says which settings this binary reads that the chart
 // that rendered the ConfigMap does not write.
