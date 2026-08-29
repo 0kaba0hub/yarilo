@@ -14,7 +14,7 @@ func readMap(t *testing.T) []dboxindex.MapEntry {
 	if err != nil {
 		t.Fatalf("map log header: %v", err)
 	}
-	entries, err := dboxindex.ReadMap(raw, int(h.HeaderSize))
+	entries, err := dboxindex.ReadMap(raw, int(h.HeaderSize), nil)
 	if err != nil {
 		t.Fatalf("read map: %v", err)
 	}
@@ -74,4 +74,68 @@ func TestTheMapOffsetsLandOnRecordsInTheStore(t *testing.T) {
 			t.Errorf("map uid %d runs to %d, past the %d-byte file", e.MapUID, end, len(store))
 		}
 	}
+}
+
+// An extension id nothing introduced is refused, not skipped.
+//
+// After a rotation the intros in a new log refer to extensions by the id the
+// map's own index holds, having been named in a file that no longer exists.
+// Read without that base, those ids resolve to nothing -- and skipping them
+// returns a map that is silently short, which is a mailbox whose messages point
+// at nothing. There is no fixture for the rotated case yet, so this row builds
+// the condition by hand: the same log, read with the intros' names removed.
+func TestAnUnknownExtensionIsRefusedRatherThanSkipped(t *testing.T) {
+	raw := append([]byte(nil), dboxref.MapLog(t)...)
+	h, err := dboxindex.ParseLogHeader(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Blank the name_size of every ext-intro, which is what a log written
+	// after a rotation looks like: ids only.
+	blanked := blankIntroNames(t, raw, int(h.HeaderSize))
+	if blanked == 0 {
+		t.Fatal("no intros were altered, so this row proves nothing")
+	}
+
+	if _, err := dboxindex.ReadMap(raw, int(h.HeaderSize), nil); err == nil {
+		t.Error("a log whose extensions nothing introduced was read without complaint, and the map it returns is short by however many records it could not attribute")
+	}
+}
+
+// blankIntroNames walks the log and sets name_size to zero on every ext-intro,
+// leaving the ids. Returns how many it changed.
+func blankIntroNames(t *testing.T, b []byte, offset int) int {
+	t.Helper()
+	const introType = 0x40
+	changed := 0
+	for pos := offset; pos+8 <= len(b); {
+		size := decodeLogSize(b[pos], b[pos+1], b[pos+2], b[pos+3])
+		if size < 8 || pos+int(size) > len(b) {
+			break
+		}
+		recType := uint32(b[pos+4]) | uint32(b[pos+5])<<8 | uint32(b[pos+6])<<16 | uint32(b[pos+7])<<24
+		if recType&0x0fffffff == introType {
+			// name_size is the last uint16 of the fixed part.
+			if pos+8+20 <= len(b) {
+				b[pos+8+18], b[pos+8+19] = 0, 0
+				changed++
+			}
+		}
+		pos += int(size)
+	}
+	return changed
+}
+
+// decodeLogSize mirrors the reader's own unpacking, so the test can walk a log
+// without reaching into the package.
+func decodeLogSize(b0, b1, b2, b3 byte) uint32 {
+	v := uint32(b0)<<24 | uint32(b1)<<16 | uint32(b2)<<8 | uint32(b3)
+	if v&0x80808080 != 0x80808080 {
+		return 0
+	}
+	return ((v & 0x0000007f) |
+		(v&0x00007f00)>>8<<7 |
+		(v&0x007f0000)>>16<<14 |
+		(v&0x7f000000)>>24<<21) << 2
 }

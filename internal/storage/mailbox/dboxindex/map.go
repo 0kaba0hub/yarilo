@@ -33,6 +33,13 @@ const (
 
 // ReadMap reconstructs the mdbox map from a transaction log.
 //
+// base is the extension table of the map's own index, or nil when there is
+// none. It matters after a rotation: the intros in the new log refer to
+// extensions by the id the base holds, having been introduced by name in a file
+// that no longer exists. Without the base those ids resolve to nothing, and the
+// records that follow belong to no extension -- a map that comes back empty
+// with no error at all, which is the worst answer this reader could give.
+//
 // From the log alone, and that is not a shortcut: this store has no
 // dovecot.map.index at all, because the base is only written once enough log
 // has been read since the last rewrite. A map with a base is read the same way
@@ -43,7 +50,7 @@ const (
 // holds until the next one, so the records are order-dependent in a way the
 // folder log's appends are not. A reader that ignored the intros would apply
 // the refcount extension's bytes as if they were map records.
-func ReadMap(b []byte, offset int) ([]MapEntry, error) {
+func ReadMap(b []byte, offset int, base []Extension) ([]MapEntry, error) {
 	be, le := binary.BigEndian, binary.LittleEndian
 
 	entries := map[uint32]*MapEntry{}
@@ -61,7 +68,10 @@ func ReadMap(b []byte, offset int) ([]MapEntry, error) {
 		name  string
 		width int
 	}
-	var registry []known
+	registry := make([]known, 0, len(base))
+	for _, e := range base {
+		registry = append(registry, known{name: e.Name, width: int(e.RecordSize)})
+	}
 	var currentExt string
 	var currentWidth int
 
@@ -121,11 +131,11 @@ func ReadMap(b []byte, offset int) ([]MapEntry, error) {
 				}
 				currentWidth = k.width
 			default:
-				// An id nothing in this log introduced: the extension was
-				// registered in a file rotation has removed. The records that
-				// follow cannot be attributed, so they are skipped rather than
-				// applied to whichever extension was named last.
-				currentExt, currentWidth = "", 0
+				// An id neither this log nor the base introduced. Refused
+				// rather than skipped: skipping attributes nothing and returns
+				// a map that is silently short, and a short map is a mailbox
+				// whose messages point at nothing.
+				return nil, fmt.Errorf("dboxindex/map: ext-intro at %d refers to extension %d, which neither this log nor the index header introduced", pos, extID)
 			}
 
 		case typeAppend:

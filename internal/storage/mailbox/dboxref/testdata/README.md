@@ -170,6 +170,14 @@ the header points at a rotated-away `.log`. This store's map log has not rotated
 -- there is no `map.log.2` -- and eight hundred transactions is a count, not a
 size.
 
+After a rotation the intros in a new map log carry only extension ids, having
+been named in a file that no longer exists; the ids then refer to the table in
+`dovecot.map.index`. The reader takes that table as a seed and refuses an id
+nothing introduced, rather than skipping it -- skipping returns a map that is
+silently short, which is a mailbox whose messages point at nothing. **The
+rotated case has no fixture yet**: this store's map log has not rotated, so the
+seeded path is written and unexercised.
+
 So the map branch has to handle **both**: a base plus the log from
 `log_file_tail_offset` when `dovecot.map.index` exists, exactly as for a folder,
 and the log from the beginning when it does not. This fixture covers the second
