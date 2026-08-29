@@ -32,7 +32,7 @@ func mailbox(t *testing.T) map[uint32]dboxindex.Record {
 		}
 	}
 
-	changes, err := dboxindex.ReadChanges(dboxref.IndexLog(t), int(h.LogFileTailOffset))
+	changes, err := dboxindex.ReadChanges(dboxref.IndexLog(t), int(h.LogFileTailOffset), exts)
 	if err != nil {
 		t.Fatalf("read changes: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestAddAndRemoveMasksCancelOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changes, err := dboxindex.ReadChanges(raw, int(h.HeaderSize))
+	changes, err := dboxindex.ReadChanges(raw, int(h.HeaderSize), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

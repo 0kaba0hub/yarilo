@@ -47,7 +47,7 @@ func TestTheMailboxIsTheBasePlusTheLogAfterIt(t *testing.T) {
 		t.Fatalf("log belongs to index %d and base to %d: two different stores", h.IndexID, base.IndexID)
 	}
 
-	changes, err := dboxindex.ReadChanges(raw, int(base.LogFileTailOffset))
+	changes, err := dboxindex.ReadChanges(raw, int(base.LogFileTailOffset), nil)
 	if err != nil {
 		t.Fatalf("read changes: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestAnUnfinishedTailStopsTheWalk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	full, err := dboxindex.ReadChanges(raw, int(h.HeaderSize))
+	full, err := dboxindex.ReadChanges(raw, int(h.HeaderSize), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestAnUnfinishedTailStopsTheWalk(t *testing.T) {
 	// Clear the marker bits on the first record: everything after it is
 	// unreachable, exactly as after a crash mid-write.
 	raw[int(h.HeaderSize)] = 0
-	got, err := dboxindex.ReadChanges(raw, int(h.HeaderSize))
+	got, err := dboxindex.ReadChanges(raw, int(h.HeaderSize), nil)
 	if err != nil {
 		t.Fatalf("a torn tail became an error rather than an end: %v", err)
 	}

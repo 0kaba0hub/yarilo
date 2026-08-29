@@ -35,7 +35,7 @@ import (
 )
 
 var (
-	flagSrc    = flag.String("src", "", "source format: maildir | dbox-v1 | mdbox-v1 (required)")
+	flagSrc    = flag.String("src", "", "source format: maildir | dbox-v1 | mdbox-v1 | dbox-ref (required)")
 	flagDst    = flag.String("dst", "", "destination format: sdbox | mdbox (required)")
 	flagFrom   = flag.String("from", "", "source root (required)")
 	flagTo     = flag.String("to", "", "destination root (required)")

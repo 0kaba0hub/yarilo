@@ -153,7 +153,7 @@ func TestHelperEscapingHook(t *testing.T) {
 	if pidFile == "" {
 		t.Skip("helper process; runs only when the hook env is set")
 	}
-	child := exec.Command("sleep", "20")
+	child := exec.Command("sleep", strconv.Itoa(int(escapedDescendantLifetime.Seconds())))
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	// The pipes stay inherited: holding them is what used to hold the wait.
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
@@ -162,8 +162,13 @@ func TestHelperEscapingHook(t *testing.T) {
 	}
 	_ = os.WriteFile(pidFile, []byte(strconv.Itoa(child.Process.Pid)), 0o644)
 	fmt.Println("started")
-	time.Sleep(20 * time.Second)
+	time.Sleep(escapedDescendantLifetime)
 }
+
+// escapedDescendantLifetime is how long the escaped process lives. The test
+// below is about not waiting for it, so this is the number its budget is
+// derived from rather than a second one chosen separately.
+const escapedDescendantLifetime = 20 * time.Second
 
 // TestFlushHook_EscapedDescendantStillReleasesTheWait is the other half, and
 // the only case the WaitDelay backstop exists for: a hook that calls setsid
@@ -190,8 +195,18 @@ func TestFlushHook_EscapedDescendantStillReleasesTheWait(t *testing.T) {
 	if err == nil || !timedOut {
 		t.Fatalf("err=%v timedOut=%v, want the bound to fire", err, timedOut)
 	}
-	if max := bound + flushWaitDelay + time.Second; elapsed > max {
-		t.Errorf("run took %v, over the %v budget — the wait sat for the escaped descendant", elapsed, max)
+	// Half the descendant's life, not the theoretical minimum plus a second.
+	//
+	// What this asserts is that Wait came back on its own delay instead of
+	// sitting for the escaped process, and the number that means is the
+	// descendant's lifetime -- 20s here. A budget of bound + WaitDelay + 1s
+	// asserts something else: that the machine was not busy. It passed for a
+	// year and then failed once in a full-tree run that could not be
+	// reproduced afterwards under twenty spinning cores (#1557), which is what
+	// a wall-clock slack does when it is tight enough to measure the runner.
+	if max := escapedDescendantLifetime / 2; elapsed > max {
+		t.Errorf("run took %v of a %v budget: the wait sat for the escaped descendant, which lives %v",
+			elapsed, max, escapedDescendantLifetime)
 	}
 	if !escaped {
 		t.Error("a descendant out of the group's reach must be reported, not folded into a plain timeout")

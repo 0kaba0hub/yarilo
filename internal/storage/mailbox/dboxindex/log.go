@@ -116,9 +116,9 @@ type Change struct {
 	// one.
 	AddFlags, RemoveFlags uint8
 
-	// Mask is the keywords extension's bytes, for KeywordMaskSet. Bit n of
-	// byte m is the (m*8+n)th keyword name.
-	Mask []byte
+	// ExtName and ExtData are the extension and its bytes, for ExtRecordSet.
+	ExtName string
+	ExtData []byte
 
 	// Keyword is the name a keyword update names. Keywords arrive by name in
 	// the log and as bits in the base, so the two have to be brought together
@@ -137,12 +137,15 @@ const (
 	KeywordAdded
 	KeywordRemoved
 	KeywordsReset
-	// KeywordMaskSet carries the keywords extension's raw bytes for one
-	// message. A message appended in the tail gets its keywords this way and
-	// not by name: the reference writes the record's extension data rather
-	// than a keyword update, so a reader that only understood names would give
-	// a freshly delivered message no keywords at all.
-	KeywordMaskSet
+	// ExtRecordSet carries one extension's raw bytes for one message.
+	//
+	// A message appended in the tail has no record in the base, so everything
+	// about it beyond its uid and flags arrives this way: its keywords, and --
+	// for mdbox -- the map uid that says where its bytes are. A reader that
+	// only understood keyword updates by name would give a freshly delivered
+	// message no keywords, and a reader that looked for the map uid only in
+	// the base would not be able to find its body at all.
+	ExtRecordSet
 )
 
 // appendRecordSize is the width of one record inside an append.
@@ -154,8 +157,14 @@ const (
 // the first version of this reader did.
 const appendRecordSize = 8
 
-// ReadChanges walks a transaction log from offset and returns the appends and
-// expunges it carries, in order.
+// ReadChanges walks a transaction log from offset and returns the changes it
+// carries, in order.
+//
+// base is the extension table of the index this log belongs to. The intros in
+// a log refer to extensions by the id that table holds once they have been
+// introduced by name -- which happens in a file rotation may have removed -- so
+// without it the extension records cannot be attributed and a message appended
+// in the tail comes back with no keywords and no way to find its bytes.
 //
 // Records of other types are skipped by their own size rather than refused.
 // That is not laxness: the log holds keyword updates, extension introductions
@@ -165,7 +174,7 @@ const appendRecordSize = 8
 // A message may be expunged by more than one record -- the reference writes
 // both a plain and a modseq-carrying expunge for the same uid -- so callers
 // apply these to a set rather than counting them.
-func ReadChanges(b []byte, offset int) ([]Change, error) {
+func ReadChanges(b []byte, offset int, base []Extension) ([]Change, error) {
 	var out []Change
 	be := binary.BigEndian
 	le := binary.LittleEndian
@@ -175,7 +184,10 @@ func ReadChanges(b []byte, offset int) ([]Change, error) {
 		name  string
 		width int
 	}
-	var registry []known
+	registry := make([]known, 0, len(base))
+	for _, e := range base {
+		registry = append(registry, known{name: e.Name, width: int(e.RecordSize)})
+	}
 	var currentExt string
 	var currentWidth int
 	for pos := offset; pos+8 <= len(b); {
@@ -251,14 +263,17 @@ func ReadChanges(b []byte, offset int) ([]Change, error) {
 			}
 
 		case typeExtRecUpdate:
-			if currentExt != "keywords" || currentWidth == 0 {
+			if currentExt == "" || currentWidth == 0 {
 				break
 			}
 			stride := (4 + currentWidth + 3) &^ 3
 			for i := 0; i+stride <= len(data); i += stride {
-				mask := make([]byte, currentWidth)
-				copy(mask, data[i+4:i+4+currentWidth])
-				out = append(out, Change{Type: KeywordMaskSet, UID: le.Uint32(data[i:]), Mask: mask})
+				val := make([]byte, currentWidth)
+				copy(val, data[i+4:i+4+currentWidth])
+				out = append(out, Change{
+					Type: ExtRecordSet, UID: le.Uint32(data[i:]),
+					ExtName: currentExt, ExtData: val,
+				})
 			}
 
 		case typeFlagUpdate:
@@ -426,14 +441,20 @@ func Apply(base []Record, changes []Change, keywordNames []string) []Record {
 				out[i].Keywords = nil
 			}
 
-		case KeywordMaskSet:
+		case ExtRecordSet:
 			i, have := at[c.UID]
-			if !have || len(keywordNames) == 0 {
-				// Without the names the mask says nothing, and guessing at it
-				// would put somebody else's keyword on the message.
+			if !have {
 				continue
 			}
-			out[i].Keywords = keywordsFromMask(c.Mask, keywordNames)
+			if out[i].ExtData == nil {
+				out[i].ExtData = map[string][]byte{}
+			}
+			out[i].ExtData[c.ExtName] = c.ExtData
+			if c.ExtName == "keywords" && len(keywordNames) > 0 {
+				// Without the names the mask says nothing, and guessing at it
+				// would put somebody else's keyword on the message.
+				out[i].Keywords = keywordsFromMask(c.ExtData, keywordNames)
+			}
 		}
 	}
 	if len(gone) == 0 {
