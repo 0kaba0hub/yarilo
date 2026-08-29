@@ -85,3 +85,38 @@ func ParseHeader(b []byte) (Header, error) {
 	}
 	return h, nil
 }
+
+// Record is one message as the base index carries it.
+//
+// Only the two fields every index has. Everything else about a message --
+// keywords, the map uid, the guid, the cached virtual size -- lives in
+// extensions whose position is described by the extension headers, and reading
+// those is a separate piece of work.
+type Record struct {
+	UID   uint32
+	Flags uint8
+}
+
+// ParseRecords reads the base index's record array.
+//
+// This is where an import gets its message list. The transaction logs do not
+// hold it: the appends that created these messages were written to log files
+// that rotation has since deleted, and what the surviving logs carry is only
+// what happened after the base was last written.
+func ParseRecords(b []byte, h Header) ([]Record, error) {
+	start := int(h.HeaderSize)
+	if start > len(b) {
+		return nil, fmt.Errorf("dboxindex: records start at %d, past a %d-byte file", start, len(b))
+	}
+	area := b[start:]
+	if uint32(len(area))/h.RecordSize < h.MessagesCount {
+		return nil, fmt.Errorf("dboxindex: header counts %d messages and the file holds room for %d",
+			h.MessagesCount, uint32(len(area))/h.RecordSize)
+	}
+	out := make([]Record, 0, h.MessagesCount)
+	for i := uint32(0); i < h.MessagesCount; i++ {
+		r := area[i*h.RecordSize:]
+		out = append(out, Record{UID: binary.LittleEndian.Uint32(r), Flags: r[4]})
+	}
+	return out, nil
+}
