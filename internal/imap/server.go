@@ -631,18 +631,63 @@ var _ imapserver.SessionIMAP4rev2 = (*session)(nil)
 // bus needs only the name, so a folder without a resolvable GUID still wakes
 // IDLE sessions (#1183).
 func (s *session) emitMailboxChange(f *mailbox.Folder, eventType locks.EventType, uid uint32) {
+	s.emitMailboxChangeSized(f, eventType, uid, 0)
+}
+
+// usageDelta is the size to move the running total by for one message.
+//
+// VSize is the CRLF-counted size and is what quota is charged in, but records
+// written before Save returned it carry zero. Falling back to the physical size
+// is what the fetch path does for the same reason; both are the message, and a
+// total that ignored those messages would drift further than one that counts
+// them at their stored length.
+func usageDelta(m *mailbox.MessageMeta) uint32 {
+	if m.VSize > 0 {
+		return m.VSize
+	}
+	return m.Size
+}
+
+// emitMailboxChangeSized is emitMailboxChange for a caller that knows how large
+// the message was, which lets the post-commit usage be the cached total plus
+// this change instead of a fresh sweep of every folder (#1548). vsize 0 means
+// "not known here", and those callers pay for the sweep as before.
+func (s *session) emitMailboxChangeSized(f *mailbox.Folder, eventType locks.EventType, uid, vsize uint32) {
 	folder := f.Name
 	// delivered/expunged changes storage usage; runs before the Locker
 	// guard since it is independent of the event bus.
 	if eventType == locks.EventDelivered || eventType == locks.EventExpunged {
 		s.ftsNotify(f, eventType == locks.EventExpunged, uid)
-		s.quotaChanged()
+
+		// The delta is applied before the cache is invalidated, and the
+		// invalidation is skipped when it lands. quotaChanged exists because
+		// the total moved; when the session can say by how much, there is
+		// nothing stale to throw away -- and throwing it away first is what
+		// forced the account-wide sweep on every change (#1548).
+		after, have := quota.Usage{}, false
+		if vsize > 0 {
+			d, n := int64(vsize), int64(1)
+			if eventType == locks.EventExpunged {
+				d, n = -d, -n
+			}
+			after, have = s.usageAfterDelta(d, n)
+		}
+		if !have {
+			s.quotaChanged()
+		}
+
 		// one post-commit read feeds both quota_warning crossing detection
 		// and the quota_clone mirror.
 		wantWarn := len(s.srv.opts.QuotaPolicy.Warnings) > 0 && s.quotaSnapSet
 		wantClone := s.srv.opts.QuotaClone != nil
 		if wantWarn || wantClone {
-			if after, err := s.countUsage(false); err == nil {
+			if !have {
+				var err error
+				if after, err = s.countUsage(false); err == nil {
+					have = true
+				}
+			}
+			if have {
 				if wantWarn {
 					s.fireQuotaWarnings(after)
 				}
@@ -1408,9 +1453,9 @@ func (s *session) renameInbox(dest string) error {
 			_ = s.box.Remove(dest, newFilename)
 			return fmt.Errorf("imap/rename-inbox record: %w", err)
 		}
-		s.emitMailboxChange(destFolder, locks.EventDelivered, nm.UID)
+		s.emitMailboxChangeSized(destFolder, locks.EventDelivered, nm.UID, usageDelta(nm))
 		s.idx.ExpungeMessage(srcFolder.ID, m.UID) //nolint:errcheck
-		s.emitMailboxChange(srcFolder, locks.EventExpunged, m.UID)
+		s.emitMailboxChangeSized(srcFolder, locks.EventExpunged, m.UID, usageDelta(m))
 	}
 	srcFolder.Messages = 0
 	s.idx.SaveFolder(srcFolder) //nolint:errcheck
@@ -2140,7 +2185,7 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 			)
 		}
 	}
-	s.emitMailboxChange(f, locks.EventDelivered, m.UID)
+	s.emitMailboxChangeSized(f, locks.EventDelivered, m.UID, usageDelta(m))
 
 	// imapsieve (RFC 6785): run scripts bound to this mailbox on the APPEND
 	// event; may refile, discard, or reflag the message just stored.
@@ -2569,7 +2614,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename, "err", rerr)
 		}
 		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
-		s.emitMailboxChange(s.folder, locks.EventExpunged, m.UID)
+		s.emitMailboxChangeSized(s.folder, locks.EventExpunged, m.UID, usageDelta(m))
 		s.statsExpunged++
 		expunge_count++
 		if err := w.WriteExpunge(seqNum); err != nil {
@@ -3499,7 +3544,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 		}
 		indexTotalMs += time.Since(tIndex).Milliseconds()
 		count++
-		s.emitMailboxChange(destFolder, locks.EventDelivered, nm.UID)
+		s.emitMailboxChangeSized(destFolder, locks.EventDelivered, nm.UID, usageDelta(nm))
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(nm.UID))
 		copied = append(copied, copiedMsg{uid: nm.UID, filename: newFilename})
@@ -3818,6 +3863,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	type matched struct {
 		seqNum   uint32
 		srcUID   uint32
+		vsize    uint32
 		filename string
 		destUID  uint32
 		destFile string
@@ -3887,10 +3933,10 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			return fmt.Errorf("imap/move record: %w", err)
 		}
 		indexTotalMs += time.Since(tIndex).Milliseconds()
-		s.emitMailboxChange(destFolder, locks.EventDelivered, nm.UID)
+		s.emitMailboxChangeSized(destFolder, locks.EventDelivered, nm.UID, usageDelta(nm))
 		srcUIDs.AddNum(imaplib.UID(m.UID))
 		dstUIDs.AddNum(imaplib.UID(nm.UID))
-		hits = append(hits, matched{seqNum: seqNum, srcUID: m.UID, filename: m.Filename, destUID: nm.UID, destFile: newFilename, moved: srcBox == destH.box})
+		hits = append(hits, matched{seqNum: seqNum, srcUID: m.UID, vsize: m.VSize, filename: m.Filename, destUID: nm.UID, destFile: newFilename, moved: srcBox == destH.box})
 	}
 
 	// COPYUID needs at least one pair; the encoder rejects an empty set and
@@ -3912,7 +3958,7 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			srcBox.Remove(s.folder.Name, h.filename) //nolint:errcheck
 		}
 		srcIdx.ExpungeMessage(s.folder.ID, h.srcUID) //nolint:errcheck
-		s.emitMailboxChange(s.folder, locks.EventExpunged, h.srcUID)
+		s.emitMailboxChangeSized(s.folder, locks.EventExpunged, h.srcUID, h.vsize)
 		if err := w.WriteExpunge(h.seqNum); err != nil {
 			return err
 		}

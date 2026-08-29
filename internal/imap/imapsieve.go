@@ -153,7 +153,7 @@ func (s *session) imapSieveFileInto(name string, raw []byte, flags []string, cre
 		"file", newFilename,
 		"size", nm.Size,
 	)
-	s.emitMailboxChange(df, locks.EventDelivered, nm.UID)
+	s.emitMailboxChangeSized(df, locks.EventDelivered, nm.UID, usageDelta(nm))
 }
 
 // imapSieveExpunge removes the message from its current mailbox.

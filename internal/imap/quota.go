@@ -28,6 +28,41 @@ const quotaCacheTTL = time.Second
 // authoritative count backend): the aggregate virtual size + message count of
 // every personal-namespace folder. useCache serves a recent value for GETQUOTA
 // display bursts; enforcement passes false so decisions are always fresh.
+// usageAfterDelta answers the post-commit usage from the cached total plus the
+// change this session just made, when the cache is fresh enough to build on.
+//
+// The full count opens every folder of the account -- 24 us each, so 1.01 ms
+// across the 42 folders of a real mailbox, and the message count does not
+// enter into it. Run on every committed change, as the warning and clone path
+// did, fifty clients expunging in one folder produce fifty account-wide sweeps
+// and some two thousand folder-lock acquisitions per round (#1548).
+//
+// The session does not need the sweep to know the answer: it knows what it just
+// removed or added. Only somebody else's change has to be discovered, and that
+// is what the cache TTL is for.
+//
+// The timestamp is deliberately not refreshed. Extending it on every delta
+// would keep the cache alive for as long as the load lasts and another
+// session's change would never arrive; leaving it means the total is rebuilt a
+// second after its last real count, so the drift this introduces cannot
+// outlive the TTL.
+func (s *session) usageAfterDelta(dBytes, dMessages int64) (quota.Usage, bool) {
+	if s.quotaCacheAt.IsZero() || time.Since(s.quotaCacheAt) >= quotaCacheTTL {
+		return quota.Usage{}, false
+	}
+	u := s.quotaCacheUsage
+	u.StorageBytes += dBytes
+	u.Messages += dMessages
+	if u.StorageBytes < 0 {
+		u.StorageBytes = 0
+	}
+	if u.Messages < 0 {
+		u.Messages = 0
+	}
+	s.quotaCacheUsage = u
+	return u, true
+}
+
 func (s *session) countUsage(useCache bool) (quota.Usage, error) {
 	if s.box == nil || s.idx == nil {
 		return quota.Usage{}, nil
