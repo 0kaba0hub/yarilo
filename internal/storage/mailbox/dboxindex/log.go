@@ -179,3 +179,56 @@ func ReadChanges(b []byte, offset int) ([]Change, error) {
 	}
 	return out, nil
 }
+
+// Apply folds a log's changes onto the base's records and returns the mailbox.
+//
+// Idempotent, and that is a requirement of the format rather than a nicety.
+// The base header carries two offsets: it is synced up to head_offset, but the
+// records between tail_offset and head_offset have not necessarily reached the
+// mailbox, so the reference re-reads from tail when it syncs a file
+// (mail-index-sync-update.c). A reader that starts there sees changes the base
+// has already absorbed, and applying them twice would deliver a message twice.
+//
+// So: an append for a uid the base already carries leaves the base's record
+// alone, and an expunge for a uid nobody has is nothing. Neither is an error --
+// the format expects the overlap.
+//
+// The order is the log's order, because a uid may be appended and expunged
+// within one tail.
+func Apply(base []Record, changes []Change) []Record {
+	out := make([]Record, len(base))
+	copy(out, base)
+	at := make(map[uint32]int, len(base))
+	for i, r := range base {
+		at[r.UID] = i
+	}
+	gone := make(map[uint32]bool)
+
+	for _, c := range changes {
+		switch c.Type {
+		case Appended:
+			if _, have := at[c.UID]; have {
+				// Already in the base: this is the overlap, not a second
+				// message. The base's record is the one that carries the
+				// flags the reference has since applied.
+				delete(gone, c.UID)
+				continue
+			}
+			at[c.UID] = len(out)
+			out = append(out, Record{UID: c.UID, Flags: c.Flags})
+			delete(gone, c.UID)
+		case Expunged:
+			gone[c.UID] = true
+		}
+	}
+	if len(gone) == 0 {
+		return out
+	}
+	kept := out[:0]
+	for _, r := range out {
+		if !gone[r.UID] {
+			kept = append(kept, r)
+		}
+	}
+	return kept
+}
