@@ -41,8 +41,10 @@ func pickWalker(src string) (sourceWalker, error) {
 		return dboxV1Walker{}, nil
 	case "mdbox-v1", "mdboxv1", "yarilo-mdbox":
 		return mdboxV1Walker{}, nil
+	case "dbox-ref", "dboxref":
+		return dboxRefWalker{}, nil
 	default:
-		return nil, fmt.Errorf("unknown --src %q (want maildir|dbox-v1|mdbox-v1)", src)
+		return nil, fmt.Errorf("unknown --src %q (want maildir|dbox-v1|mdbox-v1|dbox-ref)", src)
 	}
 }
 

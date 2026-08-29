@@ -92,6 +92,15 @@ func Find(exts []Extension, name string) (Extension, bool) {
 	return Extension{}, false
 }
 
+// FieldOf returns an extension's bytes for a record, from wherever they came:
+// the base's record, or the log for a message the base does not carry.
+func FieldOf(r Record, e Extension) ([]byte, bool) {
+	if v, ok := r.ExtData[e.Name]; ok {
+		return v, true
+	}
+	return FieldIn(r.Raw, e)
+}
+
 // FieldIn returns the bytes an extension occupies in one record.
 func FieldIn(rec []byte, e Extension) ([]byte, bool) {
 	end := int(e.RecordOffset) + int(e.RecordSize)

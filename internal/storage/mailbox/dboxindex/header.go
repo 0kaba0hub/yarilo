@@ -101,6 +101,10 @@ type Record struct {
 	// names them, so they only become one thing when both have been read.
 	Keywords []string
 
+	// ExtData holds extension bytes that arrived in the log rather than in the
+	// base, which is everything about a message appended in the tail.
+	ExtData map[string][]byte
+
 	// Raw is the whole record, so an extension can be read out of it at the
 	// offset its own table entry gives. Kept rather than copied out field by
 	// field: which extensions a store carries is the store's business, and a

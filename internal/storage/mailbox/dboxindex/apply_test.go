@@ -135,7 +135,7 @@ func TestApplyingTheReferenceTailGivesTheMailbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changes, err := dboxindex.ReadChanges(dboxref.IndexLog(t), int(h.LogFileTailOffset))
+	changes, err := dboxindex.ReadChanges(dboxref.IndexLog(t), int(h.LogFileTailOffset), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
