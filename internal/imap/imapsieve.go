@@ -163,5 +163,11 @@ func (s *session) imapSieveExpunge(h *nsHandle, rel string, folder *mailbox.Fold
 		slog.Warn("imapsieve: expunge", "folder", rel, "uid", uid, "err", err)
 		return
 	}
+	// Without a size, so the quota total cannot be moved by a delta here and
+	// this commit pays for a full count. Deliberate, and not to be unified back
+	// into the sized path: what #1548 was about is the frequency of the
+	// account-wide sweep, and this path runs per Sieve rule, not per client
+	// expunge. Getting a size would mean reading the record back after removing
+	// it.
 	s.emitMailboxChange(folder, locks.EventExpunged, uid)
 }
