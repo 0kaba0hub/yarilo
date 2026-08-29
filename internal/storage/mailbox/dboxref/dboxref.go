@@ -39,9 +39,11 @@ func IndexBase(t *testing.T) []byte       { return read(t, "testdata/index-inbox
 func IndexLog(t *testing.T) []byte        { return read(t, "testdata/index-inbox.log") }
 func IndexLogRotated(t *testing.T) []byte { return read(t, "testdata/index-inbox.log.2") }
 
-// MapLog is the mdbox map's transaction log. There is no base to go with it:
-// the reference had not written one for this store, and had not written one for
-// a three-message store either.
+// MapLog is the mdbox map's transaction log. No base accompanies it, because
+// this store's map log has not rotated and the base is rewritten only once
+// enough log has been read since the last rewrite -- so a reader must handle
+// both a map with a base and a map without one. This fixture is the second
+// case.
 func MapLog(t *testing.T) []byte { return read(t, "testdata/map.log") }
 
 // StoreFile is the storage file the index fixtures describe.

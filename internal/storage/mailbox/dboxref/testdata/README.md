@@ -162,10 +162,19 @@ after is in `index-inbox.log`. A reader that takes only the log loses everything
 older than the rotation; one that takes only the base loses everything newer
 than `log_file_tail_offset`.
 
-**The map has no base at all.** `dovecot.map.index` was never written -- not for
-three messages, and not for this store after eight hundred transactions. Only
-`map.log` is on disk. So the map branch cannot be "parse the base and optionally
-replay": there is nothing to parse.
+**The map has no base here, and that is a state rather than a rule.**
+`dovecot.map.index` is absent from this store and from the earlier one. It is
+not that the reference never writes it: `mail-index-sync.c` rewrites the base
+once the log read since the last rewrite passes `rewrite_max_log_bytes`, or once
+the header points at a rotated-away `.log`. This store's map log has not rotated
+-- there is no `map.log.2` -- and eight hundred transactions is a count, not a
+size.
+
+So the map branch has to handle **both**: a base plus the log from
+`log_file_tail_offset` when `dovecot.map.index` exists, exactly as for a folder,
+and the log from the beginning when it does not. This fixture covers the second
+case only. The first arrives when the map is driven through a rotation, the same
+way INBOX was here.
 
 ## How they were made
 
