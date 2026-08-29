@@ -1,6 +1,7 @@
 package msgcache
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -184,5 +185,61 @@ func TestADeferredHandleDoesNotHopOverAnotherSessionsRecord(t *testing.T) {
 	}
 	if refs, ok := back.References(msgs[0]); !ok || len(refs) != 1 {
 		t.Errorf("the other session's record was hopped over and is unreachable: refs=%v ok=%v", refs, ok)
+	}
+}
+
+// A message expunged between the two windows takes its buffered fields with it.
+//
+// Appending for a UID the index no longer carries writes bytes no chain
+// reaches: nothing stamps an offset for it, so the record cannot be read and
+// cannot be reclaimed until the generation is bumped. It is not corruption --
+// it is growth, on the path a busy folder takes most often (#1549).
+//
+// The assertion is the file size, because the reader cannot tell the two apart:
+// a dropped field and a written-but-unreachable one both answer a miss.
+func TestADeferredHandleDropsFieldsForMessagesExpungedMeanwhile(t *testing.T) {
+	idx, fid, m := newFolder(t)
+
+	ic, ok := idx.(Index)
+	if !ok {
+		t.Skip("index has no cache surface")
+	}
+	path, err := ic.CachePath(fid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A first, ordinary window, so the file exists and has a size to compare.
+	warm := Open(idx, fid, Options{})
+	if warm == nil {
+		t.Fatal("no cache handle")
+	}
+	warm.StoreEnvelope(m, &imaplib.Envelope{Subject: "warm"})
+	warm.Close()
+
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat cache: %v", err)
+	}
+
+	h := Open(idx, fid, Options{DeferWrites: true})
+	if h == nil {
+		t.Fatal("no deferred handle")
+	}
+	h.StoreEnvelope(m, &imaplib.Envelope{Subject: "for a message about to go"})
+
+	if err := idx.ExpungeMessage(fid, m.UID); err != nil {
+		t.Fatalf("expunge: %v", err)
+	}
+
+	h.Close()
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat cache: %v", err)
+	}
+	if after.Size() != before.Size() {
+		t.Errorf("the cache grew by %d bytes for a message that is no longer in the index: the record was written and nothing can reach it",
+			after.Size()-before.Size())
 	}
 }

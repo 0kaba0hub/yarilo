@@ -249,6 +249,9 @@ type pendingField struct {
 	data    []byte
 }
 
+// UID is the message this field belongs to.
+func (p pendingField) UID() uint32 { return p.meta.UID }
+
 // openFolderCache opens (or lazily creates) the folder's cache pair. Any
 // invalidity removes the stale file and starts a fresh one -- the cache is
 // derived data, absence is its recovery mode.
@@ -444,10 +447,18 @@ func (fc *Handle) flush() {
 		return
 	}
 	for _, p := range fc.pending {
-		meta := p.meta
-		if off, ok := heads[meta.UID]; ok {
-			meta.CacheOffset = off
+		off, live := heads[p.UID()]
+		if !live {
+			// Expunged while the response was being written, which is ordinary
+			// on a busy folder. Appending anyway writes bytes no chain reaches:
+			// nothing stamps an offset for a UID the index no longer carries,
+			// so the record sits in the file until the generation is bumped.
+			// Not corruption -- growth on the path a busy mailbox takes most
+			// often (#1549).
+			continue
 		}
+		meta := p.meta
+		meta.CacheOffset = off
 		second.storeField(&meta, p.fieldID, p.data)
 	}
 	second.Close()
