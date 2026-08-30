@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/yarilomail/yarilo/internal/storage/logrotate"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -111,6 +112,10 @@ func copySidecarTmp(src, dst string) error {
 type Backend struct {
 	locker locks.Locker
 
+	// listUTF8 is the on-disk folder name encoding, mirroring the mailbox
+	// backends' option of the same name. Default true, as theirs is.
+	listUTF8 bool
+
 	// noCreate makes OpenFolder fail instead of initialising a folder whose
 	// index is absent: a fabricated index reads as a healthy empty folder and
 	// hides whatever the store really held.
@@ -146,6 +151,11 @@ func WithLocker(l locks.Locker) Option {
 	return func(b *Backend) { b.locker = l }
 }
 
+// WithListUTF8 sets the on-disk folder name encoding. It must match the mailbox
+// backend's setting: the index tree and the mail tree spell a folder the same
+// way or neither finds the other's (#1586).
+func WithListUTF8(v bool) Option { return func(b *Backend) { b.listUTF8 = v } }
+
 // WithNoCreate refuses to initialise a missing folder index. Use it in any tool
 // that must observe a store rather than establish one.
 func WithNoCreate() Option {
@@ -180,6 +190,7 @@ func WithLogCompaction(minBytes, maxBytes int64, minAge time.Duration) Option {
 // New constructs a Backend.
 func New(opts ...Option) *Backend {
 	b := &Backend{
+		listUTF8:           true,
 		users:              make(map[string]*refUserIndex),
 		logCompactMinBytes: defaultLogCompactMinBytes,
 		logCompactMaxBytes: defaultLogCompactMaxBytes,
@@ -216,6 +227,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 			driver:      u.Driver,
 			separator:   mailbox.SepOrDefault(u.Separator),
 			escapeChar:  u.StorageEscapeChar,
+			listUTF8:    b.listUTF8,
 			volatileDir: u.VolatileDir,
 			indexRoot:   u.IndexDir,
 			// Taken through the same function every other service calls, not
@@ -420,6 +432,7 @@ type userIndex struct {
 	driver      string // mailbox driver; selects the per-folder layout
 	separator   string // IMAP hierarchy separator; passed to FolderSubpath
 	escapeChar  string // storage-name escape char; must match the mailbox driver or the trees diverge
+	listUTF8    bool   // on-disk folder name encoding; must match the mailbox driver for the same reason
 	volatileDir string // base volatile dir (empty = disabled)
 	indexRoot   string // INDEX= override root (empty = co-located with mail root)
 	controlRoot string // where per-user control state lives (subscriptions)
@@ -665,8 +678,19 @@ func (u *userIndex) indexRootDir() string {
 
 // indexDir is the per-folder index directory: the index root joined with the
 // driver's folder sub-layout, so the index mirrors the mailbox tree.
+// diskName is the folder name as it appears on disk: modified UTF-7 unless the
+// deployment writes UTF-8 names. The mailbox driver applies the same rule, and
+// the two trees have to agree -- an index written under one spelling and mail
+// under the other is a folder neither half can find (#1586).
+func (u *userIndex) diskName(folder string) string {
+	if u.listUTF8 {
+		return folder
+	}
+	return mboxenc.ToModUTF7(folder)
+}
+
 func (u *userIndex) indexDir(folder string) string {
-	return filepath.Join(u.indexRootDir(), mailbox.FolderSubpathEscaped(u.driver, folder, folder, u.separator, u.escapeChar))
+	return filepath.Join(u.indexRootDir(), mailbox.FolderSubpathEscaped(u.driver, folder, u.diskName(folder), u.separator, u.escapeChar))
 }
 
 // folderVolatileDir returns the per-folder volatile directory when
@@ -675,7 +699,7 @@ func (u *userIndex) folderVolatileDir(folder string) string {
 	if u.volatileDir == "" {
 		return ""
 	}
-	return filepath.Join(u.volatileDir, mailbox.FolderSubpathEscaped(u.driver, folder, folder, u.separator, u.escapeChar))
+	return filepath.Join(u.volatileDir, mailbox.FolderSubpathEscaped(u.driver, folder, u.diskName(folder), u.separator, u.escapeChar))
 }
 
 // withFolderRO reloads the folder state, then runs read-only fn against the

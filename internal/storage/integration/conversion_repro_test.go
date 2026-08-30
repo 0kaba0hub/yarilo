@@ -499,3 +499,73 @@ func TestTheirMapStaysWhileAFlatLayoutFolderIsUnconverted(t *testing.T) {
 		t.Errorf("their map is still there after the last folder converted: %v", err)
 	}
 }
+
+// A foreign store whose folder names are in their encoding, adopted by a
+// deployment that writes UTF-8.
+//
+// Nothing matches by name across that difference: the folder is not found, so
+// it is not converted, and it is listed as mojibake that no client can select.
+// The disk is brought to what this configuration says, once, and then everything
+// agrees (#1586).
+func TestAForeignStoreWithEncodedNamesIsAdopted(t *testing.T) {
+	dial := embeddedLocksForSaveTest(t)
+	home := t.TempDir()
+	mail := filepath.Join(home, "mdbox")
+	// Their spelling of Вхідні and Вхідні/Робота.
+	const encoded = "&BBIERQRWBDQEPQRW-"
+	const encodedChild = "&BCAEPgQxBD4EQgQw-"
+	their := filepath.Join(mail, "mailboxes", encoded, encodedChild, "dbox-Mails")
+	if err := os.MkdirAll(their, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(mail, "storage"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for p, b := range map[string][]byte{
+		filepath.Join(their, "dovecot.index"):                   dboxref.IndexBase(t),
+		filepath.Join(their, "dovecot.index.log"):               dboxref.IndexLog(t),
+		filepath.Join(their, "dovecot.index.log.2"):             dboxref.IndexLogRotated(t),
+		filepath.Join(mail, "storage", "dovecot.map.index.log"): dboxref.MapLog(t),
+		filepath.Join(mail, "storage", "m.1"):                   dboxref.StoreFile(t),
+	} {
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	info := &mailbox.UserInfo{Username: "conv7@d00001.test", Home: home, Driver: "mdbox"}
+	box := mdbox.New(mdbox.WithLocker(dial())).OpenUser(info)
+	defer box.Close() //nolint:errcheck
+	idx := indexfile.New(indexfile.WithLocker(dial())).OpenUser(info)
+	defer idx.Close() //nolint:errcheck
+
+	// The name a client sends, which is not the name on disk.
+	f, err := idx.OpenFolder("Вхідні/Робота", 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	theirs, err := dboxindex.ParseHeader(dboxref.IndexBase(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.UIDValidity != theirs.UIDValidity {
+		t.Errorf("UIDVALIDITY is %d, and their index says %d -- the folder opened as new",
+			f.UIDValidity, theirs.UIDValidity)
+	}
+	msgs, err := idx.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("no messages: the store was not found under a name this deployment spells differently")
+	}
+	readAll(t, box, msgs)
+
+	// Both levels are on disk under this deployment's spelling now.
+	if _, serr := os.Stat(filepath.Join(mail, "mailboxes", "Вхідні", "Робота", "dbox-Mails")); serr != nil {
+		t.Errorf("the folder is not on disk under the configured encoding: %v", serr)
+	}
+	if _, serr := os.Stat(filepath.Join(mail, "mailboxes", encoded)); !os.IsNotExist(serr) {
+		t.Errorf("their spelling is still on disk: %v", serr)
+	}
+}

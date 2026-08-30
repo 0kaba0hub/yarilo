@@ -99,7 +99,25 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	}
 	dir, foreignRoot, ok := u.foreignFolderDir(fs.folder)
 	if !ok {
-		return false, nil
+		// Their names are spelled the way their configuration said, ours the
+		// way this one does, and where the two differ nothing matches by name:
+		// the folder is not found, so nothing is converted, and every non-ASCII
+		// folder in the store is invisible (#1586).
+		//
+		// So a miss is not yet an answer. If anything of theirs is still in the
+		// tree, the disk is brought to this deployment's encoding once, and the
+		// lookup is asked again. The walk costs a store with foreign leftovers
+		// in it, which is exactly the window this runs in.
+		adopted, aerr := u.adoptForeignNames()
+		if aerr != nil {
+			return false, aerr
+		}
+		if !adopted {
+			return false, nil
+		}
+		if dir, foreignRoot, ok = u.foreignFolderDir(fs.folder); !ok {
+			return false, nil
+		}
 	}
 	// Before any of the work: a conversion writes our index, imports their map
 	// and unlinks their files, so a store that cannot be written to fails
@@ -340,4 +358,47 @@ func (u *userIndex) carryForeignSubscriptions() error {
 	slog.Info("fileindex: carried their subscriptions", "user", u.username,
 		"folders", len(names), "from", u.mailRootDir(), "to", u.controlRoot)
 	return nil
+}
+
+// adoptForeignNames brings the folder directories of a store still holding
+// foreign state to this deployment's name encoding, and reports whether it
+// renamed anything.
+//
+// Both trees, because a folder is a directory in each: the mail tree holds its
+// messages and the index tree holds its index, and a rename in one without the
+// other splits the folder in half.
+func (u *userIndex) adoptForeignNames() (bool, error) {
+	roots := u.foreignRoots()
+	stale := false
+	for _, r := range roots {
+		left, err := dboxconv.AnyForeignFolderLeft(filepath.Join(r, "mailboxes"))
+		if err != nil {
+			return false, fmt.Errorf("fileindex/convert: %w", err)
+		}
+		if left {
+			stale = true
+			break
+		}
+	}
+	if !stale {
+		return false, nil
+	}
+
+	total := 0
+	// The mail tree as well as the index roots: a store with INDEX= set has its
+	// folders named in both, and only one of them is in foreignRoots when the
+	// two differ.
+	for _, r := range append(roots, u.mailRootDir()) {
+		n, err := dboxconv.AdoptNames(filepath.Join(r, "mailboxes"), u.listUTF8)
+		if err != nil {
+			return false, fmt.Errorf("fileindex/convert: %w", err)
+		}
+		total += n
+	}
+	if total == 0 {
+		return false, nil
+	}
+	slog.Info("fileindex: brought a foreign store's folder names to this deployment's encoding",
+		"user", u.username, "renamed", total, "list_utf8", u.listUTF8)
+	return true, nil
 }

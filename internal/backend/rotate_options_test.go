@@ -24,9 +24,13 @@ func TestIndexOptionsForwardsAnySingleRotationKnob(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// One option is always present (the locker), so a forwarded
-			// rotation shows up as a second.
-			got := len(IndexOptions(tc.cfg, nil)) > 1
+			// Some options are always present -- the locker, the on-disk name
+			// encoding -- so the baseline is what an empty config produces and
+			// a forwarded rotation is anything above it. Counting against a
+			// fixed number made this test fail the next time an unconditional
+			// option was added, which says nothing about rotation.
+			baseline := len(IndexOptions(config.StorageConfig{}, nil))
+			got := len(IndexOptions(tc.cfg, nil)) > baseline
 			if got != tc.want {
 				t.Errorf("rotation forwarded = %v, want %v -- a knob the operator set is being dropped between the config and the index",
 					got, tc.want)
