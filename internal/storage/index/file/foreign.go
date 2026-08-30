@@ -47,6 +47,20 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	if !dboxconv.HasForeignFolder(dir) {
 		return false, nil
 	}
+	// Before any of the work: a conversion ends by unlinking their files, so a
+	// store that cannot be written to fails on the last step having paid for
+	// every one before it -- and pays again on the next open, and the one after
+	// that. Refusing up front turns repeated silent work into one loud answer
+	// (#1571).
+	//
+	// A read-only store is often deliberate -- a snapshot, a replica -- so the
+	// refusal names the offline path rather than inventing a way to half-serve
+	// the folder. Nothing is remembered about the attempt: a "we tried" marker
+	// would be another silent state, and the next open should say the same
+	// thing until somebody changes the mount.
+	if err := dboxconv.CheckWritable(dir); err != nil {
+		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
+	}
 	storage := filepath.Join(u.mailRootDir(), "storage")
 	if !dboxconv.HasForeignMap(storage) {
 		// A folder of theirs with no map of theirs: the messages it names

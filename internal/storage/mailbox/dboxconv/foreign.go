@@ -14,6 +14,7 @@
 package dboxconv
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -137,6 +138,35 @@ func DropForeignMapIfDone(storageDir, mailboxesDir string, ours *mdboxmap.Map) (
 		return nil
 	})
 	return dropped, err
+}
+
+// ErrReadOnly says a store cannot be converted because it cannot be written to.
+var ErrReadOnly = errors.New("store is read-only; conversion deletes the foreign index and cannot run -- mount it writable or convert it offline")
+
+// CheckWritable reports whether a conversion could finish in dir, by writing
+// there rather than by reasoning about permissions.
+//
+// Asked before any work, not after. A conversion ends by unlinking their index
+// files, so a directory that refuses writes fails on the last step -- having
+// read their index, built ours and paid for all of it, on every open, for as
+// long as the store stays read-only. The probe costs two syscalls and turns
+// that into one refusal.
+//
+// It writes: mode bits, mount options and whatever else a filesystem decides by
+// are not one question that can be asked, and a check that reasoned about them
+// would be wrong on the case that matters -- a read-only mount under a
+// directory whose bits say 0700.
+func CheckWritable(dir string) error {
+	f, err := os.CreateTemp(dir, ".yarilo-convert-probe-*")
+	if err != nil {
+		return fmt.Errorf("dboxconv: %s: %w (%v)", dir, ErrReadOnly, err)
+	}
+	name := f.Name()
+	_ = f.Close()
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("dboxconv: %s: %w (%v)", dir, ErrReadOnly, err)
+	}
+	return nil
 }
 
 // ReadForeignMap reads their map: the base when there is one, then its log, and
