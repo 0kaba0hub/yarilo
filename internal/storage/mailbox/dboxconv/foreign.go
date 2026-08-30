@@ -44,16 +44,24 @@ const (
 	foreignMapLogPrev = "dovecot.map.index.log.2"
 )
 
-// StoreRoot is where an mdbox store lives, the same rule the driver applies:
-// mail_path when the deployment sets one, and <home>/mdbox when it does not.
+// StoreRoot is where a dbox store lives, the same rule the drivers apply:
+// mail_path when the deployment sets one, and <home>/<driver> when it does not.
 // Stated here rather than assumed, because the conversion has to read their
 // files from the directory the driver will later write ours into -- computing it
 // differently by one level puts the map somewhere nothing looks.
-func StoreRoot(home, mailPath string) string {
+func StoreRoot(home, mailPath, driver string) string {
 	if mailPath != "" {
 		return mailPath
 	}
-	return filepath.Join(home, "mdbox")
+	// The drivers root themselves one level below the home, under their own
+	// name, and they disagree about which name. Getting this wrong by one level
+	// puts the whole search somewhere nothing looks.
+	switch driver {
+	case "sdbox", "dbox":
+		return filepath.Join(home, "sdbox")
+	default:
+		return filepath.Join(home, "mdbox")
+	}
 }
 
 // HasForeignFolder reports whether dir holds another implementation's folder
