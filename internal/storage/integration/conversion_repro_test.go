@@ -4,11 +4,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	indexfile "github.com/yarilomail/yarilo/internal/storage/index/file"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxref"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
 	"github.com/yarilomail/yarilo/internal/userstate/subs"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -219,4 +221,63 @@ func containsString(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// A converted store's map records carry the messages' GUIDs.
+//
+// Their map has no GUID field of its own, so the records an import appends have
+// none, and the storage rebuild -- which pairs a physical record with its map
+// entry by GUID -- would have nothing to match on a converted store. The value
+// is not fetched from the storage files: their folder index carries one per
+// message and the conversion has it in hand (#1573).
+func TestConvertedMapRecordsCarryTheirGUIDs(t *testing.T) {
+	dial := embeddedLocksForSaveTest(t)
+	home := foreignHome(t)
+	info := &mailbox.UserInfo{Username: "conv1@d00001.test", Home: home, Driver: "mdbox"}
+
+	idx := indexfile.New(indexfile.WithLocker(dial())).OpenUser(info)
+	defer idx.Close() //nolint:errcheck
+	f, err := idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	msgs, err := idx.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := mdboxmap.Open(filepath.Join(home, "mdbox", "storage"), info.Username,
+		mdboxmap.WithLocker(dial()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close() //nolint:errcheck
+
+	byUID := map[uint32]mdboxmap.MapEntry{}
+	for _, r := range m.Records() {
+		byUID[r.UID] = r
+	}
+	var zero [16]byte
+	for _, msg := range msgs {
+		mapUID, perr := strconv.ParseUint(msg.Filename, 10, 32)
+		if perr != nil {
+			t.Fatalf("uid %d: map uid %q: %v", msg.UID, msg.Filename, perr)
+		}
+		rec, ok := byUID[uint32(mapUID)]
+		if !ok {
+			t.Fatalf("uid %d names map uid %d, which the map does not carry", msg.UID, mapUID)
+		}
+		if msg.GUID == zero {
+			t.Fatalf("uid %d has no GUID in the folder index, so this proves nothing", msg.UID)
+		}
+		if rec.GUID != msg.GUID {
+			t.Errorf("map uid %d carries guid %x, and the message's is %x", mapUID, rec.GUID, msg.GUID)
+		}
+	}
+
+	// The pairing the GUID exists for: a rebuild finds the record by it.
+	first := msgs[0]
+	if _, ok, lerr := m.LookupByGUID(first.GUID); lerr != nil || !ok {
+		t.Errorf("looking a converted record up by its guid: ok=%v err=%v", ok, lerr)
+	}
 }

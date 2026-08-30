@@ -96,6 +96,48 @@ func (m *Map) SetRefcountsFromReferences(refs map[uint32]int) (int, error) {
 	return zeroed, nil
 }
 
+// SetGUIDs stamps a GUID onto records that carry none, and reports how many it
+// wrote.
+//
+// For a converted store. Their map does not carry GUIDs, so the records an
+// import appends have none; their folder index does carry one per message, and
+// the conversion reads it there. So the value arrives on the folder that
+// converts, not from a walk over every storage file to parse every trailer.
+//
+// A record that already has one is left alone: the GUID is the message's
+// identity and a second opinion about it is not an update.
+func (m *Map) SetGUIDs(guids map[uint32][16]byte) (int, error) {
+	if len(guids) == 0 {
+		return 0, nil
+	}
+	var zero [16]byte
+	written := 0
+	err := m.withMapLock(func() error {
+		if err := m.reloadLocked(); err != nil {
+			return err
+		}
+		written = 0
+		for i, count := 0, m.st.count(); i < count; i++ {
+			e := m.st.at(i)
+			g, ok := guids[e.UID]
+			if !ok || g == zero || e.GUID != zero {
+				continue
+			}
+			e.GUID = g
+			m.st.setAt(i, e)
+			written++
+		}
+		if written == 0 {
+			return nil
+		}
+		return m.flushLocked()
+	})
+	if err != nil {
+		return 0, err
+	}
+	return written, nil
+}
+
 // GetZeroRefFiles returns the set of distinct file_ids that
 // contain at least one record with refcount == 0. These are the
 // candidate files for purge; the caller picks one (or several)
