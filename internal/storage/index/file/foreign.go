@@ -39,7 +39,7 @@ func (u *userIndex) foreignFolderDir(folder string) string {
 // folder, with no map to convert and a different question to answer about
 // naming; refusing here is how that stays a separate piece of work rather than
 // a half-done one.
-func (u *userIndex) convertForeignFolder(fs *folderState, uidValidity uint32) (bool, error) {
+func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	if u.driver != "mdbox" {
 		return false, nil
 	}
@@ -94,8 +94,10 @@ func (u *userIndex) convertForeignFolder(fs *folderState, uidValidity uint32) (b
 	// Their UID space, kept whole: the same UIDVALIDITY, the same UIDs, and
 	// their next_uid rather than one past the highest surviving message. A
 	// client reconnecting over this mailbox then finds what it left (#1568).
-	// The caller's uidValidity is ignored here, and deliberately: a folder that
-	// exists in their store is not a new folder.
+	//
+	// The uidValidity the opener asked for plays no part, which is why it is
+	// not a parameter here: a folder that exists in their store is not a new
+	// folder, and the only right answer is the one their index carries.
 	if hdr.UIDValidity == 0 {
 		return false, fmt.Errorf("fileindex/convert: folder %q: their index carries no uid_validity", fs.folder)
 	}
