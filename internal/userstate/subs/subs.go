@@ -15,6 +15,7 @@ package subs
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -32,19 +33,23 @@ import (
 // upgrades preserve existing state, shared/public use
 // "subscriptions-<ns>" siblings in the same home.
 type Store struct {
-	path     string
-	username string
-	owner    string
-	locker   locks.Locker
+	path string
+	// separator is the hierarchy separator a client sees. Only used to join the
+	// levels of another implementation's file, which stores them apart.
+	separator string
+	username  string
+	owner     string
+	locker    locks.Locker
 }
 
 // New constructs a Store rooted at home/<filename>.
 func New(home, filename, username, owner string, locker locks.Locker) *Store {
 	return &Store{
-		path:     filepath.Join(home, filename),
-		username: username,
-		owner:    owner,
-		locker:   locker,
+		path:      filepath.Join(home, filename),
+		separator: "/",
+		username:  username,
+		owner:     owner,
+		locker:    locker,
 	}
 }
 
@@ -86,17 +91,35 @@ func (s *Store) Snapshot() (map[string]struct{}, error) {
 	return s.load()
 }
 
+// load reads the file into a set.
+//
+// It may find another implementation's file rather than ours: the two share a
+// filename, and on any deployment that does not move the control root they
+// share a directory as well. Read as ours, theirs answers LIST with its version
+// header as a subscribed folder and with tab-joined, modified-UTF-7 names --
+// which is what a store nobody has converted yet used to show (#1583). So the
+// format is checked, not assumed.
 func (s *Store) load() (map[string]struct{}, error) {
-	f, err := os.Open(s.path)
+	raw, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return make(map[string]struct{}), nil
 		}
 		return nil, fmt.Errorf("userstate/subs: open: %w", err)
 	}
-	defer f.Close()
+	if looksForeign(raw) {
+		names, ferr := ReadForeign(s.path, s.separator)
+		if ferr != nil {
+			return nil, ferr
+		}
+		out := make(map[string]struct{}, len(names))
+		for _, n := range names {
+			out[n] = struct{}{}
+		}
+		return out, nil
+	}
 	subs := make(map[string]struct{})
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(bytes.NewReader(raw))
 	for sc.Scan() {
 		name := strings.TrimSpace(sc.Text())
 		if name == "" {

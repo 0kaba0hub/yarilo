@@ -20,13 +20,48 @@ func (u *userIndex) mailRootDir() string {
 	return dboxconv.StoreRoot(u.home, u.mailPath)
 }
 
-// foreignFolderDir is where another implementation would have kept this
-// folder's index: with the messages, in the folder's own directory. Ours may be
-// somewhere else entirely, which is the reason this is computed from the mail
-// root rather than from fs.indexDir.
-func (u *userIndex) foreignFolderDir(folder string) string {
-	return filepath.Join(u.mailRootDir(),
-		mailbox.FolderSubpathEscaped(u.driver, folder, folder, u.separator, u.escapeChar))
+// foreignRoots are the roots another implementation may have kept its index
+// under, most specific first.
+//
+// Their index follows their own INDEX= setting, exactly as ours follows ours:
+// with one set, both a folder's index and the map live under it and only the
+// message files stay with the mail. A store written that way has nothing at all
+// under the mail root except payloads, so looking there alone finds no foreign
+// folder and converts nothing -- silently, since a store with no foreign index
+// is indistinguishable from a store already converted (#1583).
+//
+// Which root is theirs cannot be read off their config, which is not here. Ours
+// is the one candidate worth trying, because an in-place conversion happens on
+// a deployment pointed at the store the other implementation left, laid out the
+// way it left it.
+func (u *userIndex) foreignRoots() []string {
+	if u.indexRoot != "" && u.indexRoot != u.mailRootDir() {
+		return []string{u.indexRoot, u.mailRootDir()}
+	}
+	return []string{u.mailRootDir()}
+}
+
+// foreignFolderDir returns the directory holding this folder's foreign index,
+// and the root it was found under, or false when there is none.
+func (u *userIndex) foreignFolderDir(folder string) (dir, root string, ok bool) {
+	sub := mailbox.FolderSubpathEscaped(u.driver, folder, folder, u.separator, u.escapeChar)
+	for _, r := range u.foreignRoots() {
+		if candidate := filepath.Join(r, sub); dboxconv.HasForeignFolder(candidate) {
+			return candidate, r, true
+		}
+	}
+	return "", "", false
+}
+
+// foreignMapDir returns the directory holding their map. It follows their index
+// rather than their mail: the map is index-side state, and INDEX= moves it.
+func (u *userIndex) foreignMapDir(root string) (string, bool) {
+	for _, r := range append([]string{root}, u.foreignRoots()...) {
+		if candidate := filepath.Join(r, "storage"); dboxconv.HasForeignMap(candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 // convertForeignFolder builds this folder's index from another implementation's,
@@ -45,8 +80,8 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	if u.driver != "mdbox" {
 		return false, nil
 	}
-	dir := u.foreignFolderDir(fs.folder)
-	if !dboxconv.HasForeignFolder(dir) {
+	dir, foreignRoot, ok := u.foreignFolderDir(fs.folder)
+	if !ok {
 		return false, nil
 	}
 	// Before any of the work: a conversion writes our index, imports their map
@@ -69,7 +104,15 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	// an empty map of its own -- the folder index pointed at map uids nothing
 	// could resolve, every body came back unreadable, and the rebuild that
 	// follows dropped the records (#1579).
-	theirStorage := filepath.Join(u.mailRootDir(), "storage")
+	// Resolving the paths is stat and nothing else, so it happens before the
+	// probe without breaking the probe's rule. What it must not do is act on
+	// what it finds: a missing map of theirs is refused below, after the probe,
+	// so a store that is both unwritable and incomplete answers with the fault
+	// an operator can do something about.
+	theirStorage, haveTheirMap := u.foreignMapDir(foreignRoot)
+	if !haveTheirMap {
+		theirStorage = filepath.Join(foreignRoot, "storage")
+	}
 	// ourStorage mirrors the mdbox driver's mapStoragePath(). It is a different
 	// layer and cannot be called from here, so the rule is written twice on
 	// purpose -- and writing it twice is what produced #1579 in the first
@@ -92,12 +135,12 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	if err := dboxconv.CheckWritable(fs.indexDir, dir, theirStorage, ourStorage); err != nil {
 		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
 	}
-	if !dboxconv.HasForeignMap(theirStorage) {
+	if !haveTheirMap {
 		// A folder of theirs with no map of theirs: the messages it names
 		// cannot be located at all. Refused rather than converted into an empty
 		// folder, which is the one outcome nobody checks.
-		return false, fmt.Errorf("fileindex/convert: folder %q has a foreign index and %s has no foreign map",
-			fs.folder, theirStorage)
+		return false, fmt.Errorf("fileindex/convert: folder %q has a foreign index and no foreign map under %s",
+			fs.folder, foreignRoot)
 	}
 
 	var opts []mdboxmap.Option
@@ -229,7 +272,7 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	// A failure here is logged and not returned. The folder in hand is
 	// converted and readable; refusing to open it because a file elsewhere
 	// could not be unlinked would turn a tidying step into an outage.
-	dropped, derr := dboxconv.DropForeignMapIfDone(theirStorage, filepath.Join(u.mailRootDir(), "mailboxes"), u.mailRootDir(), m)
+	dropped, derr := dboxconv.DropForeignMapIfDone(theirStorage, filepath.Join(foreignRoot, "mailboxes"), u.mailRootDir(), m)
 	switch {
 	case derr != nil:
 		slog.Warn("fileindex: could not finish the store conversion; their map is still in place",
@@ -263,7 +306,7 @@ func fsyncDir(dir string) error {
 // function the sessions and the admin API call, rather than a second spelling
 // of it (#1579).
 func (u *userIndex) carryForeignSubscriptions() error {
-	names, err := dboxconv.ReadForeignSubscriptions(u.mailRootDir(), u.separator)
+	names, err := subs.ReadForeign(filepath.Join(u.mailRootDir(), "subscriptions"), u.separator)
 	if err != nil {
 		return fmt.Errorf("fileindex/convert: subscriptions: %w", err)
 	}
