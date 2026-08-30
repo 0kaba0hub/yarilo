@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	indexfile "github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxindex"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxref"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -241,5 +242,129 @@ func TestTheirIndexSurvivesAConversionThatCannotWriteOurs(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("%s was removed although ours was never written: %v", name, err)
 		}
+	}
+}
+
+// The conversion keeps their UID space whole: the same UIDs, the same
+// UIDVALIDITY, and their next_uid.
+//
+// This is what makes reading a store in place worth doing. A client reconnects
+// over the same mailbox, finds the UIDs it left and resynchronises nothing; new
+// numbers would make it refetch every message, which costs what a migration
+// over IMAP costs. RFC 3501 puts it the other way round -- UIDVALIDITY changes
+// when UIDs are not preserved -- so preserving them means it must not (#1568).
+//
+// The oracle is their own index header, read straight from the fixture rather
+// than from anything of ours.
+func TestTheConversionKeepsTheirUIDSpace(t *testing.T) {
+	theirs, err := dboxindex.ParseHeader(dboxref.IndexBase(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	home := foreignStore(t)
+	idx, _ := openStore(t, home)
+	f, err := idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	if f.UIDValidity != theirs.UIDValidity {
+		t.Errorf("UIDVALIDITY is %d, and their index says %d", f.UIDValidity, theirs.UIDValidity)
+	}
+
+	msgs, err := idx.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Their live UIDs: the base holds 1, 2, 3 and 5, and the log appends 6 and
+	// expunges 5.
+	want := []uint32{1, 2, 3, 6}
+	if len(msgs) != len(want) {
+		t.Fatalf("got %d messages, want %d", len(msgs), len(want))
+	}
+	for i, uid := range want {
+		if msgs[i].UID != uid {
+			t.Errorf("message %d has uid %d, want %d", i+1, msgs[i].UID, uid)
+		}
+	}
+
+	// next_uid is 7 because uid 6 exists. The case this guards is the one their
+	// counter records and their records do not: uid 4 and uid 5 are gone, so a
+	// reader deriving the counter from what survives has no way to know how far
+	// it really moved. Here that reader would agree by luck, because the
+	// highest surviving uid happens to be the highest ever used.
+	const wantNext = 7
+	if f.NextUID != wantNext {
+		t.Errorf("next uid is %d, want %d -- the highest surviving uid plus one is %d",
+			f.NextUID, wantNext, want[len(want)-1]+1)
+	}
+}
+
+// A folder whose last message was expunged keeps their next_uid, which is
+// higher than anything the folder still holds.
+//
+// This is the case the counter records and the messages cannot: the reference
+// moves next_uid as it applies each append and journals nothing, so a message
+// appended and then expunged leaves the counter moved and no record behind. A
+// reader that took the highest surviving uid plus one would hand the next
+// delivery uid 3 -- a number a client has already seen carrying different mail
+// (#1568).
+//
+// The oracle is the reference's own status output over the folder this fixture
+// came from: messages=2 uidnext=4 uidvalidity=1788118011.
+func TestAnExpungedTailKeepsTheirNextUID(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "mdbox")
+	dir := filepath.Join(root, "mailboxes", "Tail", "dbox-Mails")
+	storage := filepath.Join(root, "storage")
+	for _, d := range []string{dir, storage} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, b := range map[string][]byte{
+		filepath.Join(dir, "dovecot.index.log"):         dboxref.IndexTailLog(t),
+		filepath.Join(storage, "dovecot.map.index.log"): dboxref.MapTailLog(t),
+		filepath.Join(storage, "m.1"):                   dboxref.StoreTailFile(t),
+	} {
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	idx, _ := openStore(t, home)
+	f, err := idx.OpenFolder("Tail", 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	const (
+		wantUIDValidity = 1788118011
+		wantNextUID     = 4
+		wantMessages    = 2
+	)
+	if f.UIDValidity != wantUIDValidity {
+		t.Errorf("UIDVALIDITY is %d, and the reference reports %d", f.UIDValidity, wantUIDValidity)
+	}
+	if f.NextUID != wantNextUID {
+		t.Errorf("next uid is %d, and the reference reports %d; the highest surviving uid plus one is 3",
+			f.NextUID, wantNextUID)
+	}
+	msgs, err := idx.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != wantMessages {
+		t.Fatalf("got %d messages, and the reference reports %d", len(msgs), wantMessages)
+	}
+	if msgs[0].UID != 1 || msgs[1].UID != 2 {
+		t.Errorf("uids are %d and %d, want 1 and 2", msgs[0].UID, msgs[1].UID)
+	}
+	if !hasFlag(msgs[0].Flags, `\Seen`) {
+		t.Errorf("uid 1 has flags %v, and the reference reports \\Seen", msgs[0].Flags)
+	}
+	if len(msgs[1].Flags) != 0 {
+		t.Errorf("uid 2 has flags %v, and the reference reports none", msgs[1].Flags)
 	}
 }

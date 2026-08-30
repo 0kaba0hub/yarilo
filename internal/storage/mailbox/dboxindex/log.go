@@ -66,6 +66,7 @@ const (
 	typeExpunge       = 0x00000001
 	typeAppend        = 0x00000002
 	typeFlagUpdate    = 0x00000004
+	typeHeaderUpdate  = 0x00000020
 	typeKeywordUpdate = 0x00000400
 	typeKeywordReset  = 0x00000800
 	typeExpungeGUID   = 0x00002000
@@ -117,8 +118,12 @@ type Change struct {
 	AddFlags, RemoveFlags uint8
 
 	// ExtName and ExtData are the extension and its bytes, for ExtRecordSet.
+	// ExtData also carries a header span, for HeaderField.
 	ExtName string
 	ExtData []byte
+
+	// HeaderOffset is where a HeaderField's bytes belong in the base header.
+	HeaderOffset int
 
 	// Keyword is the name a keyword update names. Keywords arrive by name in
 	// the log and as bits in the base, so the two have to be brought together
@@ -137,7 +142,16 @@ const (
 	KeywordAdded
 	KeywordRemoved
 	KeywordsReset
-	// ExtRecordSet carries one extension's raw bytes for one message.
+	// HeaderField carries one span of the index's base header, as a log
+	// record rather than a rewritten base.
+	//
+	// Where next_uid lives after the base was written. A folder whose last
+	// messages were appended and then expunged has a next_uid higher than
+	// anything its records show, and higher than the base knows: the base
+	// predates those appends and the records are gone. Taking max(uid)+1
+	// instead hands the next delivery a uid a client has already seen under
+	// different mail.
+	HeaderField
 	//
 	// A message appended in the tail has no record in the base, so everything
 	// about it beyond its uid and flags arrives this way: its keywords, and --
@@ -241,6 +255,25 @@ func ReadChangesAndExtensions(b []byte, offset int, base []Extension) ([]Change,
 					out = append(out, Change{Type: Expunged, UID: uid})
 				}
 			}
+		case typeHeaderUpdate:
+			// {offset, size, data}, padded to four bytes. Several updates can
+			// share one record, which is why this walks rather than reading
+			// one and stopping.
+			for i := 0; i+4 <= len(data); {
+				off := int(le.Uint16(data[i:]))
+				size := int(le.Uint16(data[i+2:]))
+				if i+4+size > len(data) {
+					return out, nil, fmt.Errorf("dboxindex: header update at %d claims %d bytes past the record", pos, size)
+				}
+				out = append(out, Change{
+					Type:         HeaderField,
+					HeaderOffset: off,
+					ExtData:      append([]byte(nil), data[i+4:i+4+size]...),
+				})
+				i += 4 + size
+				i += (4 - i%4) % 4
+			}
+
 		case typeExtIntro:
 			if len(data) < extIntroFixed {
 				break
@@ -507,6 +540,58 @@ func withoutKeyword(list []string, want string) []string {
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// Header offsets a conversion cares about, in the base header both the file and
+// the log's header updates address.
+const (
+	hdrOffUIDValidity = 24
+	hdrOffNextUID     = 28
+)
+
+// HeaderState is what a folder's header says about identity and numbering:
+// which UID space this is, and where the next message goes.
+type HeaderState struct {
+	UIDValidity uint32
+	NextUID     uint32
+}
+
+// ApplyHeader folds the log onto the base's header values.
+//
+// Neither half is the answer on its own. The base is a snapshot from before the
+// log; the log carries updates to the same fields; and a folder with no base
+// has only the log.
+//
+// next_uid comes from three places, and the largest wins. Two are written down
+// -- the base, and a header update in the log -- and the third is implied: the
+// reference moves next_uid past each appended uid as it applies the append
+// (mail-index-sync-update.c: map->hdr.next_uid = rec->uid+1), rather than
+// journalling the counter. So a message appended and then expunged leaves no
+// record and no header update behind, and still moved the counter. Deriving
+// next_uid from the surviving records instead hands the next delivery a uid
+// some client has already seen carrying different mail.
+func ApplyHeader(base HeaderState, changes []Change) HeaderState {
+	out := base
+	for _, c := range changes {
+		if c.Type == Appended && c.UID >= out.NextUID {
+			out.NextUID = c.UID + 1
+		}
+		if c.Type != HeaderField {
+			continue
+		}
+		set := func(off int, dst *uint32) {
+			if c.HeaderOffset <= off && off+4 <= c.HeaderOffset+len(c.ExtData) {
+				*dst = binary.LittleEndian.Uint32(c.ExtData[off-c.HeaderOffset:])
+			}
+		}
+		set(hdrOffUIDValidity, &out.UIDValidity)
+		var next uint32
+		set(hdrOffNextUID, &next)
+		if next > out.NextUID {
+			out.NextUID = next
+		}
 	}
 	return out
 }

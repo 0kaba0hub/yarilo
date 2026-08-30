@@ -128,40 +128,46 @@ func (c *MapCorrespondence) Lookup(theirUID uint32) (ourUID, size uint32, err er
 }
 
 // ConvertFolder turns one of their folders into our message metadata, ready for
-// the index backend to write.
+// the index backend to write, together with the header state that says which
+// UID space it belongs to.
 //
-// UIDs are assigned fresh here, as the offline import does. That is wrong for
-// the purpose of reading a store in place -- a client that keeps its UIDs
-// resynchronises nothing, and one that does not refetches everything -- and it
-// is deliberately deferred rather than overlooked (#1568).
-func ConvertFolder(folderDir string, c *MapCorrespondence) ([]*mailbox.MessageMeta, error) {
-	recs, exts, err := ReadForeignFolder(folderDir)
+// Their UIDs and their UIDVALIDITY are carried across unchanged. That is the
+// point of reading a store in place: a client reconnects to a different server
+// over the same mailbox and finds its own UIDs, so it resynchronises nothing.
+// New UIDs with a new UIDVALIDITY would make every client refetch every
+// mailbox, which costs what a migration over IMAP costs (#1568).
+//
+// RFC 3501 says UIDVALIDITY must change when UIDs are not preserved; here they
+// are, so it must not.
+func ConvertFolder(folderDir string, c *MapCorrespondence) ([]*mailbox.MessageMeta, dboxindex.HeaderState, error) {
+	f, err := ReadForeignFolder(folderDir)
 	if err != nil {
-		return nil, err
+		return nil, dboxindex.HeaderState{}, err
 	}
+	recs, exts := f.Records, f.Exts
 	mapExt, ok := dboxindex.Find(exts, "mdbox")
 	if !ok {
-		return nil, fmt.Errorf("dboxconv: folder %s has no mdbox extension, so its messages cannot be located", folderDir)
+		return nil, f.Header, fmt.Errorf("dboxconv: folder %s has no mdbox extension, so its messages cannot be located", folderDir)
 	}
 	guidExt, hasGUID := dboxindex.Find(exts, "guid")
 
 	out := make([]*mailbox.MessageMeta, 0, len(recs))
-	for i, r := range recs {
+	for _, r := range recs {
 		field, ok := dboxindex.FieldOf(r, mapExt)
 		if !ok || len(field) < 8 {
-			return nil, fmt.Errorf("dboxconv: folder %s uid %d: mdbox field is %d bytes", folderDir, r.UID, len(field))
+			return nil, f.Header, fmt.Errorf("dboxconv: folder %s uid %d: mdbox field is %d bytes", folderDir, r.UID, len(field))
 		}
 		theirMapUID := binary.LittleEndian.Uint32(field)
 		saveDate := binary.LittleEndian.Uint32(field[4:])
 
 		ourMapUID, size, err := c.Lookup(theirMapUID)
 		if err != nil {
-			return nil, fmt.Errorf("dboxconv: folder %s uid %d: %w", folderDir, r.UID, err)
+			return nil, f.Header, fmt.Errorf("dboxconv: folder %s uid %d: %w", folderDir, r.UID, err)
 		}
 
 		m := &mailbox.MessageMeta{
-			// Fresh, ascending, and not theirs (#1568).
-			UID:      uint32(i + 1),
+			// Theirs, unchanged.
+			UID:      r.UID,
 			Filename: strconv.FormatUint(uint64(ourMapUID), 10),
 			Flags:    flagNames(r.Flags),
 			Keywords: r.Keywords,
@@ -180,7 +186,7 @@ func ConvertFolder(folderDir string, c *MapCorrespondence) ([]*mailbox.MessageMe
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out, f.Header, nil
 }
 
 // RemoveForeignFolder unlinks their folder files, and is the last step of a
