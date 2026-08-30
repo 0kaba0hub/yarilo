@@ -14,6 +14,7 @@
 package dboxconv
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -137,6 +138,51 @@ func DropForeignMapIfDone(storageDir, mailboxesDir string, ours *mdboxmap.Map) (
 		return nil
 	})
 	return dropped, err
+}
+
+// ErrReadOnly says a store cannot be converted because it cannot be written to.
+var ErrReadOnly = errors.New("store is read-only; conversion deletes the foreign index and cannot run -- mount it writable or convert it offline")
+
+// CheckWritable reports whether a conversion could finish, by writing to every
+// directory it would write to rather than by reasoning about permissions.
+//
+// Asked before any work, not after. A conversion ends by unlinking their index
+// files, so a directory that refuses writes fails on the last step -- having
+// read their index, built ours and paid for all of it, on every open, for as
+// long as the store stays read-only. The probe costs two syscalls and turns
+// that into one refusal.
+//
+// It writes: mode bits, mount options and whatever else a filesystem decides by
+// are not one question that can be asked, and a check that reasoned about them
+// would be wrong on the case that matters -- a read-only mount under a
+// directory whose bits say 0700.
+//
+// Every directory the critical section writes to has to be asked, not only the
+// one holding their index. Ours may be written elsewhere entirely when INDEX=
+// moves it, and the map lives under storage/ -- written when their map is
+// imported, and deleted from when the last folder converts. A mixed mount, with
+// the folder writable and storage/ not, would otherwise fail halfway: our folder
+// index written, their map neither imported nor removed.
+func CheckWritable(dirs ...string) error {
+	for _, dir := range dirs {
+		if err := checkWritable(dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkWritable(dir string) error {
+	f, err := os.CreateTemp(dir, ".yarilo-convert-probe-*")
+	if err != nil {
+		return fmt.Errorf("dboxconv: %s: %w (%v)", dir, ErrReadOnly, err)
+	}
+	name := f.Name()
+	_ = f.Close()
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("dboxconv: %s: %w (%v)", dir, ErrReadOnly, err)
+	}
+	return nil
 }
 
 // ReadForeignMap reads their map: the base when there is one, then its log, and

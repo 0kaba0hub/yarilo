@@ -47,7 +47,33 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	if !dboxconv.HasForeignFolder(dir) {
 		return false, nil
 	}
+	// Before any of the work: a conversion writes our index, imports their map
+	// and unlinks their files, so a store that cannot be written to fails
+	// partway having paid for every step before it -- and pays again on the
+	// next open, and the one after that. Refusing up front turns repeated
+	// silent work into one loud answer (#1571).
+	//
+	// Three directories, because the section writes to three: where ours goes,
+	// where theirs is deleted from, and storage/, which takes their map on the
+	// way in and loses it on the last folder out. A mount writable in one and
+	// not in another fails halfway, which is the state the probe exists to
+	// prevent.
+	//
+	// A read-only store is often deliberate -- a snapshot, a replica -- so the
+	// refusal names the offline path rather than inventing a way to half-serve
+	// the folder. Nothing is remembered about the attempt: a "we tried" marker
+	// would be another silent state, and the next open should say the same
+	// thing until somebody changes the mount.
 	storage := filepath.Join(u.mailRootDir(), "storage")
+	// Our index directory has to exist before it can be probed, and it may not:
+	// with INDEX= set it is a tree of its own. Creating it is work the
+	// conversion would do a moment later anyway.
+	if err := os.MkdirAll(fs.indexDir, 0o700); err != nil {
+		return false, fmt.Errorf("fileindex/convert: folder %q: %w (%v)", fs.folder, dboxconv.ErrReadOnly, err)
+	}
+	if err := dboxconv.CheckWritable(fs.indexDir, dir, storage); err != nil {
+		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
+	}
 	if !dboxconv.HasForeignMap(storage) {
 		// A folder of theirs with no map of theirs: the messages it names
 		// cannot be located at all. Refused rather than converted into an empty

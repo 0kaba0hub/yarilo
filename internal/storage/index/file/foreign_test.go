@@ -1,12 +1,15 @@
 package file_test
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	indexfile "github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxconv"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxindex"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxref"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
@@ -417,5 +420,107 @@ func TestAForeignFolderWithoutTheirMapIsRefused(t *testing.T) {
 	idx, _ := openStore(t, home)
 	if _, err := idx.OpenFolder("INBOX", 0); err == nil {
 		t.Error("a foreign folder with no foreign map opened clean")
+	}
+}
+
+// A store that cannot be written to is refused, and the refusal says what to do
+// about it.
+//
+// The conversion ends by unlinking their index files, so on a read-only store
+// it would fail on its last step having paid for every one before it -- and
+// again on the next open. One loud answer instead (#1571).
+func TestAReadOnlyStoreIsRefusedWithAWayOut(t *testing.T) {
+	home := foreignStore(t)
+	dir := filepath.Join(home, "mdbox", "mailboxes", "INBOX", "dbox-Mails")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skipf("cannot make the directory read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	idx, _ := openStore(t, home)
+	_, err := idx.OpenFolder("INBOX", 0)
+	if err == nil {
+		t.Fatal("a read-only store converted")
+	}
+	if !errors.Is(err, dboxconv.ErrReadOnly) {
+		t.Errorf("the refusal is %v, and it should say the store is read-only", err)
+	}
+	// An operator reading this has to learn the path and the alternative, not
+	// just that something failed.
+	for _, want := range []string{dir, "convert it offline"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+
+	// Nothing of theirs was touched, and nothing of ours was left behind.
+	for _, name := range []string{"dovecot.index", "dovecot.index.log", "dovecot.index.log.2"} {
+		if _, serr := os.Stat(filepath.Join(dir, name)); serr != nil {
+			t.Errorf("%s did not survive the refusal: %v", name, serr)
+		}
+	}
+
+	// And it says the same thing next time: a folder that failed carries no
+	// mark, because a mark is another silent state.
+	if _, err2 := idx.OpenFolder("INBOX", 0); !errors.Is(err2, dboxconv.ErrReadOnly) {
+		t.Errorf("the second open answers %v, and the mount has not changed", err2)
+	}
+}
+
+// The probe runs before the work, not after it.
+//
+// Proved by giving the store two faults at once: unwritable, and no map of
+// theirs. The map is what the conversion reads first, so whichever answer comes
+// back names the check that ran first.
+func TestTheWritabilityProbeRunsBeforeAnyWork(t *testing.T) {
+	home := foreignStore(t)
+	if err := os.Remove(filepath.Join(home, "mdbox", "storage", "dovecot.map.index.log")); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "mdbox", "mailboxes", "INBOX", "dbox-Mails")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skipf("cannot make the directory read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	idx, _ := openStore(t, home)
+	_, err := idx.OpenFolder("INBOX", 0)
+	if !errors.Is(err, dboxconv.ErrReadOnly) {
+		t.Errorf("the refusal is %v; the writability probe did not run first", err)
+	}
+}
+
+// A mixed mount is refused too: the folder writable, storage/ not.
+//
+// The critical section writes to storage/ as well -- their map is imported into
+// ours there, and removed from there when the last folder converts -- so probing
+// only the folder's own directory would let the conversion get as far as writing
+// our folder index and then stop, with their map neither imported nor removed
+// (#1571).
+func TestAStoreWhoseStorageIsReadOnlyIsRefused(t *testing.T) {
+	home := foreignStore(t)
+	storage := filepath.Join(home, "mdbox", "storage")
+	if err := os.Chmod(storage, 0o500); err != nil {
+		t.Skipf("cannot make the directory read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(storage, 0o700) })
+
+	idx, _ := openStore(t, home)
+	_, err := idx.OpenFolder("INBOX", 0)
+	if !errors.Is(err, dboxconv.ErrReadOnly) {
+		t.Fatalf("the refusal is %v, and storage/ cannot be written to", err)
+	}
+	if !strings.Contains(err.Error(), storage) {
+		t.Errorf("the refusal does not name %s: %v", storage, err)
+	}
+
+	// Nothing was written and nothing was taken: their folder index is intact
+	// and ours was not left behind.
+	dir := filepath.Join(home, "mdbox", "mailboxes", "INBOX", "dbox-Mails")
+	if _, serr := os.Stat(filepath.Join(dir, "dovecot.index")); serr != nil {
+		t.Errorf("their index did not survive the refusal: %v", serr)
+	}
+	if _, serr := os.Stat(filepath.Join(dir, "yarilo.index")); !os.IsNotExist(serr) {
+		t.Errorf("our index was written although the conversion was refused: %v", serr)
 	}
 }
