@@ -489,3 +489,38 @@ func TestTheWritabilityProbeRunsBeforeAnyWork(t *testing.T) {
 		t.Errorf("the refusal is %v; the writability probe did not run first", err)
 	}
 }
+
+// A mixed mount is refused too: the folder writable, storage/ not.
+//
+// The critical section writes to storage/ as well -- their map is imported into
+// ours there, and removed from there when the last folder converts -- so probing
+// only the folder's own directory would let the conversion get as far as writing
+// our folder index and then stop, with their map neither imported nor removed
+// (#1571).
+func TestAStoreWhoseStorageIsReadOnlyIsRefused(t *testing.T) {
+	home := foreignStore(t)
+	storage := filepath.Join(home, "mdbox", "storage")
+	if err := os.Chmod(storage, 0o500); err != nil {
+		t.Skipf("cannot make the directory read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(storage, 0o700) })
+
+	idx, _ := openStore(t, home)
+	_, err := idx.OpenFolder("INBOX", 0)
+	if !errors.Is(err, dboxconv.ErrReadOnly) {
+		t.Fatalf("the refusal is %v, and storage/ cannot be written to", err)
+	}
+	if !strings.Contains(err.Error(), storage) {
+		t.Errorf("the refusal does not name %s: %v", storage, err)
+	}
+
+	// Nothing was written and nothing was taken: their folder index is intact
+	// and ours was not left behind.
+	dir := filepath.Join(home, "mdbox", "mailboxes", "INBOX", "dbox-Mails")
+	if _, serr := os.Stat(filepath.Join(dir, "dovecot.index")); serr != nil {
+		t.Errorf("their index did not survive the refusal: %v", serr)
+	}
+	if _, serr := os.Stat(filepath.Join(dir, "yarilo.index")); !os.IsNotExist(serr) {
+		t.Errorf("our index was written although the conversion was refused: %v", serr)
+	}
+}
