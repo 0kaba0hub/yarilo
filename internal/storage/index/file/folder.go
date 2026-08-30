@@ -210,6 +210,15 @@ func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error
 				return fmt.Errorf("fileindex/openfolder: no index at %s for folder %q: %w",
 					fs.indexPath, fs.folder, os.ErrNotExist)
 			}
+			// Before deciding this folder is new: another implementation may
+			// have written it, in which case its state is on disk in their
+			// format and a fresh empty index would hide it (#1524).
+			switch converted, cerr := u.convertForeignFolder(fs, uidValidity); {
+			case cerr != nil:
+				return cerr
+			case converted:
+				return nil
+			}
 			return fs.createFresh(uidValidity)
 		case err != nil:
 			return fmt.Errorf("fileindex/openfolder: stat (locked recheck): %w", err)
