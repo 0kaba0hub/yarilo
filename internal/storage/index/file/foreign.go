@@ -1,6 +1,7 @@
 package file
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,11 +14,17 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
+// ErrSdboxAdoptionUnsupported says a store of theirs is in a shape this server
+// cannot take over in place. The offline importer reads the same store and
+// writes ours, which is the way through.
+var ErrSdboxAdoptionUnsupported = errors.New(
+	"adoption of a foreign sdbox store is not implemented -- import it offline with yarilo-migrate --src dbox-ref")
+
 // mailRootDir is where the messages are, as opposed to where our index is. The
 // two are different questions: our index follows INDEX=, their files sit with
 // the mail, and the mdbox driver roots the mail one level below the home.
 func (u *userIndex) mailRootDir() string {
-	return dboxconv.StoreRoot(u.home, u.mailPath)
+	return dboxconv.StoreRoot(u.home, u.mailPath, u.driver)
 }
 
 // foreignRoots are the roots another implementation may have kept its index
@@ -91,10 +98,22 @@ func (u *userIndex) foreignMapDir(root string) (string, bool) {
 //
 // mdbox only. Their sdbox store keeps each message in its own file inside the
 // folder, with no map to convert and a different question to answer about
-// naming; refusing here is how that stays a separate piece of work rather than
-// a half-done one.
+// naming, so adopting one is separate work.
+//
+// Separate work, and refused rather than skipped. Returning quietly opened the
+// folder as new: our index written beside theirs, and not one message visible,
+// because nothing scans a dbox directory into an index the way the maildir
+// sync does. An empty mailbox that looks healthy is the answer nobody checks,
+// and the mail is right there on disk (#1592).
 func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	if u.driver != "mdbox" {
+		if u.driver == "sdbox" || u.driver == "dbox" {
+			if dir, _, ok := u.foreignFolderDir(fs.folder); ok {
+				return false, fmt.Errorf(
+					"fileindex/convert: folder %q: %s holds a foreign sdbox index: %w",
+					fs.folder, dir, ErrSdboxAdoptionUnsupported)
+			}
+		}
 		return false, nil
 	}
 	dir, foreignRoot, ok := u.foreignFolderDir(fs.folder)
