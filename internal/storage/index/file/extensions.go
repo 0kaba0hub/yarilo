@@ -531,3 +531,51 @@ func decodeExpungeFloor(b []byte) uint64 {
 	}
 	return binary.LittleEndian.Uint64(b)
 }
+
+// ourExtensions is every extension name this package writes. An index carrying
+// one outside this set was written by something else.
+var ourExtensions = map[string]bool{
+	extNameDboxHdr:      true,
+	extNameModSeq:       true,
+	extNameKeywords:     true,
+	extNameExpungeFloor: true,
+	extNameInternalDate: true,
+	extNameHdrVsize:     true,
+	extNameVsize:        true,
+	extNameGUID:         true,
+	extNameCache:        true,
+	extNameLineage:      true,
+}
+
+// looksForeign reports whether an index file under a legacy canonical name was
+// written by another implementation rather than by an older yarilo.
+//
+// The names are ours historically and theirs currently, and the formats are
+// byte-compatible enough that their base index parses cleanly with our reader --
+// so neither the name nor a successful parse tells the two apart. The extension
+// table does: an mdbox store of theirs carries "mdbox", "mdbox-hdr" and
+// "hdr-pop3-uidl", none of which we write.
+//
+// Boundary, stated because it is narrow: this separates their mdbox store from
+// ours. An sdbox store of theirs need carry nothing outside our set, and would
+// not be recognised here -- which is consistent with the conversion path itself
+// being mdbox-only for now (#1524), and is why an unrecognised store is left
+// alone rather than converted.
+func looksForeign(path string) bool {
+	// Our own legacy format first: it predates the extensions this check reads,
+	// so an extension table is not a thing it has to have.
+	if _, isLegacy, err := detectAndDecodeLegacy(path); err == nil && isLegacy {
+		return false
+	}
+	mf, err := mailindex.Open(path)
+	if err != nil || mf == nil {
+		// Unreadable: not something to rename into our namespace either.
+		return true
+	}
+	for _, e := range mf.Extensions {
+		if !ourExtensions[e.Name] {
+			return true
+		}
+	}
+	return false
+}

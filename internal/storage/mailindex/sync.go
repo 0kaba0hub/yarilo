@@ -130,7 +130,7 @@ func Recreate(in RecreateInput) (backupPath string, err error) {
 	commitPath := tmpPath
 	if in.TmpDir != "" {
 		stagePath := fmt.Sprintf("%s.stage.%d.%d", in.Path, os.Getpid(), tmpSeq.Add(1))
-		if err := copyTmp(tmpPath, stagePath); err != nil {
+		if err := copyTmp(tmpPath, stagePath, in.Fsync); err != nil {
 			_ = os.Remove(tmpPath)
 			return "", fmt.Errorf("mailindex/recreate: cross-device stage: %w", err)
 		}
@@ -158,7 +158,10 @@ func Recreate(in RecreateInput) (backupPath string, err error) {
 
 // copyTmp copies src to dst with mode 0o600, for when src and the target are on
 // different filesystems and os.Rename would fail with EXDEV.
-func copyTmp(src, dst string) error {
+// copyTmp copies src onto dst. fsync makes the copy durable before it returns,
+// which matters only on the cross-device path: there the file the rename
+// commits is this copy, not the one Recreate already synced.
+func copyTmp(src, dst string, fsync bool) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -172,6 +175,13 @@ func copyTmp(src, dst string) error {
 		_ = out.Close()
 		_ = os.Remove(dst)
 		return err
+	}
+	if fsync {
+		if err := out.Sync(); err != nil {
+			_ = out.Close()
+			_ = os.Remove(dst)
+			return err
+		}
 	}
 	return out.Close()
 }

@@ -44,6 +44,21 @@ func (m *Map) lookupLocked(mapUID uint32) (MapEntry, bool) {
 	return m.st.at(i), true
 }
 
+// Records returns every record the map currently holds, in map order.
+//
+// For pairing a whole map against another one, where a lookup per record would
+// take the lock once per record and still have to be told what to look for. The
+// slice is a copy; the caller may keep it.
+func (m *Map) Records() []MapEntry {
+	lockRead(&m.mu)
+	defer m.mu.Unlock()
+	out := make([]MapEntry, 0, m.st.count())
+	for i, n := 0, m.st.count(); i < n; i++ {
+		out = append(out, m.st.at(i))
+	}
+	return out
+}
+
 // LookupMany resolves a batch of map_uids in a single lock hop.
 // Returns one MapEntry per requested UID; entries that did not
 // resolve carry UID=0. The result slice mirrors the input order.

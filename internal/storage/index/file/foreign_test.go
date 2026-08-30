@@ -1,0 +1,245 @@
+package file_test
+
+import (
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
+
+	indexfile "github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxref"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
+	"github.com/yarilomail/yarilo/pkg/mailbox"
+)
+
+// foreignStore lays out a store exactly as another implementation left it:
+// their folder index and log with the messages, their map log in storage/,
+// beside the storage file the two of them describe.
+func foreignStore(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	root := filepath.Join(home, "mdbox")
+	inbox := filepath.Join(root, "mailboxes", "INBOX", "dbox-Mails")
+	storage := filepath.Join(root, "storage")
+	for _, d := range []string{inbox, storage} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(path string, b []byte) {
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(inbox, "dovecot.index"), dboxref.IndexBase(t))
+	write(filepath.Join(inbox, "dovecot.index.log"), dboxref.IndexLog(t))
+	write(filepath.Join(inbox, "dovecot.index.log.2"), dboxref.IndexLogRotated(t))
+	write(filepath.Join(storage, "dovecot.map.index.log"), dboxref.MapLog(t))
+	write(filepath.Join(storage, "m.1"), dboxref.StoreFile(t))
+	return home
+}
+
+func openStore(t *testing.T, home string) (mailbox.UserIndex, mailbox.UserMailbox) {
+	t.Helper()
+	info := &mailbox.UserInfo{Username: "u1@d00001.test", Home: home, Driver: "mdbox"}
+	idx := indexfile.New().OpenUser(info)
+	box := mdbox.New().OpenUser(info)
+	t.Cleanup(func() { _ = idx.Close(); _ = box.Close() })
+	return idx, box
+}
+
+// A store another implementation wrote is opened by our server and read as our
+// own: their index becomes ours in place, the messages are not moved, and their
+// index files are gone afterwards.
+//
+// The oracle is that implementation's own fetch over this store, recorded in
+// the fixture README: uid 1 \Seen, uid 2 \Answered, uid 3 $Important, uid 4
+// expunged, uid 5 nothing.
+func TestAForeignStoreIsConvertedOnFirstOpen(t *testing.T) {
+	home := foreignStore(t)
+	idx, box := openStore(t, home)
+
+	f, err := idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("open INBOX: %v", err)
+	}
+	msgs, err := idx.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	// Four, not five: the expunged one is expunged, and a reader that replays
+	// their appends without their expunges brings it back.
+	if len(msgs) != 4 {
+		t.Fatalf("got %d messages, and their fetch reports four live", len(msgs))
+	}
+
+	want := []struct {
+		flags   []string
+		keyword string
+	}{
+		{[]string{`\Seen`}, ""},
+		{nil, ""},
+		{nil, "$Important"},
+		{nil, ""},
+	}
+	for i, w := range want {
+		got := msgs[i]
+		if len(w.flags) == 1 && !hasFlag(got.Flags, w.flags[0]) {
+			t.Errorf("message %d has flags %v, want %s", i+1, got.Flags, w.flags[0])
+		}
+		if w.keyword != "" && !hasFlag(got.Keywords, w.keyword) {
+			t.Errorf("message %d has keywords %v, want %s", i+1, got.Keywords, w.keyword)
+		}
+	}
+
+	// The bodies are reachable through our map, which is the whole claim of an
+	// in-place conversion: the map entries point at their storage file, at their
+	// offsets, and nothing was copied.
+	for _, m := range msgs {
+		rc, err := box.Fetch("INBOX", m.Filename, false)
+		if err != nil {
+			t.Fatalf("fetch %s: %v", m.Filename, err)
+		}
+		b, err := io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil {
+			t.Fatalf("read %s: %v", m.Filename, err)
+		}
+		if len(b) == 0 {
+			t.Errorf("message %s read as empty", m.Filename)
+		}
+	}
+
+	// Theirs is gone, and only theirs.
+	dir := filepath.Join(home, "mdbox", "mailboxes", "INBOX", "dbox-Mails")
+	for _, name := range []string{"dovecot.index", "dovecot.index.log", "dovecot.index.log.2"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s is still there after the conversion", name)
+		}
+	}
+	// Their map stays: a folder that has not been converted yet still addresses
+	// its mail through it (#1569).
+	if _, err := os.Stat(filepath.Join(home, "mdbox", "storage", "dovecot.map.index.log")); err != nil {
+		t.Errorf("their map log was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "mdbox", "storage", "m.1")); err != nil {
+		t.Errorf("the storage file was touched: %v", err)
+	}
+}
+
+// The second open is an ordinary open: there is nothing foreign left to find,
+// and the state read back is the state the conversion wrote.
+func TestASecondOpenDoesNotConvertAgain(t *testing.T) {
+	home := foreignStore(t)
+
+	idx, _ := openStore(t, home)
+	f, err := idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	first, err := idx.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = idx.Close()
+
+	idx2, _ := openStore(t, home)
+	f2, err := idx2.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	second, err := idx2.GetMessages(f2.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != len(first) {
+		t.Fatalf("second open sees %d messages, first saw %d", len(second), len(first))
+	}
+	for i := range first {
+		if first[i].UID != second[i].UID || first[i].Filename != second[i].Filename {
+			t.Errorf("message %d reads as uid %d/%s, was uid %d/%s",
+				i, second[i].UID, second[i].Filename, first[i].UID, first[i].Filename)
+		}
+	}
+}
+
+func hasFlag(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// Their index files are not taken into our namespace on the strength of their
+// name. The legacy canonical names are ours historically and theirs currently,
+// and renaming theirs leaves their store unopenable by them and unreadable by
+// us -- the file is gone from where they look and does not parse where we put
+// it (#1574).
+func TestAForeignIndexIsNotRenamedIntoOurNamespace(t *testing.T) {
+	home := foreignStore(t)
+	dir := filepath.Join(home, "mdbox", "mailboxes", "INBOX", "dbox-Mails")
+
+	// Read through the conversion path, which is what should claim this folder.
+	idx, _ := openStore(t, home)
+	if _, err := idx.OpenFolder("INBOX", 0); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	// Whatever happened, it was not a rename: nothing of theirs may end up
+	// under our name carrying their bytes.
+	if b, err := os.ReadFile(filepath.Join(dir, "yarilo.index")); err == nil {
+		if len(b) == len(dboxref.IndexBase(t)) {
+			t.Error("their index was renamed to ours rather than converted")
+		}
+	}
+}
+
+// The same folder, with the conversion out of the picture: a foreign index must
+// survive an open that has nothing to do with it.
+func TestAForeignIndexSurvivesAnOpenThatCannotConvertIt(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "dovecot.index"), dboxref.IndexBase(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dovecot.index.log"), dboxref.IndexLog(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := indexfile.New().OpenUser(&mailbox.UserInfo{Username: "u1@d00001.test", Home: dir})
+	defer idx.Close() //nolint:errcheck
+	if _, err := idx.OpenFolder("INBOX", 0); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	for _, name := range []string{"dovecot.index", "dovecot.index.log"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s was taken away by an open that does not understand it: %v", name, err)
+		}
+	}
+}
+
+// Theirs is removed only after ours is written. A flush that cannot happen must
+// leave their index where it is: the alternative is the one state the design
+// forbids, a folder with neither index (#1524).
+func TestTheirIndexSurvivesAConversionThatCannotWriteOurs(t *testing.T) {
+	home := foreignStore(t)
+	dir := filepath.Join(home, "mdbox", "mailboxes", "INBOX", "dbox-Mails")
+	// Our index lands beside their files here, so a directory that refuses new
+	// files is what a failed write looks like.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skipf("cannot make the directory read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	idx, _ := openStore(t, home)
+	if _, err := idx.OpenFolder("INBOX", 0); err == nil {
+		t.Error("a folder whose index could not be written opened clean")
+	}
+	for _, name := range []string{"dovecot.index", "dovecot.index.log"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s was removed although ours was never written: %v", name, err)
+		}
+	}
+}

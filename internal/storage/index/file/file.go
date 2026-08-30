@@ -446,6 +446,11 @@ type folderState struct {
 	indexPath   string // <indexDir>/yarilo.index
 	volatileDir string // local dir for tmp files (empty = same as indexDir)
 
+	// fsyncOnFlush makes the next base rewrite durable before its rename.
+	// Set only where the flush is followed by removing the only other copy of
+	// the same state -- the in-place conversion (#1524).
+	fsyncOnFlush bool
+
 	file      *mailindex.File // the wire-format snapshot
 	keywords  keywordsHdr     // parsed keyword name registry
 	filenames map[uint32]string
@@ -1070,6 +1075,11 @@ const (
 	LegacyIndexNamesFileName = "dovecot.index.names"
 )
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func indexPathFor(indexDir string) string { return filepath.Join(indexDir, IndexFileName) }
 func namesPath(indexDir string) string    { return filepath.Join(indexDir, IndexNamesFileName) }
 
@@ -1080,6 +1090,15 @@ func namesPath(indexDir string) string    { return filepath.Join(indexDir, Index
 // Returns an error only on a partial rename — never on absence of
 // the legacy file.
 func migrateLegacyFilenames(indexDir string) error {
+	// Only ours. The legacy names are another implementation's current names,
+	// so renaming on the name alone moves their index into our namespace, where
+	// it does not parse and where they can no longer find it (#1574). Their
+	// store is read by the conversion path instead, which leaves their files
+	// alone until ours is durable.
+	if legacyIndex := filepath.Join(indexDir, LegacyIndexFileName); fileExists(legacyIndex) &&
+		looksForeign(legacyIndex) {
+		return nil
+	}
 	pairs := []struct{ legacy, native string }{
 		{LegacyIndexFileName, IndexFileName},
 		{LegacyIndexLogFileName, IndexLogFileName},

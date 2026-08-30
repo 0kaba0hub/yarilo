@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
 // TestMigrateLegacyFilenamesConcurrentOpenersNoError reproduces #672:
@@ -21,7 +23,21 @@ func TestMigrateLegacyFilenamesConcurrentOpenersNoError(t *testing.T) {
 	dir := t.TempDir()
 	legacyPath := filepath.Join(dir, LegacyIndexFileName)
 	nativePath := filepath.Join(dir, IndexFileName)
-	if err := os.WriteFile(legacyPath, []byte("legacy-index-bytes"), 0o600); err != nil {
+	// A real index of ours under the legacy name. A placeholder would do for
+	// the race itself, but the rename now refuses a file it cannot identify as
+	// ours -- the legacy names are also another implementation's current names,
+	// and renaming theirs takes their store away from them (#1574).
+	seed := t.TempDir()
+	seedIdx := New().OpenUser(&mailbox.UserInfo{Username: "alice@example.com", Home: seed})
+	if _, err := seedIdx.OpenFolder("INBOX", 1); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_ = seedIdx.Close()
+	seeded, err := os.ReadFile(filepath.Join(seed, IndexFileName))
+	if err != nil {
+		t.Fatalf("read seeded index: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, seeded, 0o600); err != nil {
 		t.Fatalf("write legacy index: %v", err)
 	}
 

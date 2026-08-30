@@ -210,6 +210,15 @@ func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error
 				return fmt.Errorf("fileindex/openfolder: no index at %s for folder %q: %w",
 					fs.indexPath, fs.folder, os.ErrNotExist)
 			}
+			// Before deciding this folder is new: another implementation may
+			// have written it, in which case its state is on disk in their
+			// format and a fresh empty index would hide it (#1524).
+			switch converted, cerr := u.convertForeignFolder(fs, uidValidity); {
+			case cerr != nil:
+				return cerr
+			case converted:
+				return nil
+			}
 			return fs.createFresh(uidValidity)
 		case err != nil:
 			return fmt.Errorf("fileindex/openfolder: stat (locked recheck): %w", err)
@@ -646,6 +655,12 @@ func (fs *folderState) flush(wholeNames bool) error {
 		}
 		ri.TmpDir = fs.volatileDir
 	}
+	// Durability is off by default: a folder flush is one of many, and the
+	// rename is atomic, so a lost tail is re-derived from the log. The
+	// conversion path is the exception -- it removes the only other copy of
+	// this state immediately afterwards, so the bytes have to be on the disk
+	// and not merely written (#1524).
+	ri.Fsync = fs.fsyncOnFlush
 	if _, err := mailindex.Recreate(ri); err != nil {
 		// A rejected base is unwritable until someone can see WHY: the sizes in
 		// the error name a disagreement without naming which extension carries
