@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	indexfile "github.com/yarilomail/yarilo/internal/storage/index/file"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxindex"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxref"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
@@ -279,5 +280,80 @@ func TestConvertedMapRecordsCarryTheirGUIDs(t *testing.T) {
 	first := msgs[0]
 	if _, ok, lerr := m.LookupByGUID(first.GUID); lerr != nil || !ok {
 		t.Errorf("looking a converted record up by its guid: ok=%v err=%v", ok, lerr)
+	}
+}
+
+// Their store laid out the way their own INDEX= leaves it: the folder index and
+// the map under the index root, only the message files with the mail.
+//
+// Looking for their files under the mail root alone finds nothing there, and
+// nothing is exactly what a converted store looks like -- so the folder opens
+// as new, with a fresh UIDVALIDITY and no messages, and not one line says why
+// (#1583).
+func TestAForeignStoreWithItsOwnIndexRootIsConverted(t *testing.T) {
+	dial := embeddedLocksForSaveTest(t)
+	home := t.TempDir()
+	mail := filepath.Join(home, "mdbox")
+	index := filepath.Join(home, "index")
+	theirInbox := filepath.Join(index, "mailboxes", "INBOX", "dbox-Mails")
+	for _, d := range []string{filepath.Join(mail, "storage"), filepath.Join(index, "storage"), theirInbox} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, b := range map[string][]byte{
+		filepath.Join(theirInbox, "dovecot.index"):               dboxref.IndexBase(t),
+		filepath.Join(theirInbox, "dovecot.index.log"):           dboxref.IndexLog(t),
+		filepath.Join(theirInbox, "dovecot.index.log.2"):         dboxref.IndexLogRotated(t),
+		filepath.Join(index, "storage", "dovecot.map.index.log"): dboxref.MapLog(t),
+		filepath.Join(mail, "storage", "m.1"):                    dboxref.StoreFile(t),
+	} {
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	info := &mailbox.UserInfo{
+		Username: "conv3@d00001.test",
+		Home:     home,
+		Driver:   "mdbox",
+		IndexDir: index,
+	}
+	box := mdbox.New(mdbox.WithLocker(dial())).OpenUser(info)
+	defer box.Close() //nolint:errcheck
+	idx := indexfile.New(indexfile.WithLocker(dial())).OpenUser(info)
+	defer idx.Close() //nolint:errcheck
+
+	f, err := idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// Their UIDVALIDITY, not a fresh one: a folder that opens as new is exactly
+	// what the missed search produced.
+	theirs, err := dboxindex.ParseHeader(dboxref.IndexBase(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.UIDValidity != theirs.UIDValidity {
+		t.Errorf("UIDVALIDITY is %d, and their index says %d -- the folder opened as new",
+			f.UIDValidity, theirs.UIDValidity)
+	}
+	msgs, err := idx.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("no messages: their store was not found where their own INDEX= put it")
+	}
+	readAll(t, box, msgs)
+
+	// Their files went from the index root, and the mail was not touched.
+	for _, name := range []string{"dovecot.index", "dovecot.index.log"} {
+		if _, serr := os.Stat(filepath.Join(theirInbox, name)); !os.IsNotExist(serr) {
+			t.Errorf("%s is still there after the conversion", name)
+		}
+	}
+	if _, serr := os.Stat(filepath.Join(mail, "storage", "m.1")); serr != nil {
+		t.Errorf("the storage file was touched: %v", serr)
 	}
 }

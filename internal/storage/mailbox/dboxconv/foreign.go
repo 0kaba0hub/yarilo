@@ -29,6 +29,11 @@ import (
 // they would still read makes a stale foreign index look authoritative.
 const dboxMailsDir = "dbox-Mails"
 
+// foreignSubscriptions is their subscription file. Ours shares the name, and
+// on a deployment that does not move the control root it shares the directory:
+// the reading of that file lives in userstate/subs, which owns the path.
+const foreignSubscriptions = "subscriptions"
+
 const (
 	foreignIndex    = "dovecot.index"
 	foreignLog      = "dovecot.index.log"
@@ -136,8 +141,8 @@ func DropForeignMapIfDone(storageDir, mailboxesDir, mailRoot string, ours *mdbox
 		}
 		// Their subscription file is store-wide too, and its contents are in
 		// ours by now -- carried on the first folder that converted.
-		if err := RemoveForeignSubscriptions(mailRoot); err != nil {
-			return err
+		if err := os.Remove(filepath.Join(mailRoot, foreignSubscriptions)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("dboxconv: remove %s: %w", foreignSubscriptions, err)
 		}
 		dropped = true
 		return nil
@@ -188,6 +193,13 @@ func checkWritable(dir string) error {
 		return fmt.Errorf("dboxconv: %s: %w (%v)", dir, ErrReadOnly, err)
 	}
 	return nil
+}
+
+// HasForeignSubscriptions reports whether the store carries their subscription
+// file.
+func HasForeignSubscriptions(mailRoot string) bool {
+	_, err := os.Stat(filepath.Join(mailRoot, foreignSubscriptions))
+	return err == nil
 }
 
 // ReadForeignMap reads their map: the base when there is one, then its log, and
