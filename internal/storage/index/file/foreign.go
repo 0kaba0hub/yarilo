@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxconv"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
@@ -148,6 +149,27 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	metas, hdr, err := dboxconv.ConvertFolder(dir, corr)
 	if err != nil {
 		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
+	}
+
+	// Their map carries no GUIDs, so the records the import appended have none;
+	// their folder index does carry one per message, and it is in hand right
+	// now. Stamping here is what makes the storage rebuild able to pair a
+	// physical record with its map entry on a converted store, and it costs a
+	// map write rather than a walk over every storage file (#1573).
+	guids := make(map[uint32][16]byte, len(metas))
+	for _, meta := range metas {
+		mapUID, perr := strconv.ParseUint(meta.Filename, 10, 32)
+		if perr != nil {
+			return false, fmt.Errorf("fileindex/convert: folder %q uid %d: map uid %q: %w",
+				fs.folder, meta.UID, meta.Filename, perr)
+		}
+		guids[uint32(mapUID)] = meta.GUID
+	}
+	if n, gerr := m.SetGUIDs(guids); gerr != nil {
+		return false, fmt.Errorf("fileindex/convert: folder %q: stamp guids: %w", fs.folder, gerr)
+	} else if n > 0 {
+		slog.Debug("fileindex: stamped guids onto converted map records",
+			"user", u.username, "folder", fs.folder, "records", n)
 	}
 
 	// Their UID space, kept whole: the same UIDVALIDITY, the same UIDs, and
