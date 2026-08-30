@@ -68,6 +68,13 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	// could resolve, every body came back unreadable, and the rebuild that
 	// follows dropped the records (#1579).
 	theirStorage := filepath.Join(u.mailRootDir(), "storage")
+	// ourStorage mirrors the mdbox driver's mapStoragePath(). It is a different
+	// layer and cannot be called from here, so the rule is written twice on
+	// purpose -- and writing it twice is what produced #1579 in the first
+	// place. The pair is held by a test rather than by care:
+	// TestConversionBodiesReadableWithASeparateIndexTree reads bodies through
+	// the driver after converting with INDEX= set, so the two halves drifting
+	// apart again fails there.
 	ourStorage := theirStorage
 	if u.indexRoot != "" {
 		ourStorage = filepath.Join(u.indexRoot, "storage")
