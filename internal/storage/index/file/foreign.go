@@ -43,11 +43,28 @@ func (u *userIndex) foreignRoots() []string {
 
 // foreignFolderDir returns the directory holding this folder's foreign index,
 // and the root it was found under, or false when there is none.
+//
+// Two shapes per root, because the reference writes two. Beside the messages
+// the index sits inside the dbox-Mails leaf; under a separate index root it can
+// sit in the mailbox directory itself, with no leaf at all:
+//
+//	index/mailboxes/INBOX/dovecot.index.log
+//	index/mailboxes/Archive/2026/dovecot.index.log
+//
+// Both were taken from live stores rather than derived -- the first from the
+// local install, the flat one from the field (#1583). Which one appears depends
+// on a setting of theirs that is not in reach from here, so both are looked for
+// and the first that exists wins. Trying only one leaves a store looking
+// already converted, which is the silent outcome this path exists to avoid.
 func (u *userIndex) foreignFolderDir(folder string) (dir, root string, ok bool) {
 	sub := mailbox.FolderSubpathEscaped(u.driver, folder, folder, u.separator, u.escapeChar)
+	// The mailbox directory itself: the same path without the driver's leaf.
+	flat := filepath.Dir(sub)
 	for _, r := range u.foreignRoots() {
-		if candidate := filepath.Join(r, sub); dboxconv.HasForeignFolder(candidate) {
-			return candidate, r, true
+		for _, candidate := range []string{filepath.Join(r, sub), filepath.Join(r, flat)} {
+			if dboxconv.HasForeignFolder(candidate) {
+				return candidate, r, true
+			}
 		}
 	}
 	return "", "", false

@@ -27,8 +27,6 @@ import (
 // Their file names. Kept in one place because the removal step has to name
 // exactly the same set the reading step understood: a file left behind that
 // they would still read makes a stale foreign index look authoritative.
-const dboxMailsDir = "dbox-Mails"
-
 // foreignSubscriptions is their subscription file. Ours shares the name, and
 // on a deployment that does not move the control root it shares the directory:
 // the reading of that file lives in userstate/subs, which owns the path.
@@ -93,7 +91,12 @@ func AnyForeignFolderLeft(mailboxesDir string) (bool, error) {
 		if found {
 			return fs.SkipAll
 		}
-		if !d.IsDir() || filepath.Base(p) != dboxMailsDir {
+		// Every directory, not only the dbox-Mails leaves: under a separate
+		// index root the reference keeps a folder's index in the mailbox
+		// directory itself, with no leaf (#1583). Looking only at leaves there
+		// reports a store as fully converted while every folder of theirs is
+		// still on disk, and takes their map away from all of them.
+		if !d.IsDir() {
 			return nil
 		}
 		if HasForeignFolder(p) {
