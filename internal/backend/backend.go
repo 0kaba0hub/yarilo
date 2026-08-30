@@ -1181,7 +1181,9 @@ func BuildMailbox(cfg config.StorageConfig, locker locks.Locker) mailbox.Mailbox
 // binary that opens an index rotates its logs by the same triple. Exported for
 // the standalone binaries that construct their own index (yarilo-jmap).
 func IndexOptions(cfg config.StorageConfig, locker locks.Locker) []file.Option {
-	opts := []file.Option{file.WithLocker(locker)}
+	// The same encoding the mailbox backends get. The two trees spell a folder
+	// the same way or neither finds the other's (#1586).
+	opts := []file.Option{file.WithLocker(locker), file.WithListUTF8(cfg.MailboxListUTF8)}
 	// Any of the three, not all three. Gating the whole triple on min_size
 	// meant an operator could set the age or the ceiling alone, see the key in
 	// the rendered config, and have it do nothing -- accepted and inert, which

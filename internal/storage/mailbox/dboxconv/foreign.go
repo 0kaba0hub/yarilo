@@ -30,6 +30,8 @@ import (
 // foreignSubscriptions is their subscription file. Ours shares the name, and
 // on a deployment that does not move the control root it shares the directory:
 // the reading of that file lives in userstate/subs, which owns the path.
+const dboxMailsDir = "dbox-Mails"
+
 const foreignSubscriptions = "subscriptions"
 
 const (
