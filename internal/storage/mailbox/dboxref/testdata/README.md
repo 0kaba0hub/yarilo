@@ -353,3 +353,55 @@ doveadm expunge mailbox Tail uid 3
 the fixture. Read both back with the reference's own `status` and `fetch`, never
 from our reader, and check the gap is still there -- without it the test it
 guards passes for the wrong reason.
+
+
+---
+
+# A map with a base (#1583)
+
+| file | what it is |
+|---|---|
+| `map-based.index` | the map's base index, 718 records |
+| `map-based.log` | its transaction log |
+
+Seven hundred and sixty messages, of which the base holds 718 and the log the
+rest: the reference folds the log into the base once enough of it has been read,
+and keeps writing to the log afterwards. So **neither half is the map**, and a
+reader taking one of them is short by the other.
+
+The reference's own count over the store this came from:
+
+```
+doveadm mailbox status "messages uidnext" INBOX
+INBOX messages=760 uidnext=761
+```
+
+## What it establishes
+
+The rule for a map is the rule for a folder, which is what the reader's own doc
+said and what nothing had checked: base records first, then the log from
+`log_file_tail_offset`.
+
+Read from the log alone, this fixture still comes out at 760 -- its log has not
+rotated, so it happens to hold everything. That is why the test also asserts the
+two halves separately: 718 in the base, fewer than 760 past the tail. A reader
+that dropped the base reads 42.
+
+**A rotated map log still has no fixture.** Rotation could not be forced on this
+install -- the folder logs rotate under the size knobs and the map's does not --
+and that is the case where taking the log alone loses messages outright rather
+than by accident. It was reached in the field instead: a store of three thousand
+messages, where the conversion stopped on a folder naming a map uid the log no
+longer described.
+
+## How it was made
+
+The same local install, no daemon, 760 messages saved into INBOX with
+`mail_index_log_rotate_min_age = 0` and `mail_index_log_rotate_max_size = 20 k`
+-- the knobs that make the base appear in seconds rather than at the end of a
+working day. Nothing about the format depends on them.
+
+**Re-taking this:** the gap between the base's record count and the message
+count is the fixture. Read both back with the reference's own `status`, and
+check the base is still short -- with the two equal, the test it guards passes
+for the wrong reason.

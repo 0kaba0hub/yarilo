@@ -51,10 +51,30 @@ const (
 // folder log's appends are not. A reader that ignored the intros would apply
 // the refcount extension's bytes as if they were map records.
 func ReadMap(b []byte, offset int, base []Extension) ([]MapEntry, error) {
+	return ReadMapOnto(nil, b, offset, base)
+}
+
+// ReadMapOnto applies a map log to a starting set of entries.
+//
+// The starting set is the base index's own records, and it is not optional
+// whenever a base exists: the log holds what happened after it and, once it
+// rotates, nothing before. A store big enough to have rotated its map log is
+// therefore read as an empty map by anyone who takes the log alone -- and the
+// folder that names one of the lost uids cannot be converted at all, which is
+// what a real store of three thousand messages showed (#1583).
+//
+// The doc above described this as "the same shape as a folder, and not covered
+// by any fixture we hold". It is covered now.
+func ReadMapOnto(seed []MapEntry, b []byte, offset int, base []Extension) ([]MapEntry, error) {
 	be, le := binary.BigEndian, binary.LittleEndian
 
 	entries := map[uint32]*MapEntry{}
 	var order []uint32
+	for _, e := range seed {
+		cp := e
+		entries[e.MapUID] = &cp
+		order = append(order, e.MapUID)
+	}
 	// Which extension the records that follow belong to.
 	//
 	// An intro either names a new extension -- and the index gives it the next
@@ -218,6 +238,51 @@ func ReadMap(b []byte, offset int, base []Extension) ([]MapEntry, error) {
 	out := make([]MapEntry, 0, len(order))
 	for _, uid := range order {
 		out = append(out, *entries[uid])
+	}
+	return out, nil
+}
+
+// ParseMapRecords reads the map entries a map index's base holds.
+//
+// Their map keeps the position in a "map" extension -- file id, offset and size
+// as three little-endian uint32 -- and the reference count in a "ref" one, two
+// bytes wide. Both are read out of each record at the offsets the extension
+// table gives, which is the only place those offsets exist.
+func ParseMapRecords(raw []byte, h Header, exts []Extension) ([]MapEntry, error) {
+	mapExt, ok := Find(exts, "map")
+	if !ok {
+		return nil, fmt.Errorf("dboxindex/map: base index carries no map extension")
+	}
+	refExt, hasRef := Find(exts, "ref")
+
+	recs, err := ParseRecords(raw, h)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MapEntry, 0, len(recs))
+	le := binary.LittleEndian
+	for _, r := range recs {
+		field, ok := FieldIn(r.Raw, mapExt)
+		if !ok || len(field) < mapRecordSize {
+			return nil, fmt.Errorf("dboxindex/map: uid %d has %d bytes of map data, want %d",
+				r.UID, len(field), mapRecordSize)
+		}
+		e := MapEntry{
+			MapUID: r.UID,
+			FileID: le.Uint32(field),
+			Offset: le.Uint32(field[4:]),
+			Size:   le.Uint32(field[8:]),
+			// A record in the base is referenced unless the ref extension says
+			// otherwise: reading it as zero would hand every message to the
+			// next purge.
+			RefCount: 1,
+		}
+		if hasRef {
+			if rf, ok := FieldIn(r.Raw, refExt); ok && len(rf) >= 2 {
+				e.RefCount = le.Uint16(rf)
+			}
+		}
+		out = append(out, e)
 	}
 	return out, nil
 }
