@@ -71,7 +71,7 @@ func runThreadBackfillInto(o threadOpts, st *threadStats) error {
 	if authcl != nil {
 		defer authcl.Close() //nolint:errcheck
 	}
-	resolver := guidResolver(cfg, guidOpts{Root: o.Root, Template: o.Template})
+	resolver := layoutResolver(cfg, o.Root, o.Template)
 	driver := o.Driver
 	if driver == "" {
 		driver = cfg.Storage.MailDriver

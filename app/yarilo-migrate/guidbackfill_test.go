@@ -321,7 +321,7 @@ func TestGUIDBackfillResolverFromConfig(t *testing.T) {
 	cfg.Storage.MailHome = "%d/%u"
 	cfg.Storage.MailIndexPath = "/srv/index/%d/%u"
 
-	r := guidResolver(cfg, guidOpts{})
+	r := layoutResolver(cfg, "", "")
 	if r.Root != "/srv/mail" || r.HomeTemplate != "%d/%u" {
 		t.Errorf("config ignored: root=%q template=%q", r.Root, r.HomeTemplate)
 	}
@@ -329,12 +329,12 @@ func TestGUIDBackfillResolverFromConfig(t *testing.T) {
 		t.Errorf("index dir not carried: %q", r.DefaultIndexDir)
 	}
 
-	r = guidResolver(cfg, guidOpts{Root: "/tmp/other", Template: "%n"})
+	r = layoutResolver(cfg, "/tmp/other", "%n")
 	if r.Root != "/tmp/other" || r.HomeTemplate != "%n" {
 		t.Errorf("flags did not override: root=%q template=%q", r.Root, r.HomeTemplate)
 	}
 
-	r = guidResolver(&config.Config{}, guidOpts{})
+	r = layoutResolver(&config.Config{}, "", "")
 	if r.Root != "/var/mail/vhosts" || r.HomeTemplate != "%d/%n" {
 		t.Errorf("defaults changed: root=%q template=%q", r.Root, r.HomeTemplate)
 	}

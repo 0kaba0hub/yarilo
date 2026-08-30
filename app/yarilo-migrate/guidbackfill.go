@@ -66,7 +66,7 @@ func runGUIDBackfill(o guidOpts) error {
 	if authcl != nil {
 		defer authcl.Close() //nolint:errcheck
 	}
-	resolver := guidResolver(cfg, o)
+	resolver := layoutResolver(cfg, o.Root, o.Template)
 	driver := o.Driver
 	if driver == "" {
 		driver = cfg.Storage.MailDriver
@@ -163,10 +163,15 @@ func guidConfig(path string) (*config.Config, error) {
 	return cfg, nil
 }
 
-// guidResolver mirrors the resolver the services build, so the tool reads the
-// same homes, index and control dirs. Flags win over the config, and the
-// built-in defaults are the last resort.
-func guidResolver(cfg *config.Config, o guidOpts) *mailbox.Resolver {
+// layoutResolver mirrors the resolver the services build, so the tool reads and
+// writes the same homes, index and control dirs. Flags win over the config, and
+// the built-in defaults are the last resort.
+//
+// Every mode of this tool goes through here. An import that built its own
+// resolver instead wrote indexes into the default layout while the server, on
+// the same store, read the configured one, and every folder came up empty
+// (#1562).
+func layoutResolver(cfg *config.Config, root, template string) *mailbox.Resolver {
 	r := &mailbox.Resolver{
 		Root:                     cfg.Storage.MaildirRoot,
 		HomeTemplate:             cfg.Storage.MailHome,
@@ -178,11 +183,11 @@ func guidResolver(cfg *config.Config, o guidOpts) *mailbox.Resolver {
 		DefaultSeparator:         guidSeparator(cfg.Namespaces),
 		DefaultStorageEscapeChar: cfg.Storage.MailboxListStorageEscapeChar,
 	}
-	if o.Root != "" {
-		r.Root = o.Root
+	if root != "" {
+		r.Root = root
 	}
-	if o.Template != "" {
-		r.HomeTemplate = o.Template
+	if template != "" {
+		r.HomeTemplate = template
 	}
 	if r.Root == "" {
 		r.Root = "/var/mail/vhosts"

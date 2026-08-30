@@ -32,6 +32,14 @@ type sourceWalker interface {
 	Walk(userHome string, visit func(sourceMessage) error) error
 }
 
+// folderLister is the optional half of a source: the folders it holds, ahead of
+// any message. A destination folder is otherwise created under the first
+// message that lands in it, so a source folder holding none used to vanish
+// (#1563).
+type folderLister interface {
+	Folders(userHome string) ([]string, error)
+}
+
 // pickWalker resolves the --src flag to a walker implementation.
 func pickWalker(src string) (sourceWalker, error) {
 	switch strings.ToLower(src) {
@@ -52,12 +60,25 @@ func pickWalker(src string) (sourceWalker, error) {
 
 type maildirWalker struct{}
 
-func (maildirWalker) Walk(home string, visit func(sourceMessage) error) error {
+func (w maildirWalker) Walk(home string, visit func(sourceMessage) error) error {
+	folders, err := w.folderPaths(home)
+	if err != nil {
+		return err
+	}
+	for _, f := range folders {
+		if err := maildirWalkFolder(f.name, f.path, visit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (maildirWalker) folderPaths(home string) ([]struct{ name, path string }, error) {
 	entries, err := os.ReadDir(home)
 	if err != nil {
-		return fmt.Errorf("maildir walk: read %s: %w", home, err)
+		return nil, fmt.Errorf("maildir walk: read %s: %w", home, err)
 	}
-	folders := []struct{ name, path string }{}
+	var folders []struct{ name, path string }
 	if _, err := os.Stat(filepath.Join(home, "INBOX")); err == nil {
 		folders = append(folders, struct{ name, path string }{"INBOX", filepath.Join(home, "INBOX")})
 	}
@@ -68,13 +89,24 @@ func (maildirWalker) Walk(home string, visit func(sourceMessage) error) error {
 		name := strings.TrimPrefix(e.Name(), ".")
 		folders = append(folders, struct{ name, path string }{name, filepath.Join(home, e.Name())})
 	}
-	for _, f := range folders {
-		if err := maildirWalkFolder(f.name, f.path, visit); err != nil {
-			return err
-		}
-	}
-	return nil
+	return folders, nil
 }
+
+func (w maildirWalker) Folders(home string) ([]string, error) {
+	paths, err := w.folderPaths(home)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(paths))
+	for _, f := range paths {
+		out = append(out, f.name)
+	}
+	return out, nil
+}
+
+func (dboxV1Walker) Folders(home string) ([]string, error) { return dboxv1.ListFolders(home) }
+
+func (mdboxV1Walker) Folders(home string) ([]string, error) { return mdboxv1.ListFolders(home) }
 
 func maildirWalkFolder(folder, folderPath string, visit func(sourceMessage) error) error {
 	curPath := filepath.Join(folderPath, "cur")
