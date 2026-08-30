@@ -39,6 +39,12 @@ func IndexBase(t *testing.T) []byte       { return read(t, "testdata/index-inbox
 func IndexLog(t *testing.T) []byte        { return read(t, "testdata/index-inbox.log") }
 func IndexLogRotated(t *testing.T) []byte { return read(t, "testdata/index-inbox.log.2") }
 
+// IndexFreshLog is a folder that has no base index at all: three messages saved
+// and their flags set, taken before anything forced a base to be written. That
+// is what every folder of a freshly created store looks like, and reading it as
+// a folder without an index loses every flag in it (#1564).
+func IndexFreshLog(t *testing.T) []byte { return read(t, "testdata/index-fresh.log") }
+
 // MapLog is the mdbox map's transaction log. No base accompanies it, because
 // this store's map log has not rotated and the base is rewritten only once
 // enough log has been read since the last rewrite -- so a reader must handle

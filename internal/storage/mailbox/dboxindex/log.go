@@ -175,6 +175,20 @@ const appendRecordSize = 8
 // both a plain and a modseq-carrying expunge for the same uid -- so callers
 // apply these to a set rather than counting them.
 func ReadChanges(b []byte, offset int, base []Extension) ([]Change, error) {
+	changes, _, err := ReadChangesAndExtensions(b, offset, base)
+	return changes, err
+}
+
+// ReadChangesAndExtensions is ReadChanges, and also reports the extensions the
+// log itself introduced.
+//
+// Needed when there is no base index to take them from: a folder written but
+// not yet flushed has its whole state in the log, and the extension a message's
+// bytes are found through -- mdbox's map uid -- is named only by the log's own
+// intro records. The extensions come back carrying a name and a width and no
+// position, because a message that exists only in the log has no base record
+// for a position to point into.
+func ReadChangesAndExtensions(b []byte, offset int, base []Extension) ([]Change, []Extension, error) {
 	var out []Change
 	be := binary.BigEndian
 	le := binary.LittleEndian
@@ -198,7 +212,7 @@ func ReadChanges(b []byte, offset int, base []Extension) ([]Change, error) {
 			break
 		}
 		if size < 8 || pos+int(size) > len(b) {
-			return out, fmt.Errorf("dboxindex: record at %d claims %d bytes, past the end of a %d-byte file", pos, size, len(b))
+			return out, nil, fmt.Errorf("dboxindex: record at %d claims %d bytes, past the end of a %d-byte file", pos, size, len(b))
 		}
 		recType := le.Uint32(b[pos+4:])
 		data := b[pos+8 : pos+int(size)]
@@ -221,7 +235,7 @@ func ReadChanges(b []byte, offset int, base []Extension) ([]Change, error) {
 			for i := 0; i+8 <= len(data); i += 8 {
 				first, last := le.Uint32(data[i:]), le.Uint32(data[i+4:])
 				if last < first || last-first > uint32(len(b)) {
-					return out, fmt.Errorf("dboxindex: expunge range %d..%d at offset %d", first, last, pos)
+					return out, nil, fmt.Errorf("dboxindex: expunge range %d..%d at offset %d", first, last, pos)
 				}
 				for uid := first; uid <= last; uid++ {
 					out = append(out, Change{Type: Expunged, UID: uid})
@@ -282,7 +296,7 @@ func ReadChanges(b []byte, offset int, base []Extension) ([]Change, error) {
 			for i := 0; i+stride <= len(data); i += stride {
 				first, last := le.Uint32(data[i:]), le.Uint32(data[i+4:])
 				if last < first {
-					return out, fmt.Errorf("dboxindex: flag update range %d..%d at offset %d", first, last, pos)
+					return out, nil, fmt.Errorf("dboxindex: flag update range %d..%d at offset %d", first, last, pos)
 				}
 				add, remove := data[i+8], data[i+9]
 				if add == 0 && remove == 0 {
@@ -303,7 +317,7 @@ func ReadChanges(b []byte, offset int, base []Extension) ([]Change, error) {
 			}
 			nameSize := int(le.Uint16(data[2:]))
 			if fixed+nameSize > len(data) {
-				return out, fmt.Errorf("dboxindex: keyword update at %d names %d bytes it does not have", pos, nameSize)
+				return out, nil, fmt.Errorf("dboxindex: keyword update at %d names %d bytes it does not have", pos, nameSize)
 			}
 			name := string(data[fixed : fixed+nameSize])
 			var kind ChangeType
@@ -317,14 +331,14 @@ func ReadChanges(b []byte, offset int, base []Extension) ([]Change, error) {
 				// log for keywords. Refused rather than guessed at: taking it
 				// for either of the other two silently sets or clears a
 				// keyword nobody asked about.
-				return out, fmt.Errorf("dboxindex: keyword update at %d has modify type %d", pos, data[0])
+				return out, nil, fmt.Errorf("dboxindex: keyword update at %d has modify type %d", pos, data[0])
 			}
 			// The uid ranges begin after the name, aligned to four bytes.
 			at := (fixed + nameSize + 3) &^ 3
 			for i := at; i+8 <= len(data); i += 8 {
 				first, last := le.Uint32(data[i:]), le.Uint32(data[i+4:])
 				if last < first {
-					return out, fmt.Errorf("dboxindex: keyword range %d..%d at offset %d", first, last, pos)
+					return out, nil, fmt.Errorf("dboxindex: keyword range %d..%d at offset %d", first, last, pos)
 				}
 				for uid := first; uid <= last; uid++ {
 					out = append(out, Change{Type: kind, UID: uid, Keyword: name})
@@ -335,7 +349,7 @@ func ReadChanges(b []byte, offset int, base []Extension) ([]Change, error) {
 			for i := 0; i+8 <= len(data); i += 8 {
 				first, last := le.Uint32(data[i:]), le.Uint32(data[i+4:])
 				if last < first {
-					return out, fmt.Errorf("dboxindex: keyword reset range %d..%d at offset %d", first, last, pos)
+					return out, nil, fmt.Errorf("dboxindex: keyword reset range %d..%d at offset %d", first, last, pos)
 				}
 				for uid := first; uid <= last; uid++ {
 					out = append(out, Change{Type: KeywordsReset, UID: uid})
@@ -350,7 +364,11 @@ func ReadChanges(b []byte, offset int, base []Extension) ([]Change, error) {
 		}
 		pos += int(size)
 	}
-	return out, nil
+	exts := make([]Extension, 0, len(registry))
+	for _, k := range registry {
+		exts = append(exts, Extension{Name: k.name, RecordSize: uint16(k.width)})
+	}
+	return out, exts, nil
 }
 
 // keywordsFromMask turns the keywords extension's bytes into names.

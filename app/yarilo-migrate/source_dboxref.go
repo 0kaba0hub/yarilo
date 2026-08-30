@@ -279,19 +279,40 @@ var errNoIndex = errors.New("no index; its messages are recovered from the store
 
 // readReferenceFolder returns the folder's messages, with flags and keywords.
 //
-// A missing index is an error, and deliberately so. The second branch of
-// #1524 -- scanning the stored records and placing each message by the folder
-// its trailer names -- is not written yet, and until it is, a folder without an
-// index has to stop the import rather than come back empty. Empty is the one
-// answer nobody checks: the folder appears, the message count is zero, and the
-// mail is gone with nothing in the output saying so.
+// Two ways in, and which one applies is decided by what is on disk rather than
+// by what is missing:
+//
+//	base present            -> the base, then its log from tail_offset
+//	no base, log present    -> the log from its start
+//	neither                 -> errNoIndex, and the caller scans the store
+//
+// The middle case is not an edge: the reference writes a base only once a size
+// threshold or a rotation forces it, so a folder written a moment ago has its
+// whole state -- appends, flags, keywords -- in the log and no base at all.
+// Reading that as "no index" loses every flag in the folder while reporting
+// only that the folder was recovered, and on a freshly created store it loses
+// every flag in the account (#1564). The map reader already had this rule; the
+// two now say the same thing.
+//
+// A missing index with no log is still an error to this function rather than an
+// empty folder. Empty is the one answer nobody checks: the folder appears, the
+// message count is zero, and the mail is gone with nothing in the output saying
+// so. The caller turns it into the scan.
 func readReferenceFolder(dir string) ([]dboxindex.Record, []dboxindex.Extension, error) {
+	logPath := filepath.Join(dir, "dovecot.index.log")
 	raw, err := os.ReadFile(filepath.Join(dir, "dovecot.index"))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("dbox-ref: %s: %w", dir, errNoIndex)
+		if !os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("dbox-ref: read index %s: %w", dir, err)
 		}
-		return nil, nil, fmt.Errorf("dbox-ref: read index %s: %w", dir, err)
+		tail, terr := os.ReadFile(logPath)
+		if terr != nil {
+			if os.IsNotExist(terr) {
+				return nil, nil, fmt.Errorf("dbox-ref: %s: %w", dir, errNoIndex)
+			}
+			return nil, nil, fmt.Errorf("dbox-ref: read log %s: %w", dir, terr)
+		}
+		return readFolderFromLog(dir, tail)
 	}
 	h, err := dboxindex.ParseHeader(raw)
 	if err != nil {
@@ -316,7 +337,7 @@ func readReferenceFolder(dir string) ([]dboxindex.Record, []dboxindex.Extension,
 			recs[i].Keywords = dboxindex.KeywordsOf(recs[i].Raw, kw, names)
 		}
 	}
-	if tail, terr := os.ReadFile(filepath.Join(dir, "dovecot.index.log")); terr == nil {
+	if tail, terr := os.ReadFile(logPath); terr == nil {
 		changes, cerr := dboxindex.ReadChanges(tail, int(h.LogFileTailOffset), exts)
 		if cerr != nil {
 			return nil, nil, fmt.Errorf("dbox-ref: log %s: %w", dir, cerr)
@@ -324,6 +345,28 @@ func readReferenceFolder(dir string) ([]dboxindex.Record, []dboxindex.Extension,
 		recs = dboxindex.Apply(recs, changes, names)
 	}
 	return recs, exts, nil
+}
+
+// readFolderFromLog builds the folder out of its log alone, for a folder whose
+// base index has not been written yet.
+//
+// The extensions come from the log's own intro records rather than from a base
+// that does not exist. That is what makes the messages readable at all: an
+// mdbox message is found through the map uid its extension carries, and with no
+// name for that extension there is nothing to look it up by.
+func readFolderFromLog(dir string, tail []byte) ([]dboxindex.Record, []dboxindex.Extension, error) {
+	h, err := dboxindex.ParseLogHeader(tail)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dbox-ref: log %s: %w", dir, err)
+	}
+	changes, exts, err := dboxindex.ReadChangesAndExtensions(tail, int(h.HeaderSize), nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dbox-ref: log %s: %w", dir, err)
+	}
+	// No keyword table: the base holds one and there is no base. A keyword set
+	// in the log names itself, so those arrive; one carried as a bitmask alone
+	// has nothing to resolve against and does not.
+	return dboxindex.Apply(nil, changes, nil), exts, nil
 }
 
 // buildMessage turns one index record into a message, reading its body through
