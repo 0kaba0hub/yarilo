@@ -357,3 +357,145 @@ func TestAForeignStoreWithItsOwnIndexRootIsConverted(t *testing.T) {
 		t.Errorf("the storage file was touched: %v", serr)
 	}
 }
+
+// Their store with a separate index root and no dbox-Mails leaf: the folder's
+// index sits in the mailbox directory itself.
+//
+// This is the field's layout, byte for byte from the report -- the local
+// install writes the other one -- and it is not a variant we can choose between
+// from here: the setting that decides it is theirs. Looked for in only one
+// shape, a store in the other looks already converted, and every folder opens
+// empty with a fresh UIDVALIDITY (#1583).
+func TestAForeignStoreWithNoDboxMailsLeafIsConverted(t *testing.T) {
+	dial := embeddedLocksForSaveTest(t)
+	home := t.TempDir()
+	mail := filepath.Join(home, "mdbox")
+	index := filepath.Join(home, "index")
+	// No dbox-Mails: the index files sit in the mailbox directory.
+	theirInbox := filepath.Join(index, "mailboxes", "INBOX")
+	for _, d := range []string{filepath.Join(mail, "storage"), filepath.Join(index, "storage"), theirInbox} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, b := range map[string][]byte{
+		filepath.Join(theirInbox, "dovecot.index"):               dboxref.IndexBase(t),
+		filepath.Join(theirInbox, "dovecot.index.log"):           dboxref.IndexLog(t),
+		filepath.Join(theirInbox, "dovecot.index.log.2"):         dboxref.IndexLogRotated(t),
+		filepath.Join(index, "storage", "dovecot.map.index.log"): dboxref.MapLog(t),
+		filepath.Join(mail, "storage", "m.1"):                    dboxref.StoreFile(t),
+	} {
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	info := &mailbox.UserInfo{
+		Username: "conv4@d00001.test",
+		Home:     home,
+		Driver:   "mdbox",
+		IndexDir: index,
+	}
+	box := mdbox.New(mdbox.WithLocker(dial())).OpenUser(info)
+	defer box.Close() //nolint:errcheck
+	idx := indexfile.New(indexfile.WithLocker(dial())).OpenUser(info)
+	defer idx.Close() //nolint:errcheck
+
+	f, err := idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	theirs, err := dboxindex.ParseHeader(dboxref.IndexBase(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.UIDValidity != theirs.UIDValidity {
+		t.Errorf("UIDVALIDITY is %d, and their index says %d -- the folder opened as new",
+			f.UIDValidity, theirs.UIDValidity)
+	}
+	msgs, err := idx.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("no messages: their store was not found in the flat layout")
+	}
+	readAll(t, box, msgs)
+
+	// Theirs is gone from the mailbox directory, and what our own FTS or
+	// anything else keeps beside it is not ours to remove.
+	for _, name := range []string{"dovecot.index", "dovecot.index.log", "dovecot.index.log.2"} {
+		if _, serr := os.Stat(filepath.Join(theirInbox, name)); !os.IsNotExist(serr) {
+			t.Errorf("%s is still there after the conversion", name)
+		}
+	}
+	// The store held one folder, so it is fully converted: their map goes too.
+	if _, serr := os.Stat(filepath.Join(index, "storage", "dovecot.map.index.log")); !os.IsNotExist(serr) {
+		t.Errorf("their map outlived the last folder of theirs: %v", serr)
+	}
+}
+
+// In the flat layout, a folder of theirs that has not been converted still
+// counts as one -- so their map stays.
+//
+// The walk that decides "is anything of theirs left" looked only at dbox-Mails
+// leaves, and there are none here: it reported the store fully converted after
+// the first folder and took their map away from every other one, which is the
+// state that makes the rest of the store unreadable by either implementation
+// (#1583, #1569).
+func TestTheirMapStaysWhileAFlatLayoutFolderIsUnconverted(t *testing.T) {
+	dial := embeddedLocksForSaveTest(t)
+	home := t.TempDir()
+	mail := filepath.Join(home, "mdbox")
+	index := filepath.Join(home, "index")
+	if err := os.MkdirAll(filepath.Join(mail, "storage"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(index, "storage"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, folder := range []string{"INBOX", "Archive"} {
+		dir := filepath.Join(index, "mailboxes", folder)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for name, b := range map[string][]byte{
+			"dovecot.index":     dboxref.IndexBase(t),
+			"dovecot.index.log": dboxref.IndexLog(t),
+		} {
+			if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for p, b := range map[string][]byte{
+		filepath.Join(index, "storage", "dovecot.map.index.log"): dboxref.MapLog(t),
+		filepath.Join(mail, "storage", "m.1"):                    dboxref.StoreFile(t),
+	} {
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	info := &mailbox.UserInfo{
+		Username: "conv5@d00001.test",
+		Home:     home,
+		Driver:   "mdbox",
+		IndexDir: index,
+	}
+	idx := indexfile.New(indexfile.WithLocker(dial())).OpenUser(info)
+	defer idx.Close() //nolint:errcheck
+	if _, err := idx.OpenFolder("INBOX", 0); err != nil {
+		t.Fatalf("open INBOX: %v", err)
+	}
+	mapLog := filepath.Join(index, "storage", "dovecot.map.index.log")
+	if _, err := os.Stat(mapLog); err != nil {
+		t.Fatalf("their map went with the first folder, and Archive still needs it: %v", err)
+	}
+	if _, err := idx.OpenFolder("Archive", 0); err != nil {
+		t.Fatalf("open Archive: %v", err)
+	}
+	if _, err := os.Stat(mapLog); !os.IsNotExist(err) {
+		t.Errorf("their map is still there after the last folder converted: %v", err)
+	}
+}
