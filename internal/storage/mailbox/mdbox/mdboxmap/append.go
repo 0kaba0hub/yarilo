@@ -136,6 +136,13 @@ func (m *Map) ImportOnce(fn func() ([]RecordLayout, error)) (int, error) {
 	return n, nil
 }
 
+// WithLock runs fn under the map's cross-process lock.
+//
+// For work that is not an append but must not interleave with one: removing
+// another implementation's map once ours has replaced it, where the thing being
+// deleted is what a concurrent import would be reading (#1569).
+func (m *Map) WithLock(fn func() error) error { return m.withMapLock(fn) }
+
 // AllocFileID reserves and persists a fresh m.<N> file_id under the
 // map X lock. Used by purge/rebuild for compacted bodies; concurrent
 // AppendBatch peers see the bumped highest_file_id and route their
