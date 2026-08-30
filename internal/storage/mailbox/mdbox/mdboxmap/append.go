@@ -86,6 +86,56 @@ func (m *Map) AppendRecords(layouts []RecordLayout) ([]uint32, error) {
 	return out, nil
 }
 
+// ImportOnce appends the records fn produces, but only if this map is still
+// empty -- and it decides that under the map lock, in the same section as the
+// append.
+//
+// For importing another implementation's map into an empty one of ours. Doing
+// the same with Records() followed by AppendRecords leaves a window: the check
+// is per caller and the append is per caller, so two sessions opening two
+// different folders at the same time both see an empty map and both import it.
+// The result is every record twice, with a doubled refcount and a
+// correspondence that resolves to whichever copy came first.
+//
+// fn is called only when the import will happen, so a caller that has to read
+// another file to build the layouts does not read it on the common path where
+// the map is already populated. Returns how many records were appended, and
+// zero when somebody else had already done it.
+func (m *Map) ImportOnce(fn func() ([]RecordLayout, error)) (int, error) {
+	var n int
+	err := m.withMapLock(func() error {
+		if err := m.reloadLocked(); err != nil {
+			return err
+		}
+		if m.st.count() > 0 {
+			return nil
+		}
+		layouts, err := fn()
+		if err != nil {
+			return err
+		}
+		if len(layouts) == 0 {
+			return nil
+		}
+		added := make([]MapEntry, 0, len(layouts))
+		for _, l := range layouts {
+			e := MapEntry{UID: m.nextMapUID, FileID: l.FileID, Offset: l.Offset, Size: l.Size, RefCount: 1, GUID: l.GUID}
+			m.st.insert(e)
+			added = append(added, e)
+			m.nextMapUID++
+			if l.FileID > m.highestFileID {
+				m.highestFileID = l.FileID
+			}
+		}
+		n = len(added)
+		return m.commitAppendLocked(added)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // AllocFileID reserves and persists a fresh m.<N> file_id under the
 // map X lock. Used by purge/rebuild for compacted bodies; concurrent
 // AppendBatch peers see the bumped highest_file_id and route their

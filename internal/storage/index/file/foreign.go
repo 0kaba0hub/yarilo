@@ -68,13 +68,17 @@ func (u *userIndex) convertForeignFolder(fs *folderState, uidValidity uint32) (b
 
 	// The map is store-wide and has to be whole before any folder reads through
 	// it. Converting it here, on the first folder that needs it, keeps the
-	// store's shape correct without a separate pass; the second folder finds it
-	// already done, because every record it would add is already there.
-	if len(m.Records()) == 0 {
-		n, err := dboxconv.ConvertMap(storage, m)
-		if err != nil {
-			return false, fmt.Errorf("fileindex/convert: map: %w", err)
-		}
+	// store's shape correct without a separate pass.
+	//
+	// The folder lock this runs under is per folder, so it does not order two
+	// sessions opening two different folders. The map's own lock does, and
+	// ConvertMap decides whether to import inside it: without that both
+	// sessions find an empty map and import their whole store twice.
+	n, err := dboxconv.ConvertMap(storage, m)
+	if err != nil {
+		return false, fmt.Errorf("fileindex/convert: map: %w", err)
+	}
+	if n > 0 {
 		slog.Info("fileindex: converted a foreign map", "user", u.username, "records", n, "storage", storage)
 	}
 
@@ -98,6 +102,14 @@ func (u *userIndex) convertForeignFolder(fs *folderState, uidValidity uint32) (b
 	// Ours durable before theirs is unlinked. The lock orders sessions; this
 	// orders the disk, and a crash between the two has to leave a folder one of
 	// the two servers can still open.
+	//
+	// Both halves are needed and neither substitutes for the other: the file's
+	// own bytes have to reach the disk before the rename, and the directory
+	// entry has to reach it before the unlink. An index flush is not durable by
+	// default anywhere else, because everywhere else the state still exists
+	// somewhere if the tail is lost.
+	fs.fsyncOnFlush = true
+	defer func() { fs.fsyncOnFlush = false }()
 	if err := fs.flush(true); err != nil {
 		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
 	}

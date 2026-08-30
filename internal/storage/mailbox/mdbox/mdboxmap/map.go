@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -357,13 +358,19 @@ func (m *Map) createFresh() error {
 	return m.flushLocked()
 }
 
+// baseTmpSeq gives concurrent base writers unique tmp names.
+var baseTmpSeq atomic.Uint64
+
 // writeBaseLocked rewrites the whole base atomically (.tmp + rename), so a
 // reader either sees the previous file or the new one, never a half-written mix.
 func (m *Map) writeBaseLocked() error {
 	if m.format == FormatV1 {
 		return m.writeBaseV1Locked()
 	}
-	tmp := m.path + ".tmp"
+	// One name per writer. A shared "<path>.tmp" makes two writers race for the
+	// same file: the winner's rename consumes it and the loser's rename fails
+	// with ENOENT on a write that had nothing wrong with it (#1575).
+	tmp := fmt.Sprintf("%s.tmp.%d.%d", m.path, os.Getpid(), baseTmpSeq.Add(1))
 	buf := make([]byte, 0, baseHeaderLen+len(m.st.recs))
 	buf = append(buf, encodeBaseHeader(m.headerLocked())...)
 	buf = append(buf, m.st.recs...)

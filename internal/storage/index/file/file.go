@@ -446,6 +446,11 @@ type folderState struct {
 	indexPath   string // <indexDir>/yarilo.index
 	volatileDir string // local dir for tmp files (empty = same as indexDir)
 
+	// fsyncOnFlush makes the next base rewrite durable before its rename.
+	// Set only where the flush is followed by removing the only other copy of
+	// the same state -- the in-place conversion (#1524).
+	fsyncOnFlush bool
+
 	file      *mailindex.File // the wire-format snapshot
 	keywords  keywordsHdr     // parsed keyword name registry
 	filenames map[uint32]string

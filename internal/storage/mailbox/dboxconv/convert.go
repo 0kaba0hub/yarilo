@@ -46,36 +46,38 @@ func flagNames(b uint8) []string {
 // converted yet still addresses its mail through their map uids -- so theirs
 // stays on disk until the last folder is done (#1569).
 //
+// "Only if ours is still empty" is decided inside the map's own lock, together
+// with the append. Checked outside it, two sessions opening two different
+// folders at once both find an empty map and both import it, and the store ends
+// up with every record twice.
+//
 // Records with a zero refcount are skipped: that is a message waiting for their
 // purge, and carrying it over would restore somebody's deleted mail.
 func ConvertMap(storageDir string, dst *mdboxmap.Map) (int, error) {
-	entries, err := ReadForeignMap(storageDir)
-	if err != nil {
-		return 0, err
-	}
-	layouts := make([]mdboxmap.RecordLayout, 0, len(entries))
-	for _, e := range entries {
-		if e.RefCount == 0 {
-			continue
+	return dst.ImportOnce(func() ([]mdboxmap.RecordLayout, error) {
+		entries, err := ReadForeignMap(storageDir)
+		if err != nil {
+			return nil, err
 		}
-		// No GUID: their map does not carry one, and reading it would mean
-		// opening every storage file to parse every trailer. Our folder index
-		// still gets the right GUID -- it comes from their folder index, which
-		// does carry it -- so EMAILID survives; what is left without one is the
-		// map's own guid field, which only the storage rebuild pairs by (#1573).
-		layouts = append(layouts, mdboxmap.RecordLayout{
-			FileID: e.FileID,
-			Offset: e.Offset,
-			Size:   e.Size,
-		})
-	}
-	if len(layouts) == 0 {
-		return 0, nil
-	}
-	if _, err := dst.AppendRecords(layouts); err != nil {
-		return 0, fmt.Errorf("dboxconv: append %d map records: %w", len(layouts), err)
-	}
-	return len(layouts), nil
+		layouts := make([]mdboxmap.RecordLayout, 0, len(entries))
+		for _, e := range entries {
+			if e.RefCount == 0 {
+				continue
+			}
+			// No GUID: their map does not carry one, and reading it would mean
+			// opening every storage file to parse every trailer. Our folder
+			// index still gets the right GUID -- it comes from their folder
+			// index, which does carry it -- so EMAILID survives; what is left
+			// without one is the map's own guid field, which only the storage
+			// rebuild pairs by (#1573).
+			layouts = append(layouts, mdboxmap.RecordLayout{
+				FileID: e.FileID,
+				Offset: e.Offset,
+				Size:   e.Size,
+			})
+		}
+		return layouts, nil
+	})
 }
 
 // MapCorrespondence answers the only question a folder conversion asks of the

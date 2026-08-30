@@ -219,3 +219,27 @@ func TestAForeignIndexSurvivesAnOpenThatCannotConvertIt(t *testing.T) {
 		}
 	}
 }
+
+// Theirs is removed only after ours is written. A flush that cannot happen must
+// leave their index where it is: the alternative is the one state the design
+// forbids, a folder with neither index (#1524).
+func TestTheirIndexSurvivesAConversionThatCannotWriteOurs(t *testing.T) {
+	home := foreignStore(t)
+	dir := filepath.Join(home, "mdbox", "mailboxes", "INBOX", "dbox-Mails")
+	// Our index lands beside their files here, so a directory that refuses new
+	// files is what a failed write looks like.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skipf("cannot make the directory read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	idx, _ := openStore(t, home)
+	if _, err := idx.OpenFolder("INBOX", 0); err == nil {
+		t.Error("a folder whose index could not be written opened clean")
+	}
+	for _, name := range []string{"dovecot.index", "dovecot.index.log"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s was removed although ours was never written: %v", name, err)
+		}
+	}
+}
