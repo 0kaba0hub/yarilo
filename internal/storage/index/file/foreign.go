@@ -53,40 +53,49 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	// next open, and the one after that. Refusing up front turns repeated
 	// silent work into one loud answer (#1571).
 	//
-	// Three directories, because the section writes to three: where ours goes,
-	// where theirs is deleted from, and storage/, which takes their map on the
-	// way in and loses it on the last folder out. A mount writable in one and
-	// not in another fails halfway, which is the state the probe exists to
-	// prevent.
-	//
 	// A read-only store is often deliberate -- a snapshot, a replica -- so the
 	// refusal names the offline path rather than inventing a way to half-serve
 	// the folder. Nothing is remembered about the attempt: a "we tried" marker
 	// would be another silent state, and the next open should say the same
 	// thing until somebody changes the mount.
-	storage := filepath.Join(u.mailRootDir(), "storage")
-	// Our index directory has to exist before it can be probed, and it may not:
-	// with INDEX= set it is a tree of its own. Creating it is work the
-	// conversion would do a moment later anyway.
-	if err := os.MkdirAll(fs.indexDir, 0o700); err != nil {
-		return false, fmt.Errorf("fileindex/convert: folder %q: %w (%v)", fs.folder, dboxconv.ErrReadOnly, err)
+	//
+	// Four directories, because the section writes to four. Two of them are
+	// storage directories rather than one: their map is where they left it,
+	// under the mail root, and it is read and finally deleted there; ours is
+	// opened and written where the driver will look for it, which INDEX= moves
+	// out of the mail tree. Writing ours beside theirs left the driver opening
+	// an empty map of its own -- the folder index pointed at map uids nothing
+	// could resolve, every body came back unreadable, and the rebuild that
+	// follows dropped the records (#1579).
+	theirStorage := filepath.Join(u.mailRootDir(), "storage")
+	ourStorage := theirStorage
+	if u.indexRoot != "" {
+		ourStorage = filepath.Join(u.indexRoot, "storage")
 	}
-	if err := dboxconv.CheckWritable(fs.indexDir, dir, storage); err != nil {
+	// Our index directory and our storage directory have to exist before they
+	// can be probed, and with INDEX= set they are a tree of their own. Creating
+	// them is work the conversion would do a moment later anyway.
+	for _, d := range []string{fs.indexDir, ourStorage} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return false, fmt.Errorf("fileindex/convert: folder %q: %w (%v)", fs.folder, dboxconv.ErrReadOnly, err)
+		}
+	}
+	if err := dboxconv.CheckWritable(fs.indexDir, dir, theirStorage, ourStorage); err != nil {
 		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
 	}
-	if !dboxconv.HasForeignMap(storage) {
+	if !dboxconv.HasForeignMap(theirStorage) {
 		// A folder of theirs with no map of theirs: the messages it names
 		// cannot be located at all. Refused rather than converted into an empty
 		// folder, which is the one outcome nobody checks.
 		return false, fmt.Errorf("fileindex/convert: folder %q has a foreign index and %s has no foreign map",
-			fs.folder, storage)
+			fs.folder, theirStorage)
 	}
 
 	var opts []mdboxmap.Option
 	if u.b.locker != nil {
 		opts = append(opts, mdboxmap.WithLocker(u.b.locker), mdboxmap.WithOwner(u.owner))
 	}
-	m, err := mdboxmap.Open(storage, u.username, opts...)
+	m, err := mdboxmap.Open(ourStorage, u.username, opts...)
 	if err != nil {
 		return false, fmt.Errorf("fileindex/convert: open map: %w", err)
 	}
@@ -100,15 +109,16 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	// sessions opening two different folders. The map's own lock does, and
 	// ConvertMap decides whether to import inside it: without that both
 	// sessions find an empty map and import their whole store twice.
-	n, err := dboxconv.ConvertMap(storage, m)
+	n, err := dboxconv.ConvertMap(theirStorage, m)
 	if err != nil {
 		return false, fmt.Errorf("fileindex/convert: map: %w", err)
 	}
 	if n > 0 {
-		slog.Info("fileindex: converted a foreign map", "user", u.username, "records", n, "storage", storage)
+		slog.Info("fileindex: converted a foreign map", "user", u.username, "records", n,
+			"from", theirStorage, "to", ourStorage)
 	}
 
-	corr, err := dboxconv.NewMapCorrespondence(storage, m)
+	corr, err := dboxconv.NewMapCorrespondence(theirStorage, m)
 	if err != nil {
 		return false, fmt.Errorf("fileindex/convert: pair maps: %w", err)
 	}
@@ -174,14 +184,14 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	// A failure here is logged and not returned. The folder in hand is
 	// converted and readable; refusing to open it because a file elsewhere
 	// could not be unlinked would turn a tidying step into an outage.
-	dropped, derr := dboxconv.DropForeignMapIfDone(storage, filepath.Join(u.mailRootDir(), "mailboxes"), m)
+	dropped, derr := dboxconv.DropForeignMapIfDone(theirStorage, filepath.Join(u.mailRootDir(), "mailboxes"), m)
 	switch {
 	case derr != nil:
 		slog.Warn("fileindex: could not finish the store conversion; their map is still in place",
-			"user", u.username, "storage", storage, "err", derr)
+			"user", u.username, "storage", theirStorage, "err", derr)
 	case dropped:
 		slog.Info("fileindex: store fully converted; removed their map",
-			"user", u.username, "storage", storage)
+			"user", u.username, "storage", theirStorage)
 	}
 	return true, nil
 }
