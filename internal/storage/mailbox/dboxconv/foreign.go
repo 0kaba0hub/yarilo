@@ -35,12 +35,13 @@ const dboxMailsDir = "dbox-Mails"
 const foreignSubscriptions = "subscriptions"
 
 const (
-	foreignIndex    = "dovecot.index"
-	foreignLog      = "dovecot.index.log"
-	foreignLogPrev  = "dovecot.index.log.2"
-	foreignCache    = "dovecot.index.cache"
-	foreignMapIndex = "dovecot.map.index"
-	foreignMapLog   = "dovecot.map.index.log"
+	foreignIndex      = "dovecot.index"
+	foreignLog        = "dovecot.index.log"
+	foreignLogPrev    = "dovecot.index.log.2"
+	foreignCache      = "dovecot.index.cache"
+	foreignMapIndex   = "dovecot.map.index"
+	foreignMapLog     = "dovecot.map.index.log"
+	foreignMapLogPrev = "dovecot.map.index.log.2"
 )
 
 // StoreRoot is where an mdbox store lives, the same rule the driver applies:
@@ -139,7 +140,9 @@ func DropForeignMapIfDone(storageDir, mailboxesDir, mailRoot string, ours *mdbox
 		if left {
 			return nil
 		}
-		for _, name := range []string{foreignMapIndex, foreignMapLog} {
+		// The rotated log too: a file of theirs left behind is one a tool of
+		// theirs would still read, and read as authoritative.
+		for _, name := range []string{foreignMapIndex, foreignMapLog, foreignMapLogPrev} {
 			if err := os.Remove(filepath.Join(storageDir, name)); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("dboxconv: remove %s: %w", name, err)
 			}
@@ -213,9 +216,11 @@ func HasForeignSubscriptions(mailRoot string) bool {
 // not reached it has no base at all.
 func ReadForeignMap(storageDir string) ([]dboxindex.MapEntry, error) {
 	var (
-		seed   []dboxindex.MapEntry
-		exts   []dboxindex.Extension
-		offset int
+		seed     []dboxindex.MapEntry
+		exts     []dboxindex.Extension
+		offset   int
+		baseSeq  uint32
+		baseTail uint32
 	)
 	if raw, err := os.ReadFile(filepath.Join(storageDir, foreignMapIndex)); err == nil {
 		h, herr := dboxindex.ParseHeader(raw)
@@ -235,6 +240,7 @@ func ReadForeignMap(storageDir string) ([]dboxindex.MapEntry, error) {
 			return nil, fmt.Errorf("dboxconv: map records: %w", herr)
 		}
 		offset = int(h.LogFileTailOffset)
+		baseSeq, baseTail = h.LogFileSeq, h.LogFileTailOffset
 	}
 
 	raw, err := os.ReadFile(filepath.Join(storageDir, foreignMapLog))
@@ -245,9 +251,42 @@ func ReadForeignMap(storageDir string) ([]dboxindex.MapEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dboxconv: map log header: %w", err)
 	}
+	// The base's tail offset addresses the log the base was written against,
+	// named by its sequence number -- not whichever log is on disk now. After a
+	// rotation the current file is a different sequence, and an offset from the
+	// old one lands wherever it happens to land in the new: a reader that used
+	// it either fails on a torn record or, worse, skips whatever came before it
+	// and says nothing.
+	//
+	// So the offset is used only when the two agree. When they do not, the
+	// current log is read from its start, which is where it begins after a
+	// rotation anyway.
+	if baseSeq != 0 && baseSeq != lh.FileSeq {
+		offset = int(lh.HeaderSize)
+	}
 	// No base: the log from its start, which is the whole state then.
 	if offset < int(lh.HeaderSize) {
 		offset = int(lh.HeaderSize)
+	}
+
+	// What the rotation moved out of the current log lives in the rotated one,
+	// and only the part after the base's tail is still needed. Read first, so
+	// the current log's records land on top of it.
+	if baseSeq != 0 && baseSeq != lh.FileSeq {
+		if prev, perr := os.ReadFile(filepath.Join(storageDir, foreignMapLogPrev)); perr == nil {
+			ph, pherr := dboxindex.ParseLogHeader(prev)
+			if pherr != nil {
+				return nil, fmt.Errorf("dboxconv: rotated map log header: %w", pherr)
+			}
+			at := int(ph.HeaderSize)
+			if ph.FileSeq == baseSeq && int(baseTail) > at {
+				at = int(baseTail)
+			}
+			seed, err = dboxindex.ReadMapOnto(seed, prev, at, exts)
+			if err != nil {
+				return nil, fmt.Errorf("dboxconv: rotated map log: %w", err)
+			}
+		}
 	}
 	return dboxindex.ReadMapOnto(seed, raw, offset, exts)
 }
