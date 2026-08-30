@@ -119,7 +119,7 @@ func AnyForeignFolderLeft(mailboxesDir string) (bool, error) {
 //
 // A store where some folder is never opened keeps their map indefinitely, and
 // that is the honest outcome rather than a failure: the folder still needs it.
-func DropForeignMapIfDone(storageDir, mailboxesDir string, ours *mdboxmap.Map) (bool, error) {
+func DropForeignMapIfDone(storageDir, mailboxesDir, mailRoot string, ours *mdboxmap.Map) (bool, error) {
 	dropped := false
 	err := ours.WithLock(func() error {
 		left, err := AnyForeignFolderLeft(mailboxesDir)
@@ -133,6 +133,11 @@ func DropForeignMapIfDone(storageDir, mailboxesDir string, ours *mdboxmap.Map) (
 			if err := os.Remove(filepath.Join(storageDir, name)); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("dboxconv: remove %s: %w", name, err)
 			}
+		}
+		// Their subscription file is store-wide too, and its contents are in
+		// ours by now -- carried on the first folder that converted.
+		if err := RemoveForeignSubscriptions(mailRoot); err != nil {
+			return err
 		}
 		dropped = true
 		return nil

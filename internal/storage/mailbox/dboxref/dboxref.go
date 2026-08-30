@@ -55,6 +55,10 @@ func IndexTailLog(t *testing.T) []byte  { return read(t, "testdata/index-tail.lo
 func MapTailLog(t *testing.T) []byte    { return read(t, "testdata/map-tail.log") }
 func StoreTailFile(t *testing.T) []byte { return read(t, "testdata/store-tail-m.1") }
 
+// Subscriptions is their subscription file, holding a nested name and a
+// Cyrillic one: the two shapes that tell a reader apart from a lucky one.
+func Subscriptions(t *testing.T) []byte { return read(t, "testdata/subscriptions") }
+
 // MapLog is the mdbox map's transaction log. No base accompanies it, because
 // this store's map log has not rotated and the base is rewritten only once
 // enough log has been read since the last rewrite -- so a reader must handle
