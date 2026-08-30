@@ -39,7 +39,7 @@ func runImport(t *testing.T, w sourceWalker, dst string) {
 		t.Fatal(err)
 	}
 	resolver := &mailbox.Resolver{Root: dst, HomeTemplate: "%d/%n"}
-	if _, _, err := migrateUser(w, src, mdbox.New(), indexfile.New(), resolver, importUser); err != nil {
+	if _, _, err := migrateUser(w, src, mdbox.New(), indexfile.New(), resolver, importOpts{Driver: "mdbox"}, importUser); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 }
@@ -49,6 +49,7 @@ func openImported(t *testing.T, dst string) mailbox.UserIndex {
 	idx := indexfile.New().OpenUser(&mailbox.UserInfo{
 		Username: importUser,
 		Home:     filepath.Join(dst, "example.com", "alice"),
+		Driver:   "mdbox",
 	})
 	t.Cleanup(func() { _ = idx.Close() })
 	return idx
@@ -114,6 +115,7 @@ func TestAnEmptyFolderIsImported(t *testing.T) {
 	box := mdbox.New().OpenUser(&mailbox.UserInfo{
 		Username: importUser,
 		Home:     filepath.Join(dst, "example.com", "alice"),
+		Driver:   "mdbox",
 	})
 	defer box.Close() //nolint:errcheck
 	entries, err := box.ListFolders()
@@ -157,8 +159,15 @@ func TestTheImportReadsTheLayoutFromTheConfig(t *testing.T) {
 	}
 }
 
-// The index lands under the resolver's index dir rather than beside the mail.
-func TestTheIndexLandsWhereTheResolverPointsIt(t *testing.T) {
+// The index lands where a session would look for it: the index root joined with
+// the *driver's* folder sub-layout.
+//
+// Both halves are asserted by path, because getting one right and the other
+// wrong still produces a store the server cannot read. With no driver the index
+// falls back to the maildir layout -- a dotted directory at the root -- and a
+// dbox store written that way comes up 0 EXISTS on every folder with the mail
+// intact underneath (#1562).
+func TestTheIndexLandsInTheDestinationDriversLayout(t *testing.T) {
 	dst := t.TempDir()
 	src := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(src, "example.com", "alice"), 0o700); err != nil {
@@ -166,21 +175,24 @@ func TestTheIndexLandsWhereTheResolverPointsIt(t *testing.T) {
 	}
 	resolver := &mailbox.Resolver{Root: dst, HomeTemplate: "%d/%n", DefaultIndexDir: "%h/elsewhere"}
 	if _, _, err := migrateUser(stubWalker{msgs: []sourceMessage{{
-		Folder: "INBOX",
+		Folder: "Archive",
 		Body:   []byte("From: a@b\r\n\r\nbody\r\n"),
-	}}}, src, mdbox.New(), indexfile.New(), resolver, importUser); err != nil {
+	}}}, src, mdbox.New(), indexfile.New(), resolver, importOpts{Driver: "mdbox"}, importUser); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	under := filepath.Join(dst, "example.com", "alice", "elsewhere")
-	found := false
-	_ = filepath.Walk(under, func(p string, info os.FileInfo, err error) error {
-		if err == nil && info != nil && !info.IsDir() {
-			found = true
-		}
-		return nil
-	})
-	if !found {
-		t.Errorf("no index file under %s; the resolver's index dir was ignored", under)
+
+	home := filepath.Join(dst, "example.com", "alice")
+	want := filepath.Join(home, "elsewhere", "mailboxes", "Archive", "dbox-Mails", "yarilo.index")
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("no index at %s: %v", want, err)
+	}
+	// The layout it used to land in, named so the failure says which of the two
+	// went wrong rather than only that something did.
+	if _, err := os.Stat(filepath.Join(home, ".Archive")); err == nil {
+		t.Error("an index directory was written in the maildir layout at the home root")
+	}
+	if _, err := os.Stat(filepath.Join(home, "elsewhere", ".Archive")); err == nil {
+		t.Error("the index root was honoured but the driver layout was not")
 	}
 }
 

@@ -147,6 +147,14 @@ func main() {
 		slog.Error("config", "err", err)
 		os.Exit(1)
 	}
+	opts := importOpts{
+		Driver:    destinationDriver(*flagDst),
+		IndexTmpl: *flagIndexTmpl,
+		MailTmpl:  *flagMailTmpl,
+	}
+	slog.Info("destination layout", "driver", opts.Driver, "root", resolver.Root,
+		"home_template", resolver.HomeTemplate, "index_path", resolver.DefaultIndexDir,
+		"mail_path", resolver.DefaultMailPath)
 
 	var migrated, skipped int
 	err = filepath.WalkDir(*flagFrom, func(path string, d os.DirEntry, err error) error {
@@ -159,7 +167,7 @@ func main() {
 			return nil
 		}
 		user := parts[1] + "@" + parts[0]
-		m, s, err := migrateUser(walker, *flagFrom, box, idx, resolver, user)
+		m, s, err := migrateUser(walker, *flagFrom, box, idx, resolver, opts, user)
 		migrated += m
 		skipped += s
 		return err
@@ -198,6 +206,17 @@ func importResolver(configPath, to, homeTmpl string) (*mailbox.Resolver, error) 
 	return layoutResolver(cfg, to, homeTmpl), nil
 }
 
+// destinationDriver is the name the layout is keyed by, which is not always the
+// name on the command line: --dst dbox is sdbox's alias.
+func destinationDriver(dst string) string {
+	switch strings.ToLower(dst) {
+	case "sdbox", "dbox":
+		return "sdbox"
+	default:
+		return strings.ToLower(dst)
+	}
+}
+
 func pickBackend(dst string) (mailbox.MailboxBackend, error) {
 	switch strings.ToLower(dst) {
 	case "sdbox", "dbox":
@@ -209,9 +228,38 @@ func pickBackend(dst string) (mailbox.MailboxBackend, error) {
 	}
 }
 
-func migrateUser(walker sourceWalker, srcRoot string, boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolver *mailbox.Resolver, user string) (migrated, skipped int, _ error) {
-	srcHome := userDir(srcRoot, user)
+// importOpts is what the resolver alone cannot say: which driver's layout the
+// destination is written in, and any per-user location the operator supplies
+// offline instead of through a userdb.
+type importOpts struct {
+	Driver    string
+	IndexTmpl string
+	MailTmpl  string
+}
+
+// userInfoFor builds the destination account exactly as a session would see it.
+//
+// Driver is not decoration: the per-folder index directory is the index root
+// joined with the *driver's* sub-layout, so an empty driver writes a dbox store's
+// index into the maildir layout -- dotted folders at the home root, where no
+// server looks (#1562).
+func userInfoFor(resolver *mailbox.Resolver, o importOpts, user string) *mailbox.UserInfo {
 	info := resolver.UserInfo(user, "")
+	info.Driver = o.Driver
+	// Same helper the resolver and the userdb overlay use, so "%h/index" here
+	// means what it means everywhere else.
+	if o.IndexTmpl != "" {
+		info.IndexDir = mailbox.ExpandLocation(o.IndexTmpl, info.Home, user)
+	}
+	if o.MailTmpl != "" {
+		info.MailPath = mailbox.ExpandLocation(o.MailTmpl, info.Home, user)
+	}
+	return info
+}
+
+func migrateUser(walker sourceWalker, srcRoot string, boxBE mailbox.MailboxBackend, idxBE mailbox.IndexBackend, resolver *mailbox.Resolver, o importOpts, user string) (migrated, skipped int, _ error) {
+	srcHome := userDir(srcRoot, user)
+	info := userInfoFor(resolver, o, user)
 	box := boxBE.OpenUser(info)
 	defer box.Close() //nolint:errcheck
 	idx := idxBE.OpenUser(info)

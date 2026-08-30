@@ -58,7 +58,7 @@ func TestMigrate_DboxV1_ToSdbox(t *testing.T) {
 	idx := indexfile.New()
 	resolver := &mailbox.Resolver{Root: dst, HomeTemplate: "%d/%n"}
 
-	m, s, err := migrateUser(dboxV1Walker{}, src, box, idx, resolver, user)
+	m, s, err := migrateUser(dboxV1Walker{}, src, box, idx, resolver, importOpts{Driver: "sdbox"}, user)
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -68,8 +68,8 @@ func TestMigrate_DboxV1_ToSdbox(t *testing.T) {
 
 	// Verify: open the destination as a normal user session,
 	// fetch every UID, compare body + GUID.
-	verifyBox := dboxv2.New().OpenUser(&mailbox.UserInfo{Username: user, Home: filepath.Join(dst, "example.com", "alice")})
-	verifyIdx := indexfile.New().OpenUser(&mailbox.UserInfo{Username: user, Home: filepath.Join(dst, "example.com", "alice")})
+	verifyBox := dboxv2.New().OpenUser(&mailbox.UserInfo{Username: user, Home: filepath.Join(dst, "example.com", "alice"), Driver: "sdbox"})
+	verifyIdx := indexfile.New().OpenUser(&mailbox.UserInfo{Username: user, Home: filepath.Join(dst, "example.com", "alice"), Driver: "sdbox"})
 	defer verifyBox.Close()
 	defer verifyIdx.Close()
 
@@ -179,7 +179,7 @@ func TestMigrate_MdboxV1_ToMdbox(t *testing.T) {
 	idx := indexfile.New()
 	resolver := &mailbox.Resolver{Root: dst, HomeTemplate: "%d/%n"}
 
-	m, s, err := migrateUser(mdboxV1Walker{}, src, box, idx, resolver, user)
+	m, s, err := migrateUser(mdboxV1Walker{}, src, box, idx, resolver, importOpts{Driver: "mdbox"}, user)
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -189,8 +189,8 @@ func TestMigrate_MdboxV1_ToMdbox(t *testing.T) {
 
 	// Verify via a fresh session.
 	dstHome := filepath.Join(dst, "example.com", "bob")
-	verifyBox := mdbox.New().OpenUser(&mailbox.UserInfo{Username: user, Home: dstHome})
-	verifyIdx := indexfile.New().OpenUser(&mailbox.UserInfo{Username: user, Home: dstHome})
+	verifyBox := mdbox.New().OpenUser(&mailbox.UserInfo{Username: user, Home: dstHome, Driver: "mdbox"})
+	verifyIdx := indexfile.New().OpenUser(&mailbox.UserInfo{Username: user, Home: dstHome, Driver: "mdbox"})
 	defer verifyBox.Close()
 	defer verifyIdx.Close()
 	inbox, err := verifyIdx.OpenFolder("INBOX", 0)
