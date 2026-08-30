@@ -91,74 +91,88 @@ func ReadForeignMap(storageDir string) ([]dboxindex.MapEntry, error) {
 	return dboxindex.ReadMap(raw, int(lh.HeaderSize), seed)
 }
 
+// Folder is one of their folders as read from disk: what it holds, how to
+// locate it, and the two header fields that say which UID space it is.
+type Folder struct {
+	Records []dboxindex.Record
+	Exts    []dboxindex.Extension
+	Header  dboxindex.HeaderState
+}
+
 // ReadForeignFolder reads one folder's state: their base index plus its log
 // from log_file_tail_offset, or the log from its start when there is no base.
 //
 // A folder with neither is not this function's business and is an error here:
 // an empty return would show as a folder that exists and holds nothing, which
 // is the one answer nobody checks.
-func ReadForeignFolder(dir string) ([]dboxindex.Record, []dboxindex.Extension, error) {
+func ReadForeignFolder(dir string) (Folder, error) {
 	logPath := filepath.Join(dir, foreignLog)
 	raw, err := os.ReadFile(filepath.Join(dir, foreignIndex))
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("dboxconv: read index %s: %w", dir, err)
+			return Folder{}, fmt.Errorf("dboxconv: read index %s: %w", dir, err)
 		}
 		tail, terr := os.ReadFile(logPath)
 		if terr != nil {
-			return nil, nil, fmt.Errorf("dboxconv: %s has no index and no log: %w", dir, terr)
+			return Folder{}, fmt.Errorf("dboxconv: %s has no index and no log: %w", dir, terr)
 		}
 		return folderFromLog(dir, tail)
 	}
 
 	h, err := dboxindex.ParseHeader(raw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dboxconv: index %s: %w", dir, err)
+		return Folder{}, fmt.Errorf("dboxconv: index %s: %w", dir, err)
 	}
 	recs, err := dboxindex.ParseRecords(raw, h)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dboxconv: records %s: %w", dir, err)
+		return Folder{}, fmt.Errorf("dboxconv: records %s: %w", dir, err)
 	}
 	exts, err := dboxindex.ParseExtensions(raw, h)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dboxconv: extensions %s: %w", dir, err)
+		return Folder{}, fmt.Errorf("dboxconv: extensions %s: %w", dir, err)
 	}
 
 	var names []string
 	if kw, ok := dboxindex.Find(exts, "keywords"); ok {
 		names, err = dboxindex.KeywordNames(kw)
 		if err != nil {
-			return nil, nil, fmt.Errorf("dboxconv: keywords %s: %w", dir, err)
+			return Folder{}, fmt.Errorf("dboxconv: keywords %s: %w", dir, err)
 		}
 		for i := range recs {
 			recs[i].Keywords = dboxindex.KeywordsOf(recs[i].Raw, kw, names)
 		}
 	}
+	state := dboxindex.HeaderState{UIDValidity: h.UIDValidity, NextUID: h.NextUID}
 	if tail, terr := os.ReadFile(logPath); terr == nil {
 		changes, cerr := dboxindex.ReadChanges(tail, int(h.LogFileTailOffset), exts)
 		if cerr != nil {
-			return nil, nil, fmt.Errorf("dboxconv: log %s: %w", dir, cerr)
+			return Folder{}, fmt.Errorf("dboxconv: log %s: %w", dir, cerr)
 		}
+		state = dboxindex.ApplyHeader(state, changes)
 		recs = dboxindex.Apply(recs, changes, names)
 	}
-	return recs, exts, nil
+	return Folder{Records: recs, Exts: exts, Header: state}, nil
 }
 
 // folderFromLog builds a folder out of its log alone, for one whose base index
 // has not been written yet. The extensions come from the log's own intro
 // records: an mdbox message is found through the map uid its extension carries,
 // and with no base there is nothing else to name that extension.
-func folderFromLog(dir string, tail []byte) ([]dboxindex.Record, []dboxindex.Extension, error) {
+func folderFromLog(dir string, tail []byte) (Folder, error) {
 	h, err := dboxindex.ParseLogHeader(tail)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dboxconv: log %s: %w", dir, err)
+		return Folder{}, fmt.Errorf("dboxconv: log %s: %w", dir, err)
 	}
 	changes, exts, err := dboxindex.ReadChangesAndExtensions(tail, int(h.HeaderSize), nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dboxconv: log %s: %w", dir, err)
+		return Folder{}, fmt.Errorf("dboxconv: log %s: %w", dir, err)
 	}
 	// No keyword table: their base holds one and there is no base. A keyword
 	// set in the log names itself, so those arrive; one carried as a bitmask
 	// alone has nothing to resolve against and does not.
-	return dboxindex.Apply(nil, changes, nil), exts, nil
+	return Folder{
+		Records: dboxindex.Apply(nil, changes, nil),
+		Exts:    exts,
+		Header:  dboxindex.ApplyHeader(dboxindex.HeaderState{}, changes),
+	}, nil
 }

@@ -167,6 +167,13 @@ and 2 plain, one that cannot read the keyword extension loses 3, one that
 replays appends without expunges brings 4 back, and one that assumes INBOX
 misses the Archive message entirely.
 
+**The log carries two transactions taken after that fetch was recorded**: uid 6
+is appended and uid 5 is expunged, so the live set these files describe is
+1, 2, 3, 6 with `next_uid` 7. That line is derived from the bytes rather than
+from their fetch -- the store it came from is gone, so it cannot be re-read the
+way the rest of this file was, and it is marked here rather than quietly folded
+into the table above.
+
 ## Two things the capture established
 
 **The log alone is not the state, and neither is the base.** `index-inbox.log.2`
@@ -287,3 +294,62 @@ Then `dbox-Mails/dovecot.index.log` was taken, after checking that
 there, the fixture silently becomes an ordinary folder and the test it guards
 passes for the wrong reason. Read the state back with the reference's `fetch`,
 never from our reader.
+
+
+---
+
+# A folder whose tail was expunged (#1568)
+
+| file | what it is |
+|---|---|
+| `index-tail.log` | a folder's log: three messages saved, the last expunged |
+| `map-tail.log` | that store's map log |
+| `store-tail-m.1` | the storage file the two describe |
+
+## The state it carries
+
+The reference's own output, verbatim:
+
+```
+doveadm fetch 'uid flags' mailbox Tail
+uid: 1
+flags: \Seen \Recent
+
+uid: 2
+flags: \Recent
+
+doveadm mailbox status "uidnext messages uidvalidity" Tail
+Tail messages=2 uidnext=4 uidvalidity=1788118011
+```
+
+## What it establishes
+
+**`next_uid` cannot be derived from the messages.** The highest surviving uid is
+2 and the counter is at 4, because uid 3 was appended -- which moved the counter
+-- and then expunged, which left no record behind. The reference does not
+journal the counter: it moves `next_uid` past each uid as it applies the append
+(`mail-index-sync-update.c`). So a reader that takes the highest surviving uid
+plus one hands the next delivery a number a client has already seen carrying
+different mail.
+
+The other index fixture cannot show this: there the highest surviving uid
+happens to be the highest ever used, so both readings agree by luck.
+
+It is also a folder with no base index, so it exercises the log-only branch at
+the same time.
+
+## How it was made
+
+The same local install, no daemon, defaults throughout:
+
+```
+doveadm mailbox create Tail
+doveadm save -m Tail                       (three times)
+doveadm flags add '\Seen' mailbox Tail uid 1
+doveadm expunge mailbox Tail uid 3
+```
+
+**Re-taking this:** the gap between `uidnext` and the highest surviving uid is
+the fixture. Read both back with the reference's own `status` and `fetch`, never
+from our reader, and check the gap is still there -- without it the test it
+guards passes for the wrong reason.

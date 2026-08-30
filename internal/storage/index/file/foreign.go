@@ -39,7 +39,7 @@ func (u *userIndex) foreignFolderDir(folder string) string {
 // folder, with no map to convert and a different question to answer about
 // naming; refusing here is how that stays a separate piece of work rather than
 // a half-done one.
-func (u *userIndex) convertForeignFolder(fs *folderState, uidValidity uint32) (bool, error) {
+func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	if u.driver != "mdbox" {
 		return false, nil
 	}
@@ -86,18 +86,35 @@ func (u *userIndex) convertForeignFolder(fs *folderState, uidValidity uint32) (b
 	if err != nil {
 		return false, fmt.Errorf("fileindex/convert: pair maps: %w", err)
 	}
-	metas, err := dboxconv.ConvertFolder(dir, corr)
+	metas, hdr, err := dboxconv.ConvertFolder(dir, corr)
 	if err != nil {
 		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
 	}
 
-	if err := fs.createFresh(uidValidity); err != nil {
+	// Their UID space, kept whole: the same UIDVALIDITY, the same UIDs, and
+	// their next_uid rather than one past the highest surviving message. A
+	// client reconnecting over this mailbox then finds what it left (#1568).
+	//
+	// The uidValidity the opener asked for plays no part, which is why it is
+	// not a parameter here: a folder that exists in their store is not a new
+	// folder, and the only right answer is the one their index carries.
+	if hdr.UIDValidity == 0 {
+		return false, fmt.Errorf("fileindex/convert: folder %q: their index carries no uid_validity", fs.folder)
+	}
+	if err := fs.createFresh(hdr.UIDValidity); err != nil {
 		return false, err
 	}
 	for _, meta := range metas {
 		if err := fs.appendLocked(meta); err != nil {
 			return false, fmt.Errorf("fileindex/convert: folder %q uid %d: %w", fs.folder, meta.UID, err)
 		}
+	}
+	// next_uid after the appends, which raise it to the highest uid plus one.
+	// Theirs can be higher -- a message appended and then expunged moved their
+	// counter and left nothing behind -- and reusing that number would hand a
+	// client a uid it has already seen carrying different mail.
+	if hdr.NextUID > fs.file.Header.NextUID {
+		fs.file.Header.NextUID = hdr.NextUID
 	}
 	// Ours durable before theirs is unlinked. The lock orders sessions; this
 	// orders the disk, and a crash between the two has to leave a folder one of

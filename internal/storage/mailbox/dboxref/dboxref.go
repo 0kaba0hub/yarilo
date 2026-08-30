@@ -45,6 +45,16 @@ func IndexLogRotated(t *testing.T) []byte { return read(t, "testdata/index-inbox
 // a folder without an index loses every flag in it (#1564).
 func IndexFreshLog(t *testing.T) []byte { return read(t, "testdata/index-fresh.log") }
 
+// A folder whose last message was expunged, with the store it belongs to.
+//
+// Its next_uid is higher than anything it still holds, which is the one thing a
+// reader cannot derive from the messages: the reference moves the counter as it
+// applies each append and journals nothing, so an appended-then-expunged
+// message leaves the counter moved and no record behind (#1568).
+func IndexTailLog(t *testing.T) []byte  { return read(t, "testdata/index-tail.log") }
+func MapTailLog(t *testing.T) []byte    { return read(t, "testdata/map-tail.log") }
+func StoreTailFile(t *testing.T) []byte { return read(t, "testdata/store-tail-m.1") }
+
 // MapLog is the mdbox map's transaction log. No base accompanies it, because
 // this store's map log has not rotated and the base is rewritten only once
 // enough log has been read since the last rewrite -- so a reader must handle
