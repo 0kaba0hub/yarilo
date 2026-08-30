@@ -220,3 +220,70 @@ them.
 **Re-taking these:** the state above is the fixture. Read it back with the
 reference's own `fetch` command, as it was recorded here, and never from our
 reader -- same rule as the record offsets above.
+
+---
+
+# A folder with no base index (#1564)
+
+| file | what it is |
+|---|---|
+| `index-fresh.log` | a folder's transaction log, with no base index beside it |
+
+Three messages in a folder `Fresh`, and nothing has forced a base index to be
+written yet. This is not a contrived state: the reference writes a base only
+once a size threshold or a rotation makes it, so every folder of a freshly
+created store looks like this, and a folder made a moment ago looks like this on
+a live one.
+
+## The state it carries
+
+What the reference's own `fetch` reports over this folder, verbatim:
+
+```
+uid: 1
+flags: \Seen \Recent
+
+uid: 2
+flags: \Answered \Recent
+
+uid: 3
+flags: \Recent $Important
+```
+
+(`\Recent` is session state, not stored state, and no import carries it.)
+
+Each row fails something different: a reader that takes `log_file_tail_offset`
+as the starting point -- the base's rule, applied where there is no base --
+returns nothing at all; one that treats a missing base as a missing index sends
+the folder to the store scan and delivers all three without flags.
+
+## What it establishes beyond the flags
+
+The extension a message's bytes are found through is **named** in this log. The
+reference writes an intro by name while the index map does not yet know the
+extension, and by id once it does (`log_append_ext_intro`), so the first intro
+for each extension in a folder's first log necessarily carries its name. That is
+why "the log from its start" needs no base to interpret it, and why "base plus
+log" does: after a rotation the new log's intros are ids referring to a table
+that lives in the base.
+
+## How it was made
+
+The same local install, no daemon, defaults throughout -- no rotation knobs,
+because the point of this fixture is a log that has **not** rotated:
+
+```
+doveadm mailbox create Fresh
+doveadm save -m Fresh            (three times)
+doveadm flags add '\Seen'      mailbox Fresh uid 1
+doveadm flags add '\Answered'  mailbox Fresh uid 2
+doveadm flags add '$Important' mailbox Fresh uid 3
+```
+
+Then `dbox-Mails/dovecot.index.log` was taken, after checking that
+`dovecot.index` had not appeared beside it.
+
+**Re-taking this:** check for the absence of the base file first -- with one
+there, the fixture silently becomes an ordinary folder and the test it guards
+passes for the wrong reason. Read the state back with the reference's `fetch`,
+never from our reader.
