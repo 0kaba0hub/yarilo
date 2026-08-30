@@ -1070,6 +1070,11 @@ const (
 	LegacyIndexNamesFileName = "dovecot.index.names"
 )
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func indexPathFor(indexDir string) string { return filepath.Join(indexDir, IndexFileName) }
 func namesPath(indexDir string) string    { return filepath.Join(indexDir, IndexNamesFileName) }
 
@@ -1080,6 +1085,15 @@ func namesPath(indexDir string) string    { return filepath.Join(indexDir, Index
 // Returns an error only on a partial rename — never on absence of
 // the legacy file.
 func migrateLegacyFilenames(indexDir string) error {
+	// Only ours. The legacy names are another implementation's current names,
+	// so renaming on the name alone moves their index into our namespace, where
+	// it does not parse and where they can no longer find it (#1574). Their
+	// store is read by the conversion path instead, which leaves their files
+	// alone until ours is durable.
+	if legacyIndex := filepath.Join(indexDir, LegacyIndexFileName); fileExists(legacyIndex) &&
+		looksForeign(legacyIndex) {
+		return nil
+	}
 	pairs := []struct{ legacy, native string }{
 		{LegacyIndexFileName, IndexFileName},
 		{LegacyIndexLogFileName, IndexLogFileName},
