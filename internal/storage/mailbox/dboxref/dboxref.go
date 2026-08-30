@@ -59,6 +59,12 @@ func StoreTailFile(t *testing.T) []byte { return read(t, "testdata/store-tail-m.
 // Cyrillic one: the two shapes that tell a reader apart from a lucky one.
 func Subscriptions(t *testing.T) []byte { return read(t, "testdata/subscriptions") }
 
+// A map with a base index beside its log: the shape a store takes once it is
+// big enough for the reference to fold the log into a base. The base holds what
+// was folded and the log what came after, so neither half is the map.
+func MapBase(t *testing.T) []byte    { return read(t, "testdata/map-based.index") }
+func MapBaseLog(t *testing.T) []byte { return read(t, "testdata/map-based.log") }
+
 // MapLog is the mdbox map's transaction log. No base accompanies it, because
 // this store's map log has not rotated and the base is rewritten only once
 // enough log has been read since the last rewrite -- so a reader must handle

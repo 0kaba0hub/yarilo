@@ -210,16 +210,29 @@ func HasForeignSubscriptions(mailRoot string) bool {
 // base is written only once a rewrite threshold is passed, so a store that has
 // not reached it has no base at all.
 func ReadForeignMap(storageDir string) ([]dboxindex.MapEntry, error) {
-	var seed []dboxindex.Extension
+	var (
+		seed   []dboxindex.MapEntry
+		exts   []dboxindex.Extension
+		offset int
+	)
 	if raw, err := os.ReadFile(filepath.Join(storageDir, foreignMapIndex)); err == nil {
 		h, herr := dboxindex.ParseHeader(raw)
 		if herr != nil {
 			return nil, fmt.Errorf("dboxconv: map index: %w", herr)
 		}
-		seed, herr = dboxindex.ParseExtensions(raw, h)
+		exts, herr = dboxindex.ParseExtensions(raw, h)
 		if herr != nil {
 			return nil, fmt.Errorf("dboxconv: map extensions: %w", herr)
 		}
+		// The base's own records, and the log read from where the base stopped.
+		// Skipping either loses messages: the base holds everything folded into
+		// it, and the log everything since -- and after the log rotates, the
+		// base is the only place the older half exists (#1583).
+		seed, herr = dboxindex.ParseMapRecords(raw, h, exts)
+		if herr != nil {
+			return nil, fmt.Errorf("dboxconv: map records: %w", herr)
+		}
+		offset = int(h.LogFileTailOffset)
 	}
 
 	raw, err := os.ReadFile(filepath.Join(storageDir, foreignMapLog))
@@ -230,7 +243,11 @@ func ReadForeignMap(storageDir string) ([]dboxindex.MapEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dboxconv: map log header: %w", err)
 	}
-	return dboxindex.ReadMap(raw, int(lh.HeaderSize), seed)
+	// No base: the log from its start, which is the whole state then.
+	if offset < int(lh.HeaderSize) {
+		offset = int(lh.HeaderSize)
+	}
+	return dboxindex.ReadMapOnto(seed, raw, offset, exts)
 }
 
 // Folder is one of their folders as read from disk: what it holds, how to
