@@ -8,6 +8,7 @@ import (
 
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxconv"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
+	"github.com/yarilomail/yarilo/internal/userstate/subs"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -125,6 +126,21 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 			"from", theirStorage, "to", ourStorage)
 	}
 
+	// Subscriptions are store-wide like the map, and they are the one piece of
+	// this conversion a user sees the moment it happens: a folder list that
+	// changed under them. Carried on the first folder that converts, which is
+	// also the first moment anything of ours exists to carry them into.
+	//
+	// Adding is idempotent, so running it per folder costs a few names and
+	// needs no marker of its own. Union rather than replace: a store being
+	// converted may already carry subscriptions of ours, and dropping either
+	// side loses a user's own choice.
+	if dboxconv.HasForeignSubscriptions(u.mailRootDir()) {
+		if err := u.carryForeignSubscriptions(); err != nil {
+			return false, err
+		}
+	}
+
 	corr, err := dboxconv.NewMapCorrespondence(theirStorage, m)
 	if err != nil {
 		return false, fmt.Errorf("fileindex/convert: pair maps: %w", err)
@@ -191,7 +207,7 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	// A failure here is logged and not returned. The folder in hand is
 	// converted and readable; refusing to open it because a file elsewhere
 	// could not be unlinked would turn a tidying step into an outage.
-	dropped, derr := dboxconv.DropForeignMapIfDone(theirStorage, filepath.Join(u.mailRootDir(), "mailboxes"), m)
+	dropped, derr := dboxconv.DropForeignMapIfDone(theirStorage, filepath.Join(u.mailRootDir(), "mailboxes"), u.mailRootDir(), m)
 	switch {
 	case derr != nil:
 		slog.Warn("fileindex: could not finish the store conversion; their map is still in place",
@@ -214,5 +230,32 @@ func fsyncDir(dir string) error {
 	if err := d.Sync(); err != nil {
 		return fmt.Errorf("fsync dir %s: %w", dir, err)
 	}
+	return nil
+}
+
+// carryForeignSubscriptions copies their subscribed folder list into ours.
+//
+// Their file lives with the mail; ours lives in the control root, which is a
+// different directory whenever a deployment sets one. The rule for that comes
+// from mailbox.ControlRoot, called where this index was opened -- the same
+// function the sessions and the admin API call, rather than a second spelling
+// of it (#1579).
+func (u *userIndex) carryForeignSubscriptions() error {
+	names, err := dboxconv.ReadForeignSubscriptions(u.mailRootDir(), u.separator)
+	if err != nil {
+		return fmt.Errorf("fileindex/convert: subscriptions: %w", err)
+	}
+	// The personal namespace's file, by the same helper every caller uses. A
+	// foreign store has one subscription file and it is the personal one; the
+	// per-namespace siblings have no counterpart there.
+	store := subs.New(u.controlRoot, mailbox.NamespaceSubsFile("", u.separator, "personal"),
+		u.username, u.owner, u.b.locker)
+	for _, name := range names {
+		if err := store.Add(name); err != nil {
+			return fmt.Errorf("fileindex/convert: subscribe %q: %w", name, err)
+		}
+	}
+	slog.Info("fileindex: carried their subscriptions", "user", u.username,
+		"folders", len(names), "from", u.mailRootDir(), "to", u.controlRoot)
 	return nil
 }

@@ -218,6 +218,10 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 			escapeChar:  u.StorageEscapeChar,
 			volatileDir: u.VolatileDir,
 			indexRoot:   u.IndexDir,
+			// Taken through the same function every other service calls, not
+			// re-derived: a second spelling of a path rule is what put our map
+			// where the driver could not read it (#1579).
+			controlRoot: mailbox.ControlRoot(u),
 			username:    u.Username,
 			owner:       makeOwner(u),
 			open:        make(map[uint64]*folderState),
@@ -418,6 +422,7 @@ type userIndex struct {
 	escapeChar  string // storage-name escape char; must match the mailbox driver or the trees diverge
 	volatileDir string // base volatile dir (empty = disabled)
 	indexRoot   string // INDEX= override root (empty = co-located with mail root)
+	controlRoot string // where per-user control state lives (subscriptions)
 	username    string
 	owner       string
 
