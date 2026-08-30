@@ -43,10 +43,10 @@ var (
 	flagFormat = flag.String("format", "", "[deprecated] alias for --dst")
 
 	flagGUID      = flag.Bool("guid-backfill", false, "stamp per-message GUIDs across an existing store instead of converting")
-	flagLocksConf = flag.String("config", "", "yarilo.yaml supplying layout, driver and the yarilo-locks client (--guid-backfill)")
+	flagLocksConf = flag.String("config", "", "yarilo.yaml supplying the storage layout, driver and the yarilo-locks client")
 	flagDriver    = flag.String("driver", "", "override storage.mailbox: maildir | sdbox | mdbox (--guid-backfill)")
 	flagRoot      = flag.String("root", "", "override storage.maildir_root (--guid-backfill)")
-	flagHomeTmpl  = flag.String("home-template", "", "override storage.mail_home_template, e.g. %d/%u (--guid-backfill)")
+	flagHomeTmpl  = flag.String("home-template", "", "override storage.mail_home_template, e.g. %d/%u")
 	flagUser      = flag.String("user", "", "restrict to one user@domain (--guid-backfill); default is every user under the root")
 	flagThreads   = flag.Bool("thread-backfill", false, "build the threading sidecar for existing accounts instead of converting")
 	flagForce     = flag.Bool("force", false, "rebuild a sidecar that already exists (--thread-backfill)")
@@ -142,7 +142,11 @@ func main() {
 		os.Exit(1)
 	}
 	idx := indexfile.New()
-	resolver := &mailbox.Resolver{Root: *flagTo, HomeTemplate: "%d/%n"}
+	resolver, err := importResolver(*flagLocksConf, *flagTo, *flagHomeTmpl)
+	if err != nil {
+		slog.Error("config", "err", err)
+		os.Exit(1)
+	}
 
 	var migrated, skipped int
 	err = filepath.WalkDir(*flagFrom, func(path string, d os.DirEntry, err error) error {
@@ -179,6 +183,21 @@ func main() {
 	slog.Info("migration complete", "migrated", migrated, "skipped", skipped, "src", *flagSrc, "dst", *flagDst)
 }
 
+// importResolver builds the destination layout from the same config the
+// services read. --to names the root and overrides the config's, because an
+// import writing somewhere else is the point of it.
+//
+// This used to be a hard-coded root and home template, and nothing else: the
+// import wrote its indexes into the default layout while the server read the
+// configured one, and every folder came up empty (#1562).
+func importResolver(configPath, to, homeTmpl string) (*mailbox.Resolver, error) {
+	cfg, err := guidConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+	return layoutResolver(cfg, to, homeTmpl), nil
+}
+
 func pickBackend(dst string) (mailbox.MailboxBackend, error) {
 	switch strings.ToLower(dst) {
 	case "sdbox", "dbox":
@@ -204,6 +223,29 @@ func migrateUser(walker sourceWalker, srcRoot string, boxBE mailbox.MailboxBacke
 
 	createdFolders := map[string]bool{"INBOX": true}
 	folders := map[string]*mailbox.Folder{}
+
+	// Folders first, messages after. A folder holding no mail is still the
+	// user's, and creating destination folders lazily under the first message
+	// dropped every empty one on the floor (#1563).
+	if lister, ok := walker.(folderLister); ok && !*flagDry {
+		names, err := lister.Folders(srcHome)
+		if err != nil {
+			return 0, 0, fmt.Errorf("migrate: list folders %s: %w", user, err)
+		}
+		for _, name := range names {
+			name = mailbox.NormalizeName(name, info.SkipNFCNormalize)
+			if createdFolders[name] {
+				continue
+			}
+			if err := box.Create(name); err != nil {
+				return 0, 0, fmt.Errorf("create %s/%s: %w", user, name, err)
+			}
+			if _, err := idx.OpenFolder(name, uint32(os.Getpid())); err != nil {
+				return 0, 0, fmt.Errorf("openfolder %s/%s: %w", user, name, err)
+			}
+			createdFolders[name] = true
+		}
+	}
 
 	err := walker.Walk(srcHome, func(msg sourceMessage) error {
 		// The migrator is an entry boundary like a protocol: a source folder
@@ -244,10 +286,12 @@ func migrateUser(walker sourceWalker, srcRoot string, boxBE mailbox.MailboxBacke
 		if err != nil {
 			return fmt.Errorf("save %s/%s: %w", user, msg.Folder, err)
 		}
+		flags, keywords := splitFlags(msg.Flags)
 		meta := &mailbox.MessageMeta{
 			UID:          uid,
 			Filename:     filename,
-			Flags:        msg.Flags,
+			Flags:        flags,
+			Keywords:     keywords,
 			Size:         uint32(len(msg.Body)),
 			VSize:        vsize,
 			InternalDate: msg.InternalDate,
@@ -272,6 +316,22 @@ func userDir(root, user string) string {
 		return filepath.Join(root, user[at+1:], user[:at])
 	}
 	return filepath.Join(root, user)
+}
+
+// splitFlags separates a source's one flag list into the two fields the index
+// keeps apart. Keywords are read from MessageMeta.Keywords alone, and anything
+// left in Flags that is not a system flag is dropped there without a word, so a
+// source that reports both in one list loses every keyword unless it is split
+// here. Same rule as IMAP STORE: a leading backslash means system flag.
+func splitFlags(all []string) (flags, keywords []string) {
+	for _, f := range all {
+		if strings.HasPrefix(f, `\`) {
+			flags = append(flags, f)
+		} else {
+			keywords = append(keywords, f)
+		}
+	}
+	return flags, keywords
 }
 
 // maildirFlags parses Maildir flag chars from a filename's ":2,<flags>" suffix.

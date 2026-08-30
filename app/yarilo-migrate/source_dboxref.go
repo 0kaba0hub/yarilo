@@ -79,6 +79,20 @@ func flagNames(b uint8) []string {
 	return out
 }
 
+// Folders lists what the store holds, so an empty one is carried across too.
+func (w dboxRefWalker) Folders(home string) ([]string, error) {
+	mailboxes := filepath.Join(home, "mdbox", "mailboxes")
+	folders, err := dboxindex.WalkFolders(os.DirFS(mailboxes))
+	if err != nil {
+		return nil, fmt.Errorf("dbox-ref: walk folders under %s: %w", mailboxes, err)
+	}
+	out := make([]string, 0, len(folders))
+	for _, f := range folders {
+		out = append(out, f.Name)
+	}
+	return out, nil
+}
+
 func (w dboxRefWalker) Walk(home string, visit func(sourceMessage) error) error {
 	root := filepath.Join(home, "mdbox")
 	storage := filepath.Join(root, "storage")
