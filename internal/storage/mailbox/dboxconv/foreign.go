@@ -15,15 +15,19 @@ package dboxconv
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxindex"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
 )
 
 // Their file names. Kept in one place because the removal step has to name
 // exactly the same set the reading step understood: a file left behind that
 // they would still read makes a stale foreign index look authoritative.
+const dboxMailsDir = "dbox-Mails"
+
 const (
 	foreignIndex    = "dovecot.index"
 	foreignLog      = "dovecot.index.log"
@@ -61,6 +65,78 @@ func HasForeignFolder(dir string) bool {
 func HasForeignMap(storageDir string) bool {
 	_, err := os.Stat(filepath.Join(storageDir, foreignMapLog))
 	return err == nil
+}
+
+// AnyForeignFolderLeft reports whether the store still holds a folder of theirs
+// that has not been converted.
+//
+// The walk is over directories rather than over their mailbox list index: a
+// folder is theirs while its index files are on disk, and that is the same
+// thing the conversion path decides on. Reading their list instead would answer
+// a different question -- what they believed existed -- and the two disagree
+// exactly when it matters, on a store somebody has been converting.
+func AnyForeignFolderLeft(mailboxesDir string) (bool, error) {
+	found := false
+	err := filepath.WalkDir(mailboxesDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if found {
+			return fs.SkipAll
+		}
+		if !d.IsDir() || filepath.Base(p) != dboxMailsDir {
+			return nil
+		}
+		if HasForeignFolder(p) {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("dboxconv: walk %s: %w", mailboxesDir, err)
+	}
+	return found, nil
+}
+
+// DropForeignMapIfDone removes their map once no folder of theirs is left, and
+// reports whether it did.
+//
+// Separate from a folder's conversion on purpose. The map is one for the whole
+// store, and a folder that has not been converted still addresses its mail
+// through their map uids: removing it early makes the rest of the store
+// unreadable by either implementation. So the last folder to convert is what
+// ends the store's conversion, and until then their map stays (#1569).
+//
+// The check and the removal are one section under the map's lock. What that
+// orders is not two deleters -- a second one finds the files gone and is happy
+// -- but a deleter against an importer, which reads exactly the files being
+// removed.
+//
+// A store where some folder is never opened keeps their map indefinitely, and
+// that is the honest outcome rather than a failure: the folder still needs it.
+func DropForeignMapIfDone(storageDir, mailboxesDir string, ours *mdboxmap.Map) (bool, error) {
+	dropped := false
+	err := ours.WithLock(func() error {
+		left, err := AnyForeignFolderLeft(mailboxesDir)
+		if err != nil {
+			return err
+		}
+		if left {
+			return nil
+		}
+		for _, name := range []string{foreignMapIndex, foreignMapLog} {
+			if err := os.Remove(filepath.Join(storageDir, name)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("dboxconv: remove %s: %w", name, err)
+			}
+		}
+		dropped = true
+		return nil
+	})
+	return dropped, err
 }
 
 // ReadForeignMap reads their map: the base when there is one, then its log, and

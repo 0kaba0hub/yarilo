@@ -118,10 +118,10 @@ func TestAForeignStoreIsConvertedOnFirstOpen(t *testing.T) {
 			t.Errorf("%s is still there after the conversion", name)
 		}
 	}
-	// Their map stays: a folder that has not been converted yet still addresses
-	// its mail through it (#1569).
-	if _, err := os.Stat(filepath.Join(home, "mdbox", "storage", "dovecot.map.index.log")); err != nil {
-		t.Errorf("their map log was removed: %v", err)
+	// This store held one folder, so converting it converted the store: their
+	// map has nothing left to serve and goes with it (#1569).
+	if _, err := os.Stat(filepath.Join(home, "mdbox", "storage", "dovecot.map.index.log")); !os.IsNotExist(err) {
+		t.Errorf("their map log outlived the last folder of theirs: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "mdbox", "storage", "m.1")); err != nil {
 		t.Errorf("the storage file was touched: %v", err)
@@ -366,5 +366,56 @@ func TestAnExpungedTailKeepsTheirNextUID(t *testing.T) {
 	}
 	if len(msgs[1].Flags) != 0 {
 		t.Errorf("uid 2 has flags %v, and the reference reports none", msgs[1].Flags)
+	}
+}
+
+// Their map outlives a folder's conversion while another folder of theirs is
+// still unconverted: that folder addresses its mail through their map uids, and
+// removing the map would leave it unreadable by either implementation (#1569).
+func TestTheirMapStaysWhileAFolderOfTheirsIsUnconverted(t *testing.T) {
+	home := foreignStore(t)
+	// A second folder of theirs, left unopened.
+	second := filepath.Join(home, "mdbox", "mailboxes", "Archive", "dbox-Mails")
+	if err := os.MkdirAll(second, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range map[string][]byte{
+		"dovecot.index":     dboxref.IndexBase(t),
+		"dovecot.index.log": dboxref.IndexLog(t),
+	} {
+		if err := os.WriteFile(filepath.Join(second, name), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	idx, _ := openStore(t, home)
+	if _, err := idx.OpenFolder("INBOX", 0); err != nil {
+		t.Fatalf("open INBOX: %v", err)
+	}
+	mapLog := filepath.Join(home, "mdbox", "storage", "dovecot.map.index.log")
+	if _, err := os.Stat(mapLog); err != nil {
+		t.Fatalf("their map went with the first folder, and Archive still needs it: %v", err)
+	}
+
+	// Converting the last one ends the store's conversion.
+	if _, err := idx.OpenFolder("Archive", 0); err != nil {
+		t.Fatalf("open Archive: %v", err)
+	}
+	if _, err := os.Stat(mapLog); !os.IsNotExist(err) {
+		t.Errorf("their map is still there after the last folder converted: %v", err)
+	}
+}
+
+// A folder of theirs opened after their map is gone is refused, loudly. It
+// cannot be converted -- the map is where its messages are addressed from -- and
+// the alternative to refusing is an empty folder that looks healthy.
+func TestAForeignFolderWithoutTheirMapIsRefused(t *testing.T) {
+	home := foreignStore(t)
+	if err := os.Remove(filepath.Join(home, "mdbox", "storage", "dovecot.map.index.log")); err != nil {
+		t.Fatal(err)
+	}
+	idx, _ := openStore(t, home)
+	if _, err := idx.OpenFolder("INBOX", 0); err == nil {
+		t.Error("a foreign folder with no foreign map opened clean")
 	}
 }

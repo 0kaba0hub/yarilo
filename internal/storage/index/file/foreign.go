@@ -138,6 +138,25 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	}
 	slog.Info("fileindex: converted a foreign folder", "user", u.username, "folder", fs.folder,
 		"messages", len(metas), "from", dir)
+
+	// The store's conversion ends when its last folder does. Their map has to
+	// outlive every folder that still reads through it, so what decides is not
+	// this folder but whether any of theirs is left anywhere in the tree
+	// (#1569). A store with a folder nobody ever opens keeps their map, which
+	// is correct: that folder still needs it.
+	//
+	// A failure here is logged and not returned. The folder in hand is
+	// converted and readable; refusing to open it because a file elsewhere
+	// could not be unlinked would turn a tidying step into an outage.
+	dropped, derr := dboxconv.DropForeignMapIfDone(storage, filepath.Join(u.mailRootDir(), "mailboxes"), m)
+	switch {
+	case derr != nil:
+		slog.Warn("fileindex: could not finish the store conversion; their map is still in place",
+			"user", u.username, "storage", storage, "err", derr)
+	case dropped:
+		slog.Info("fileindex: store fully converted; removed their map",
+			"user", u.username, "storage", storage)
+	}
 	return true, nil
 }
 
