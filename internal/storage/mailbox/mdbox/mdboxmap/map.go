@@ -1,6 +1,7 @@
 package mdboxmap
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxindex"
 	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
@@ -248,6 +250,18 @@ func (m *Map) loadOrInit() error {
 	if _, err := os.Stat(m.path); errors.Is(err, os.ErrNotExist) {
 		legacy := filepath.Join(filepath.Dir(m.path), LegacyMapIndexFileName)
 		if _, lerr := os.Stat(legacy); lerr == nil {
+			// Only if it is ours. That name was ours once and is another
+			// implementation's now, and renaming theirs is worse than reading
+			// it wrong: their base is gone from where they look for it before
+			// anything has decided this store should be touched at all, and
+			// what lands under our name is then misread as a map of ours --
+			// wrong offsets, a conversion that stops partway, and a store with
+			// both halves broken (#1590).
+			if foreign, ferr := looksForeignMapBase(legacy); ferr != nil {
+				return ferr
+			} else if foreign {
+				return m.createFresh()
+			}
 			if err := os.Rename(legacy, m.path); err != nil {
 				return fmt.Errorf("mdboxmap/load: migrate legacy %s: %w", legacy, err)
 			}
@@ -752,4 +766,43 @@ func (m *Map) MessageCount() int {
 		return 0
 	}
 	return m.st.count()
+}
+
+// looksForeignMapBase reports whether a file under the legacy map-index name was
+// written by another implementation rather than by an older yarilo.
+//
+// Both are major-7 mail-index files and both carry "map" and "ref", so neither
+// the name nor a successful parse tells them apart. Two things do, and either is
+// enough:
+//
+//   - ours carries a "guid" extension per record and theirs does not;
+//   - our "map" extension header is 20 bytes -- highest_file_id, rebuild_count,
+//     create_file_id and one more -- and theirs is 8.
+//
+// A v2 base of ours is named by its magic and never reaches here. Anything that
+// does not parse at all is treated as foreign: not ours to claim, and renaming
+// an unreadable file into our namespace only moves the question.
+func looksForeignMapBase(path string) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("mdboxmap/load: read %s: %w", path, err)
+	}
+	if bytes.HasPrefix(raw, []byte(baseMagic)) {
+		return false, nil
+	}
+	h, err := dboxindex.ParseHeader(raw)
+	if err != nil {
+		return true, nil
+	}
+	exts, err := dboxindex.ParseExtensions(raw, h)
+	if err != nil {
+		return true, nil
+	}
+	if _, ok := dboxindex.Find(exts, extGUID); ok {
+		return false, nil
+	}
+	if mapExt, ok := dboxindex.Find(exts, extMap); ok && len(mapExt.HeaderData) == mapHeaderSize {
+		return false, nil
+	}
+	return true, nil
 }
