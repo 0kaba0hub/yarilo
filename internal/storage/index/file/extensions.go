@@ -2,11 +2,14 @@ package file
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxindex"
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
@@ -562,20 +565,52 @@ var ourExtensions = map[string]bool{
 // being mdbox-only for now (#1524), and is why an unrecognised store is left
 // alone rather than converted.
 func looksForeign(path string) bool {
-	// Our own legacy format first: it predates the extensions this check reads,
-	// so an extension table is not a thing it has to have.
-	if _, isLegacy, err := detectAndDecodeLegacy(path); err == nil && isLegacy {
+	// Read once. Checking existence and then reading leaves a window another
+	// opener's rename fits through, and "unreadable" would then class an
+	// ordinary race as a foreign store (#1593).
+	raw, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		// Somebody else migrated it. Nothing to claim, nothing foreign.
 		return false
-	}
-	mf, err := mailindex.Open(path)
-	if err != nil || mf == nil {
-		// Unreadable: not something to rename into our namespace either.
+	case err != nil:
+		// Unreadable: not ours to claim either, and renaming a file we cannot
+		// read into our namespace only moves the question.
 		return true
 	}
-	for _, e := range mf.Extensions {
+	// Our own legacy format first: it predates the extensions this check reads,
+	// so an extension table is not a thing it has to have.
+	if looksLikeOurLegacyHeader(raw) {
+		return false
+	}
+	// From the bytes already in hand: opening the path again would race the
+	// rename that this whole check exists beside.
+	h, err := dboxindex.ParseHeader(raw)
+	if err != nil {
+		return true
+	}
+	exts, err := dboxindex.ParseExtensions(raw, h)
+	if err != nil {
+		return true
+	}
+	for _, e := range exts {
 		if !ourExtensions[e.Name] {
 			return true
 		}
 	}
 	return false
+}
+
+// looksLikeOurLegacyHeader reports whether these bytes begin with the header our
+// own legacy format wrote: the same four fields the legacy decoder insists on,
+// so anything this accepts, that reads.
+func looksLikeOurLegacyHeader(raw []byte) bool {
+	if len(raw) < 120 {
+		return false
+	}
+	le := binary.LittleEndian
+	return raw[0] == 7 &&
+		raw[1] == legacyMinor &&
+		le.Uint32(raw[8:]) == legacyRecordSize &&
+		le.Uint32(raw[4:]) == uint32(le.Uint16(raw[2:]))
 }

@@ -524,3 +524,76 @@ func TestAStoreWhoseStorageIsReadOnlyIsRefused(t *testing.T) {
 		t.Errorf("our index was written although the conversion was refused: %v", serr)
 	}
 }
+
+// A maildir folder does not keep another implementation's index files.
+//
+// A maildir is served from its own files -- the message is the file, the flags
+// are in its name -- so their index says nothing this server needs. Left there
+// it is a file a tool of theirs finds and reads as current. Their keyword file
+// is deliberately not removed: it is the only record of what the letters in a
+// filename mean (#1593, #1600).
+func TestAMaildirFolderDropsTheirLeftoverIndexFiles(t *testing.T) {
+	home := t.TempDir()
+	their := map[string][]byte{
+		"dovecot.index":       dboxref.IndexBase(t),
+		"dovecot.index.log":   dboxref.IndexLog(t),
+		"dovecot.index.log.2": dboxref.IndexLogRotated(t),
+		"dovecot.index.cache": []byte("cache"),
+		"dovecot-keywords":    []byte("0 $Important\n"),
+	}
+	for name, b := range their {
+		if err := os.WriteFile(filepath.Join(home, name), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	idx := indexfile.New().OpenUser(&mailbox.UserInfo{Username: "u1@example.com", Home: home, Driver: "maildir"})
+	defer idx.Close() //nolint:errcheck
+	if _, err := idx.OpenFolder("INBOX", 1); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	for _, name := range []string{"dovecot.index", "dovecot.index.log", "dovecot.index.log.2", "dovecot.index.cache"} {
+		if _, err := os.Stat(filepath.Join(home, name)); !os.IsNotExist(err) {
+			t.Errorf("%s is still there: %v", name, err)
+		}
+	}
+	// The one that carries meaning stays until we write one of our own.
+	if _, err := os.Stat(filepath.Join(home, "dovecot-keywords")); err != nil {
+		t.Errorf("their keyword file was removed, and nothing else names those letters: %v", err)
+	}
+	// Ours was written, and it is ours: theirs was not renamed into it.
+	if b, err := os.ReadFile(filepath.Join(home, "yarilo.index")); err != nil {
+		t.Errorf("no index of ours: %v", err)
+	} else if len(b) == len(dboxref.IndexBase(t)) {
+		t.Error("their index was renamed to ours rather than removed")
+	}
+}
+
+// A dbox folder keeps them: the conversion reads them, and removing them early
+// is removing the store.
+func TestADboxFolderKeepsTheirIndexFiles(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "mdbox", "mailboxes", "INBOX", "dbox-Mails")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range map[string][]byte{
+		"dovecot.index":     dboxref.IndexBase(t),
+		"dovecot.index.log": dboxref.IndexLog(t),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx := indexfile.New().OpenUser(&mailbox.UserInfo{Username: "u1@example.com", Home: home, Driver: "mdbox"})
+	defer idx.Close() //nolint:errcheck
+	// No map of theirs, so the conversion refuses -- which is beside the point
+	// here. What matters is that their files are still on disk afterwards.
+	_, _ = idx.OpenFolder("INBOX", 1)
+	for _, name := range []string{"dovecot.index", "dovecot.index.log"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s was removed from a dbox folder, where the conversion reads it: %v", name, err)
+		}
+	}
+}

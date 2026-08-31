@@ -73,7 +73,18 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32, traceID string
 	} else if err := os.MkdirAll(indexDir, 0o700); err != nil {
 		return nil, fmt.Errorf("fileindex/openfolder: mkdir: %w", err)
 	}
-	if err := migrateLegacyFilenames(indexDir); err != nil {
+	switch err := migrateLegacyFilenames(indexDir); {
+	case errors.Is(err, errForeignIndexPresent):
+		// Theirs, under a name that was ours once. What happens next is the
+		// driver's business: a dbox folder is converted from it and must keep
+		// it until then, while a maildir folder is served from the files
+		// themselves and never reads it -- so for maildir it is dead weight
+		// that no tool of theirs should find and take for authoritative
+		// (#1593).
+		if u.driver == "maildir" {
+			removeForeignIndexFiles(indexDir)
+		}
+	case err != nil:
 		return nil, err
 	}
 

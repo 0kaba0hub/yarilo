@@ -653,6 +653,7 @@ func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 	if err != nil {
 		return nil, err
 	}
+	kwNames := u.keywordNames(folder)
 
 	var msgs []*mailbox.MessageMeta
 	for _, e := range entries {
@@ -660,7 +661,7 @@ func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 			continue
 		}
 		name := e.Name()
-		flags, keywords := decodeFlags(name)
+		flags, keywords := decodeFlagsWith(name, kwNames)
 		phys, virt, hasPhys, _ := parseSizeInfo(name)
 		var sz uint32
 		switch {
@@ -752,6 +753,7 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 	// value; a missing uidlist just leaves every GUID name-derived.
 	_, _ = u.readUIDList(folder)
 	out := make([]mailbox.ScanRecord, 0, 128)
+	kwNames := u.keywordNames(folder)
 	for _, sub := range []string{"cur", "new"} {
 		dir := filepath.Join(u.folderPath(folder), sub)
 		entries, err := os.ReadDir(dir)
@@ -766,7 +768,7 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 				continue
 			}
 			name := e.Name()
-			flags, keywords := decodeFlags(name)
+			flags, keywords := decodeFlagsWith(name, kwNames)
 			phys, virt, hasPhys, _ := parseSizeInfo(name)
 			info, statErr := e.Info()
 			var sz uint32
@@ -1091,6 +1093,11 @@ func (u *userMailbox) SyncToken(folder string) string {
 
 // On-disk filenames. The legacy name is renamed to UIDListFileName on first
 // access, so subsequent runs see only the yarilo file.
+// keywordsFileName is their keyword file: the mapping from the letters a
+// filename carries to the names they stand for. Read, not written -- what we
+// write is #1601.
+const keywordsFileName = "dovecot-keywords"
+
 const (
 	UIDListFileName       = "yarilo-uidlist"
 	LegacyUIDListFileName = "dovecot-uidlist"
@@ -1354,7 +1361,47 @@ func parseSizeInfo(name string) (phys, virt uint32, hasPhys, hasVirt bool) {
 	return
 }
 
+// keywordNames reads the folder's keyword file: the mapping from the letters a
+// maildir filename carries to the names those letters stand for.
+//
+// One line per keyword, "<index> <name>", and the letter is 'a'+index
+// (maildir-keywords.c). Without it a letter means nothing on its own, which is
+// why inventing a name for it -- kw_a -- served a client something the other
+// server never wrote (#1600).
+//
+// A folder with no keyword file has no keywords named anywhere, and a letter
+// found in a filename there stays unresolved rather than becoming a name of our
+// making.
+func (u *userMailbox) keywordNames(folder string) map[byte]string {
+	path := filepath.Join(u.folderPath(folder), keywordsFileName)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close() //nolint:errcheck
+	out := make(map[byte]string)
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		idxStr, name, found := strings.Cut(strings.TrimRight(sc.Text(), "\r"), " ")
+		if !found || name == "" {
+			continue
+		}
+		idx, cerr := strconv.ParseUint(idxStr, 10, 32)
+		if cerr != nil || idx >= 26 {
+			continue
+		}
+		out['a'+byte(idx)] = name
+	}
+	return out
+}
+
 func decodeFlags(filename string) (flags, keywords []string) {
+	return decodeFlagsWith(filename, nil)
+}
+
+// decodeFlagsWith reads a filename's flags, resolving keyword letters through
+// the folder's keyword file when it names them.
+func decodeFlagsWith(filename string, names map[byte]string) (flags, keywords []string) {
 	idx := strings.Index(filename, ":2,")
 	if idx < 0 {
 		return nil, nil
@@ -1374,7 +1421,13 @@ func decodeFlags(filename string) (flags, keywords []string) {
 			flags = append(flags, `\Deleted`)
 		default:
 			if c >= 'a' && c <= 'z' {
-				keywords = append(keywords, fmt.Sprintf("kw_%c", c))
+				// Only what the folder's keyword file names. A letter with no
+				// line of its own is a keyword whose name is not recorded
+				// anywhere, and inventing one puts a name in front of a client
+				// that nothing on disk ever said (#1600).
+				if name, ok := names[byte(c)]; ok {
+					keywords = append(keywords, name)
+				}
 			}
 		}
 	}
