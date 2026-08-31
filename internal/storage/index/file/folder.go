@@ -925,6 +925,33 @@ func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 	})
 }
 
+// AdoptUIDSpace sets a folder's UIDVALIDITY and next UID from a store that
+// already records them, and refuses a folder that holds messages.
+//
+// The refusal is the substance. Changing the UID space of a mailbox somebody is
+// already reading is what UIDVALIDITY exists to prevent, and a folder with
+// records is one a session may have seen; a folder with none was created a
+// moment ago by the open that is adopting it.
+func (u *userIndex) AdoptUIDSpace(folderID uint64, uidValidity, nextUID uint32) error {
+	if uidValidity == 0 {
+		return fmt.Errorf("fileindex/adopt: uid validity 0")
+	}
+	return u.withFolder(folderID, func(fs *folderState) error {
+		if len(fs.file.Records) > 0 {
+			return fmt.Errorf("fileindex/adopt: folder %q holds %d messages: %w",
+				fs.folder, len(fs.file.Records), mailbox.ErrUIDSpaceInUse)
+		}
+		slog.Info("fileindex: adopting a recorded uid space", "user", u.username,
+			"folder", fs.folder, "uid_validity", uidValidity, "next_uid", nextUID,
+			"was_uid_validity", fs.file.Header.UIDValidity)
+		fs.file.Header.UIDValidity = uidValidity
+		if nextUID > fs.file.Header.NextUID {
+			fs.file.Header.NextUID = nextUID
+		}
+		return fs.flush(false)
+	})
+}
+
 // AppendMessage records m as a new on-disk record. The caller is
 // expected to have already assigned m.UID via AllocateUID or via
 // an external authority (mdbox-style map_uid).

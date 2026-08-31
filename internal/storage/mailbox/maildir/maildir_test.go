@@ -328,8 +328,12 @@ func TestSave_AppendsUIDList(t *testing.T) {
 		if len(parts) == 0 || parts[0] != w.uid {
 			t.Errorf("line %d uid = %q, want %q", i+1, parts, w.uid)
 		}
-		if gotFilename != w.filename {
-			t.Errorf("line %d filename = %q, want %q", i+1, gotFilename, w.filename)
+		// The record names the base, as the other implementation's does: the
+		// name is cut at the info separator, because a record keyed by the
+		// whole name stops matching its own message the moment a flag renames
+		// it (#1593).
+		if wantBase := maildirBase(w.filename); gotFilename != wantBase {
+			t.Errorf("line %d filename = %q, want %q", i+1, gotFilename, wantBase)
 		}
 	}
 }
@@ -506,8 +510,9 @@ func TestUIDListRoundtrip(t *testing.T) {
 	if len(m) != len(saved) {
 		t.Fatalf("readUIDList returned %d entries, want %d", len(m), len(saved))
 	}
+	// Keyed by base name on both sides of the round trip.
 	for fn, wantUID := range saved {
-		if uid, ok := m[fn]; !ok || uid != wantUID {
+		if uid, ok := m[maildirBase(fn)]; !ok || uid != wantUID {
 			t.Errorf("filename %q: got (uid=%d, ok=%v), want uid=%d", fn, uid, ok, wantUID)
 		}
 	}
@@ -565,12 +570,13 @@ func TestReadUIDList_CacheUpdatedAfterAppend(t *testing.T) {
 	}
 
 	// Cache must reflect both entries without re-reading the file.
+	// Keyed by base name, as the file is.
 	c := box.folderCacheFor("INBOX")
-	if c.uidMap[fn1] != 1 {
-		t.Errorf("fn1 uid in cache = %d, want 1", c.uidMap[fn1])
+	if c.uidMap[maildirBase(fn1)] != 1 {
+		t.Errorf("fn1 uid in cache = %d, want 1", c.uidMap[maildirBase(fn1)])
 	}
-	if c.uidMap[fn2] != 2 {
-		t.Errorf("fn2 uid in cache = %d, want 2", c.uidMap[fn2])
+	if c.uidMap[maildirBase(fn2)] != 2 {
+		t.Errorf("fn2 uid in cache = %d, want 2", c.uidMap[maildirBase(fn2)])
 	}
 
 	// readUIDList must also return the updated entry (from cache or disk).
@@ -578,8 +584,8 @@ func TestReadUIDList_CacheUpdatedAfterAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m[fn2] != 2 {
-		t.Errorf("readUIDList fn2 = %d, want 2", m[fn2])
+	if m[maildirBase(fn2)] != 2 {
+		t.Errorf("readUIDList fn2 = %d, want 2", m[maildirBase(fn2)])
 	}
 }
 

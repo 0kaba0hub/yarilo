@@ -284,6 +284,15 @@ func (h *userHandle) OpenFolder(folder string, uidValidity uint32) (*mailbox.Fol
 	return h.ui.OpenFolder(folder, uidValidity, h.traceID)
 }
 func (h *userHandle) SaveFolder(f *mailbox.Folder) error { return h.ui.SaveFolder(f) }
+
+// AdoptUIDSpace satisfies mailbox.UIDSpaceAdopter. On the handle as well as on
+// the index, because callers hold the handle: a capability implemented only on
+// the inner type is one no type-assertion finds.
+func (h *userHandle) AdoptUIDSpace(folderID uint64, uidValidity, nextUID uint32) error {
+	h.stampTrace(folderID)
+	return h.ui.AdoptUIDSpace(folderID, uidValidity, nextUID)
+}
+
 func (h *userHandle) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
 	h.stampTrace(folderID)
 	return h.ui.AppendMessage(folderID, m)
