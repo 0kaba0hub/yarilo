@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -164,4 +165,148 @@ func maildirBaseOf(name string) string {
 		return name[:i]
 	}
 	return name
+}
+
+// Folder names are brought to the encoding this deployment writes.
+//
+// Their store spells them in modified UTF-7; where that disagrees with
+// mailbox_list_utf8, nothing matches by name: the folder is listed as mojibake
+// and is not selectable under any name a client can send (#1586, #1593).
+//
+// The nested row is the one that has to be right level by level. Splitting the
+// dotted directory name is safe against an encoded one because modified base64
+// is A-Z a-z 0-9 '+' ',' — a '.' cannot appear inside an encoded run, the same
+// argument that holds for '/' in the dbox layout.
+func TestMaildirFolderNamesAreBroughtToTheConfiguredEncoding(t *testing.T) {
+	const (
+		encoded      = "&BBIERQRWBDQEPQRW-" // Вхідні
+		encodedChild = "&BCAEPgQxBD4EQgQw-" // Робота
+	)
+	tests := []struct {
+		name   string
+		utf8   bool
+		onDisk []string
+		want   []string
+	}{
+		{
+			name:   "utf-8 deployment, their encoding on disk",
+			utf8:   true,
+			onDisk: []string{"." + encoded, "." + encoded + "." + encodedChild, ".Archive"},
+			want:   []string{".Archive", ".Вхідні", ".Вхідні.Робота"},
+		},
+		{
+			name:   "their encoding configured, utf-8 on disk",
+			utf8:   false,
+			onDisk: []string{".Вхідні", ".Вхідні.Робота", ".Archive"},
+			want:   []string{"." + encoded, "." + encoded + "." + encodedChild, ".Archive"},
+		},
+		{
+			// The dot trap, and it is real rather than theoretical: encoding
+			// "Звіт.2026" puts the dot *outside* the encoded run, where the
+			// layout cannot tell it from a level separator. Splitting on it and
+			// converting level by level gives the same bytes as decoding the
+			// whole name would, because a dot passes through the encoding
+			// untouched -- which is why the two readings agree here and why the
+			// ambiguity that remains is the layout's own, not this pass's.
+			name:   "a dot the encoding leaves outside its run",
+			utf8:   true,
+			onDisk: []string{".&BBcEMgRWBEI-.2026"},
+			want:   []string{".Звіт.2026"},
+		},
+		{
+			name:   "utf-8 deployment, utf-8 already",
+			utf8:   true,
+			onDisk: []string{".Вхідні", ".Archive"},
+			want:   []string{".Archive", ".Вхідні"},
+		},
+		{
+			name:   "their encoding configured, their encoding already",
+			utf8:   false,
+			onDisk: []string{"." + encoded, ".Archive"},
+			want:   []string{"." + encoded, ".Archive"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			mailPath := filepath.Join(home, "Maildir")
+			for _, d := range tc.onDisk {
+				if err := os.MkdirAll(filepath.Join(mailPath, d, "cur"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			box := maildir.New(maildir.WithListUTF8(tc.utf8)).
+				OpenUser(&mailbox.UserInfo{Username: "u1@example.com", Home: home, Driver: "maildir"})
+			defer box.Close() //nolint:errcheck
+			if err := box.Init(); err != nil {
+				t.Fatalf("init: %v", err)
+			}
+
+			got := dottedDirs(t, mailPath)
+			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Errorf("directories are %v, want %v", got, tc.want)
+			}
+			for _, d := range tc.want {
+				if _, err := os.Stat(filepath.Join(mailPath, d, "cur")); err != nil {
+					t.Errorf("%s lost its cur/: %v", d, err)
+				}
+			}
+		})
+	}
+}
+
+// A level that cannot be read as theirs is left exactly as it is: it may be
+// what a user typed.
+func TestAMaildirNameThatDoesNotDecodeIsLeftAlone(t *testing.T) {
+	home := t.TempDir()
+	mailPath := filepath.Join(home, "Maildir")
+	const odd = ".&notbase64$$"
+	if err := os.MkdirAll(filepath.Join(mailPath, odd, "cur"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	box := maildir.New(maildir.WithListUTF8(true)).
+		OpenUser(&mailbox.UserInfo{Username: "u1@example.com", Home: home, Driver: "maildir"})
+	defer box.Close() //nolint:errcheck
+	if err := box.Init(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if got := dottedDirs(t, mailPath); len(got) != 1 || got[0] != odd {
+		t.Errorf("directories are %v, want %q untouched", got, odd)
+	}
+}
+
+// Two folders must never become one.
+func TestMaildirNameAdoptionRefusesToMerge(t *testing.T) {
+	home := t.TempDir()
+	mailPath := filepath.Join(home, "Maildir")
+	for _, d := range []string{".Вхідні", ".&BBIERQRWBDQEPQRW-"} {
+		if err := os.MkdirAll(filepath.Join(mailPath, d, "cur"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	box := maildir.New(maildir.WithListUTF8(true)).
+		OpenUser(&mailbox.UserInfo{Username: "u1@example.com", Home: home, Driver: "maildir"})
+	defer box.Close() //nolint:errcheck
+	if err := box.Init(); err == nil {
+		t.Error("two folders were merged into one name")
+	}
+	if got := dottedDirs(t, mailPath); len(got) != 2 {
+		t.Errorf("directories are %v; nothing should have been lost", got)
+	}
+}
+
+func dottedDirs(t *testing.T, root string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), ".") {
+			out = append(out, e.Name())
+		}
+	}
+	sort.Strings(out)
+	return out
 }
