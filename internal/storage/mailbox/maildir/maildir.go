@@ -776,9 +776,30 @@ func (u *userMailbox) moveNewToCurLocked(folder string) error {
 // index stays authoritative for flags yarilo set, which never rename the file.
 func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Folder) (mailbox.SyncStats, error) {
 	var st mailbox.SyncStats
+	adopted := false
 	err := u.withMailboxLock(folder.Name, func() error {
 		if err := u.moveNewToCurLocked(folder.Name); err != nil {
 			return err
+		}
+		// A folder with no records of ours and a uidlist that already names a
+		// UID space: this is a store being taken over, so the space is taken
+		// with it. The index refuses this once the folder holds messages, which
+		// is what keeps it to the one open that adopts.
+		if a, ok := idx.(mailbox.UIDSpaceAdopter); ok {
+			if uidValidity, nextUID, have := u.UIDSpace(folder.Name); have {
+				err := a.AdoptUIDSpace(folder.ID, uidValidity, nextUID)
+				switch {
+				case err == nil:
+					adopted = true
+				case errors.Is(err, mailbox.ErrUIDSpaceInUse):
+					// An ordinary folder with mail in it, which is most of them.
+					// Whether a folder is empty is the index's to answer and not
+					// a caller's: the handle here is a snapshot, and one taken
+					// before somebody else's append says the wrong thing.
+				default:
+					return fmt.Errorf("maildir/sync: adopt uid space: %w", err)
+				}
+			}
 		}
 		scanned, err := u.Scan(folder.Name)
 		if err != nil {
@@ -868,7 +889,22 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 				Flags:        rec.Flags,
 				GUID:         rec.GUID,
 			}
-			if err := idx.AllocateAndAppend(folder.ID, m); err != nil {
+			// The uidlist already says which UID this file has -- it is the
+			// same file this implementation and the other one both write, and
+			// it is read here for its GUIDs already. Using its number keeps a
+			// client's cache valid across a takeover; allocating a fresh one
+			// makes every client refetch every mailbox (#1593).
+			//
+			// Only for a file the list knows. One delivered by an MDA since is
+			// not in it, and that is the ordinary case this path was written
+			// for: it gets the next UID, as before.
+			if uid, known := u.UIDFor(folder.Name, rec.Filename); known && adopted {
+				m.UID = uid
+				if err := idx.AppendMessage(folder.ID, m); err != nil {
+					return fmt.Errorf("maildir/sync: append %s at its recorded uid %d: %w",
+						rec.Filename, uid, err)
+				}
+			} else if err := idx.AllocateAndAppend(folder.ID, m); err != nil {
 				return fmt.Errorf("maildir/sync: append %s: %w", rec.Filename, err)
 			}
 			st.Imported++
@@ -1233,4 +1269,58 @@ func randomGUID() string {
 	b := make([]byte, 16)
 	rand.Read(b) //nolint:errcheck
 	return fmt.Sprintf("%032x", b)
+}
+
+// UIDSpace reports the UIDVALIDITY and next UID a folder's uidlist records, and
+// whether it had them.
+//
+// The header line is "3 V<uidvalidity> N<next uid> G<guid>", written by this
+// implementation and by the one whose file this may have been -- the format is
+// the same, which is why the file is adopted under our name rather than
+// converted. What was not adopted until now is what it says: the numbers were
+// parsed past on every read, so a store taken over got a fresh UID space and
+// every client refetched every mailbox (#1593).
+func (u *userMailbox) UIDSpace(folder string) (uidValidity, nextUID uint32, ok bool) {
+	if err := u.migrateLegacyUIDList(folder); err != nil {
+		return 0, 0, false
+	}
+	f, err := os.Open(u.uidListPath(folder))
+	if err != nil {
+		return 0, 0, false
+	}
+	defer f.Close() //nolint:errcheck
+	sc := bufio.NewScanner(f)
+	if !sc.Scan() {
+		return 0, 0, false
+	}
+	fields := strings.Fields(sc.Text())
+	if len(fields) == 0 || fields[0] != "3" {
+		return 0, 0, false
+	}
+	for _, fld := range fields[1:] {
+		if len(fld) < 2 {
+			continue
+		}
+		n, cerr := strconv.ParseUint(fld[1:], 10, 32)
+		if cerr != nil {
+			continue
+		}
+		switch fld[0] {
+		case 'V':
+			uidValidity = uint32(n)
+		case 'N':
+			nextUID = uint32(n)
+		}
+	}
+	return uidValidity, nextUID, uidValidity != 0
+}
+
+// UIDFor returns the UID a folder's uidlist records for one file.
+func (u *userMailbox) UIDFor(folder, filename string) (uint32, bool) {
+	m, err := u.readUIDList(folder)
+	if err != nil {
+		return 0, false
+	}
+	uid, ok := m[filename]
+	return uid, ok
 }

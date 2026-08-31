@@ -17,6 +17,29 @@ var ErrCorruptStorage = errors.New("mailbox: corrupt message storage")
 // persists a per-folder "needs rebuild" marker so a corrupt message detected on
 // one read triggers a heal on the next open. Kept off the core UserIndex interface;
 // callers type-assert. The marker is exposed read-side as Folder.Fsckd.
+// UIDSpaceAdopter takes a folder's UID space from what a store already records
+// rather than minting a fresh one. Kept off the core UserIndex interface, like
+// CorruptionMarker: callers type-assert.
+//
+// For adopting a store another implementation wrote. A client reconnecting over
+// the same mailbox keeps its cache only if both the UIDVALIDITY and the UIDs are
+// the ones it saw; a fresh UID space makes it refetch everything, which costs
+// what a migration over IMAP costs.
+// ErrUIDSpaceInUse says a folder already holds messages, so its UID space is one
+// a session may have seen and is not open to being replaced.
+//
+// Not a failure at the call site: a caller adopting a store asks about every
+// folder it opens, and most of them are ordinary folders with mail in them.
+var ErrUIDSpaceInUse = errors.New("the folder already holds messages")
+
+type UIDSpaceAdopter interface {
+	// AdoptUIDSpace sets the folder's UIDVALIDITY and next UID. It must refuse a
+	// folder that already holds messages: rewriting the UID space under a
+	// mailbox somebody is already reading is the one thing UIDVALIDITY exists to
+	// prevent.
+	AdoptUIDSpace(folderID uint64, uidValidity, nextUID uint32) error
+}
+
 type CorruptionMarker interface {
 	// MarkFolderCorrupt sets the marker. Idempotent.
 	MarkFolderCorrupt(folderID uint64) error
