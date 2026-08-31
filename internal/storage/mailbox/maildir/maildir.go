@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
 	"github.com/yarilomail/yarilo/internal/storage/mailboxmetrics"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -193,7 +194,113 @@ func (u *userMailbox) Init() error {
 			}
 		}
 	}
+	return u.adoptFolderNames()
+}
+
+// adoptFolderNames brings the folder directories to the encoding this
+// deployment writes, and reports nothing when there is nothing to do.
+//
+// A store another implementation left spells its folder names in modified
+// UTF-7; ours spells them the way mailbox_list_utf8 says. Where the two differ
+// nothing matches by name: a folder is listed as mojibake and is not selectable
+// under any name a client can send, which is what a Cyrillic folder did on a
+// store taken over (#1586, #1593).
+//
+// Runs on Init, which is once per session and one directory read when there is
+// nothing to rename -- and there is nothing to rename on every store already in
+// this deployment's encoding, which is all of them but the one being adopted.
+//
+// The levels are converted one at a time. Splitting on the layout's separator
+// is safe against an encoded name for the reason it is safe elsewhere here:
+// modified base64 is A-Z a-z 0-9 '+' ',', so a '.' can never appear inside an
+// encoded run. A literal '.' inside a single level is a different matter and is
+// the layout's own ambiguity, resolved only by a storage escape character --
+// unchanged by this and not made worse.
+func (u *userMailbox) adoptFolderNames() error {
+	// Maildir++ keeps every folder as a dotted directory beside INBOX, in the
+	// mail path.
+	root := u.mailPath
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("maildir/adopt names: read %s: %w", root, err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), ".") || e.Name() == "." || e.Name() == ".." {
+			continue
+		}
+		want, ok := u.adoptedDirName(e.Name())
+		if !ok || want == e.Name() {
+			continue
+		}
+		target := filepath.Join(root, want)
+		if _, serr := os.Stat(target); serr == nil {
+			// Two folders must never become one: that is a loss no later step
+			// can undo, and a store in that shape needs a person.
+			return fmt.Errorf("maildir/adopt names: %s would become %s, which exists", e.Name(), want)
+		}
+		if rerr := os.Rename(filepath.Join(root, e.Name()), target); rerr != nil {
+			return fmt.Errorf("maildir/adopt names: rename %s: %w", e.Name(), rerr)
+		}
+		slog.Info("maildir: brought a folder name to this deployment's encoding",
+			"user", u.username, "from", e.Name(), "to", want, "list_utf8", u.listUTF8)
+	}
 	return nil
+}
+
+// adoptedDirName returns the directory name this deployment would write for a
+// maildir++ directory currently named name, and whether it could tell.
+func (u *userMailbox) adoptedDirName(name string) (string, bool) {
+	levels := strings.Split(strings.TrimPrefix(name, "."), ".")
+	changed := false
+	for i, level := range levels {
+		if level == "" {
+			continue
+		}
+		if isASCIIName(level) && !strings.Contains(level, "&") {
+			// The two encodings agree on plain ASCII. The ampersand is the
+			// exception: it is the escape in modified UTF-7, so a level
+			// carrying one is not the same string in both.
+			continue
+		}
+		var want string
+		if u.listUTF8 {
+			decoded, derr := mboxenc.FromModUTF7(level)
+			if derr != nil {
+				// Not their encoding, so nothing to bring across. It may be
+				// exactly what a user typed.
+				return name, false
+			}
+			want = decoded
+		} else {
+			// Already theirs if it survives a decode and re-encode unchanged;
+			// encoding it again would escape its ampersand and produce the
+			// double encoding this exists to remove.
+			if decoded, derr := mboxenc.FromModUTF7(level); derr == nil && mboxenc.ToModUTF7(decoded) == level {
+				continue
+			}
+			want = mboxenc.ToModUTF7(level)
+		}
+		if want != level {
+			levels[i] = want
+			changed = true
+		}
+	}
+	if !changed {
+		return name, true
+	}
+	return "." + strings.Join(levels, "."), true
+}
+
+func isASCIIName(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // Create provisions the cur/new/tmp triplet for a folder under the X lock.
