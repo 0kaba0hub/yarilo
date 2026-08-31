@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	indexfile "github.com/yarilomail/yarilo/internal/storage/index/file"
@@ -34,9 +35,13 @@ func TestAdoptingAMaildirKeepsItsUIDs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Their uidlist: a UID space nobody else would have chosen.
+	// Their uidlist, written the way they write it: the name is cut at the info
+	// separator, so the record names the base and not the file. That is the
+	// point of this fixture -- with full names in it the test would agree with
+	// itself and pass over a store no other implementation produces
+	// (maildir-uidlist.c cuts at MAILDIR_INFO_SEP before recording).
 	uidlist := fmt.Sprintf("3 V1600000000 N42 G0123456789abcdef0123456789abcdef\n40 :%s\n41 :%s\n",
-		files[0], files[1])
+		maildirBaseOf(files[0]), maildirBaseOf(files[1]))
 	if err := os.WriteFile(filepath.Join(home, "Maildir", "dovecot-uidlist"), []byte(uidlist), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +111,7 @@ func TestAFileTheUIDListDoesNotKnowGetsTheNextUID(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	uidlist := fmt.Sprintf("3 V1600000000 N42 G0123456789abcdef0123456789abcdef\n40 :%s\n", known)
+	uidlist := fmt.Sprintf("3 V1600000000 N42 G0123456789abcdef0123456789abcdef\n40 :%s\n", maildirBaseOf(known))
 	if err := os.WriteFile(filepath.Join(home, "Maildir", "dovecot-uidlist"), []byte(uidlist), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -150,4 +155,13 @@ func hasFlag(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// maildirBaseOf is what the other implementation records: the name up to the
+// info separator.
+func maildirBaseOf(name string) string {
+	if i := strings.IndexByte(name, ':'); i >= 0 {
+		return name[:i]
+	}
+	return name
 }

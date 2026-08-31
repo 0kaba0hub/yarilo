@@ -442,13 +442,16 @@ func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename st
 	if info != nil && info.Size() == 0 {
 		fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
 	}
-	// v3 record: "<uid> [G<guid>] :<filename>". The GUID field is written only
+	// v3 record: "<uid> [G<guid>] :<base filename>". The name is cut at the
+	// info separator, as the other implementation cuts it: a record keyed by the
+	// whole name stops matching its own message the moment a flag changes it.
+	// The GUID field is written only
 	// when it must differ from the name-derived one; readers that predate it
 	// skip unknown fields.
 	if guidOverride {
-		_, err = fmt.Fprintf(f, "%d G%s :%s\n", uid, hex.EncodeToString(guid[:]), filename)
+		_, err = fmt.Fprintf(f, "%d G%s :%s\n", uid, hex.EncodeToString(guid[:]), maildirBase(filename))
 	} else {
-		_, err = fmt.Fprintf(f, "%d :%s\n", uid, filename)
+		_, err = fmt.Fprintf(f, "%d :%s\n", uid, maildirBase(filename))
 	}
 	if err != nil {
 		return err
@@ -460,12 +463,12 @@ func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename st
 		if c.uidMap == nil {
 			c.uidMap = make(map[string]uint32)
 		}
-		c.uidMap[filename] = uid
+		c.uidMap[maildirBase(filename)] = uid
 		if guidOverride {
 			if c.guidMap == nil {
 				c.guidMap = make(map[string][16]byte)
 			}
-			c.guidMap[filename] = guid
+			c.guidMap[maildirBase(filename)] = guid
 		}
 		c.uidMtime = fi.ModTime()
 		c.uidSize = fi.Size()
@@ -561,7 +564,7 @@ func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 				sz = uint32(info.Size())
 			}
 		}
-		uid := uidMap[name]
+		uid := uidMap[maildirBase(name)]
 		msgs = append(msgs, &mailbox.MessageMeta{
 			UID:      uid,
 			Filename: name,
@@ -699,7 +702,7 @@ func (u *userMailbox) ProactiveScan() bool { return true }
 // override when one exists, else the name-derived value. Never zero.
 func (u *userMailbox) guidFor(folder, filename string) [16]byte {
 	if c := u.folderCacheFor(folder); c != nil && c.guidMap != nil {
-		if g, ok := c.guidMap[filename]; ok {
+		if g, ok := c.guidMap[maildirBase(filename)]; ok {
 			return g
 		}
 	}
@@ -1056,7 +1059,13 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 		if err != nil {
 			continue
 		}
-		m[filename] = uint32(uid64)
+		// The key is the base name -- everything before the first ':' -- because
+		// that is what survives a flag change, and because it is what the other
+		// implementation writes: it cuts the name at MAILDIR_INFO_SEP before
+		// recording it (maildir-uidlist.c, the uidlist rewrite). We used to
+		// write the whole name; normalising on read keeps those files working
+		// and leaves one rule over the file instead of two (#1593).
+		m[maildirBase(filename)] = uint32(uid64)
 		// Optional "G<hex>" field: an explicit GUID that must win over the
 		// name-derived one. A later record for the same file supersedes.
 		for _, fld := range parts[1:] {
@@ -1072,7 +1081,7 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 			}
 			var g [16]byte
 			copy(g[:], raw)
-			guids[filename] = g
+			guids[maildirBase(filename)] = g
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -1321,6 +1330,6 @@ func (u *userMailbox) UIDFor(folder, filename string) (uint32, bool) {
 	if err != nil {
 		return 0, false
 	}
-	uid, ok := m[filename]
+	uid, ok := m[maildirBase(filename)]
 	return uid, ok
 }
