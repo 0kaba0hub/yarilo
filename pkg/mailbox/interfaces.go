@@ -25,6 +25,26 @@ var ErrCorruptStorage = errors.New("mailbox: corrupt message storage")
 // the same mailbox keeps its cache only if both the UIDVALIDITY and the UIDs are
 // the ones it saw; a fresh UID space makes it refetch everything, which costs
 // what a migration over IMAP costs.
+// FlagWriter records a message's flag state where the storage keeps it, and
+// returns the name the message now has.
+//
+// One point, not three: a driver that keeps flags outside the index has to be
+// told once, with the whole set, after the index has settled it. Kept off the
+// core UserMailbox interface -- the dbox drivers do not implement it, because
+// there the flags live in the index by design and the reference does the same.
+//
+// Maildir is the driver that needs it. A maildir keeps flags in the filename so
+// the store describes itself: rebuild the index from the directory and the
+// state comes back. A flag change that never reaches the name breaks that --
+// the rebuild returns the state each message had when it was delivered, in our
+// own store, with no other implementation involved (#1601).
+type FlagWriter interface {
+	// WriteFlags renames the message to carry flags and keywords, and returns
+	// its new filename. The name is unchanged when nothing about it changes,
+	// and the caller records whatever comes back.
+	WriteFlags(folder, filename string, flags, keywords []string) (string, error)
+}
+
 // ErrUIDSpaceInUse says a folder already holds messages, so its UID space is one
 // a session may have seen and is not open to being replaced.
 //
