@@ -1127,6 +1127,43 @@ func namesPath(indexDir string) string    { return filepath.Join(indexDir, Index
 // already exists (the operator may have run a previous migration).
 // Returns an error only on a partial rename — never on absence of
 // the legacy file.
+// errForeignIndexPresent says the legacy-named index in this directory belongs
+// to another implementation. Not a failure: the caller decides what that means
+// for its driver, and for most of them the answer is to leave it alone.
+var errForeignIndexPresent = errors.New("the legacy-named index is another implementation's")
+
+// removeForeignIndexFiles unlinks the index files another implementation left
+// in a maildir folder.
+//
+// Only the derived ones. A maildir is served from its files -- the message is
+// the file and the flags are in its name -- so their index says nothing we need,
+// and leaving it means a tool of theirs finds it and reads it as current.
+//
+// Their keyword file is deliberately not in this list: it is the only record of
+// what the letters in a filename mean, and until we write one of our own,
+// removing it would leave those keywords unnameable (#1600, #1601).
+//
+// Failures are logged and not returned: the folder is readable either way, and
+// refusing to open it because a leftover could not be unlinked turns tidying
+// into an outage.
+func removeForeignIndexFiles(indexDir string) {
+	for _, name := range []string{
+		LegacyIndexFileName,
+		LegacyIndexLogFileName,
+		"dovecot.index.log.2",
+		"dovecot.index.cache",
+	} {
+		path := filepath.Join(indexDir, name)
+		if err := os.Remove(path); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				slog.Warn("fileindex: could not remove a foreign index file", "path", path, "err", err)
+			}
+			continue
+		}
+		slog.Info("fileindex: removed a foreign index file a maildir folder does not need", "path", path)
+	}
+}
+
 func migrateLegacyFilenames(indexDir string) error {
 	// Only ours. The legacy names are another implementation's current names,
 	// so renaming on the name alone moves their index into our namespace, where
@@ -1135,7 +1172,7 @@ func migrateLegacyFilenames(indexDir string) error {
 	// alone until ours is durable.
 	if legacyIndex := filepath.Join(indexDir, LegacyIndexFileName); fileExists(legacyIndex) &&
 		looksForeign(legacyIndex) {
-		return nil
+		return errForeignIndexPresent
 	}
 	pairs := []struct{ legacy, native string }{
 		{LegacyIndexFileName, IndexFileName},
