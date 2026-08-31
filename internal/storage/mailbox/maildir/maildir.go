@@ -448,7 +448,16 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 		return "", 0, noGUID, err
 	}
 
-	flagStr := encodeFlags(flags)
+	// Keywords go into the name too, and into the folder's keyword file, so a
+	// message delivered with one is described by the store rather than only by
+	// our index (#1601). The lock is already held by the caller of Save.
+	sys, kw := splitFlagsAndKeywords(flags)
+	letters, kerr := u.keywordLetters(folder, kw)
+	if kerr != nil {
+		os.Remove(tmpPath) //nolint:errcheck
+		return "", 0, noGUID, kerr
+	}
+	flagStr := encodeFlags(sys) + letters
 	// ,S=<phys>,W=<virt> before :2,<flags> so List() reports both sizes
 	// without reading the body.
 	finalName := fmt.Sprintf("%s,S=%d,W=%d:2,%s", basename, sc.phys, sc.phys+sc.lfNoCR, flagStr)
@@ -1313,6 +1322,174 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 
 // ---- flag helpers ----------------------------------------------------------
 
+// WriteFlags renames a message so its name carries the flags and keywords it
+// now has, and returns the new name.
+//
+// The name is where a maildir keeps this state, which is what makes the store
+// self-describing. Everything else here follows from that:
+//
+//   - the rename is within the same directory, so it is atomic and the message
+//     never has two names or none;
+//   - keyword letters come from the folder's keyword file, and a keyword not
+//     yet in it is added there first -- taking the first free index, never
+//     renumbering one already in use, because a renumber changes what every
+//     existing filename means (maildir-keywords.c takes the first free slot);
+//   - the folder lock is held, as for every write.
+//
+// A name that would not change is left alone and returned as it is: renaming a
+// file to itself is a write nobody asked for.
+func (u *userMailbox) WriteFlags(folder, filename string, flags, keywords []string) (string, error) {
+	var newName string
+	err := u.withMailboxLock(folder, func() error {
+		letters, err := u.keywordLettersLocked(folder, keywords)
+		if err != nil {
+			return err
+		}
+		want := renameWithFlags(filename, encodeFlags(flags)+letters)
+		if want == filename {
+			newName = filename
+			return nil
+		}
+		dir := u.folderPath(folder)
+		for _, sub := range []string{"cur", "new"} {
+			from := filepath.Join(dir, sub, filename)
+			if _, serr := os.Stat(from); serr != nil {
+				continue
+			}
+			if rerr := os.Rename(from, filepath.Join(dir, sub, want)); rerr != nil {
+				return fmt.Errorf("maildir/flags: rename %s: %w", filename, rerr)
+			}
+			newName = want
+			return nil
+		}
+		// The file is not where the index says it is. Left to the reconcile
+		// pass, which is what notices a message that moved or went; failing
+		// here would turn a flag change into an error a client cannot act on.
+		newName = filename
+		return nil
+	})
+	if err != nil {
+		return filename, err
+	}
+	return newName, nil
+}
+
+// renameWithFlags returns the filename with its ":2," info part replaced.
+func renameWithFlags(filename, info string) string {
+	base := filename
+	if i := strings.Index(filename, ":2,"); i >= 0 {
+		base = filename[:i]
+	}
+	return base + ":2," + info
+}
+
+// keywordLetters is keywordLettersLocked under the folder lock, for callers
+// that do not already hold it -- Save writes into its own tmp file and takes
+// the lock for nothing else.
+func (u *userMailbox) keywordLetters(folder string, keywords []string) (string, error) {
+	if len(keywords) == 0 {
+		return "", nil
+	}
+	var letters string
+	err := u.withMailboxLock(folder, func() error {
+		var lerr error
+		letters, lerr = u.keywordLettersLocked(folder, keywords)
+		return lerr
+	})
+	return letters, err
+}
+
+// keywordLettersLocked returns the letters standing for keywords, adding any
+// the folder's keyword file does not name yet. Sorted, so a name is one string
+// regardless of the order the keywords arrived in.
+func (u *userMailbox) keywordLettersLocked(folder string, keywords []string) (string, error) {
+	if len(keywords) == 0 {
+		return "", nil
+	}
+	names := u.keywordNames(folder)
+	if names == nil {
+		// No keyword file yet: this folder is about to have its first keyword,
+		// and the map is what the letters are allocated in.
+		names = make(map[byte]string)
+	}
+	byName := make(map[string]byte, len(names))
+	for letter, name := range names {
+		byName[name] = letter
+	}
+
+	var added bool
+	for _, kw := range keywords {
+		if _, ok := byName[kw]; ok {
+			continue
+		}
+		letter, ok := firstFreeKeywordLetter(names)
+		if !ok {
+			// Twenty-six is all a maildir name can carry. The keyword is kept
+			// in the index and simply has no letter; dropping it there instead
+			// would lose it.
+			slog.Warn("maildir: no free keyword letter left in this folder",
+				"user", u.username, "folder", folder, "keyword", kw)
+			continue
+		}
+		names[letter] = kw
+		byName[kw] = letter
+		added = true
+	}
+	if added {
+		if err := u.writeKeywordFileLocked(folder, names); err != nil {
+			return "", err
+		}
+	}
+
+	letters := make([]byte, 0, len(keywords))
+	for _, kw := range keywords {
+		if letter, ok := byName[kw]; ok {
+			letters = append(letters, letter)
+		}
+	}
+	sort.Slice(letters, func(i, j int) bool { return letters[i] < letters[j] })
+	return string(letters), nil
+}
+
+// firstFreeKeywordLetter returns the lowest letter no keyword holds.
+//
+// The first free one rather than the next after the highest: the reference
+// fills a hole left by a removed keyword the same way, and either choice has to
+// avoid renumbering, which is what would change the meaning of every filename
+// already written.
+func firstFreeKeywordLetter(names map[byte]string) (byte, bool) {
+	for c := byte('a'); c <= 'z'; c++ {
+		if _, taken := names[c]; !taken {
+			return c, true
+		}
+	}
+	return 0, false
+}
+
+// writeKeywordFileLocked rewrites the folder's keyword file from the mapping.
+func (u *userMailbox) writeKeywordFileLocked(folder string, names map[byte]string) error {
+	letters := make([]byte, 0, len(names))
+	for c := range names {
+		letters = append(letters, c)
+	}
+	sort.Slice(letters, func(i, j int) bool { return letters[i] < letters[j] })
+
+	var b strings.Builder
+	for _, c := range letters {
+		fmt.Fprintf(&b, "%d %s\n", c-'a', names[c])
+	}
+	path := filepath.Join(u.folderPath(folder), keywordsFileName)
+	tmp := fmt.Sprintf("%s.tmp.%d", path, os.Getpid())
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("maildir/keywords: write: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("maildir/keywords: commit: %w", err)
+	}
+	return nil
+}
+
 func encodeFlags(flags []string) string {
 	set := make(map[byte]bool)
 	for _, f := range flags {
@@ -1492,4 +1669,18 @@ func (u *userMailbox) UIDFor(folder, filename string) (uint32, bool) {
 	}
 	uid, ok := m[maildirBase(filename)]
 	return uid, ok
+}
+
+// splitFlagsAndKeywords separates a caller's one list into the two the name
+// records differently: system flags as their own letters, keywords through the
+// folder's keyword file.
+func splitFlagsAndKeywords(all []string) (flags, keywords []string) {
+	for _, f := range all {
+		if strings.HasPrefix(f, `\`) {
+			flags = append(flags, f)
+		} else {
+			keywords = append(keywords, f)
+		}
+	}
+	return flags, keywords
 }

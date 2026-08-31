@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -39,8 +40,12 @@ func (s *stubPassdb) Authenticate(username, password, _, _ string) (*protocol.Au
 // connected, un-authenticated imapclient.Client.
 func startTestServer(t *testing.T) *imapclient.Client {
 	t.Helper()
+	return startTestServerIn(t, t.TempDir())
+}
 
-	dir := t.TempDir()
+func startTestServerIn(t *testing.T, dir string) *imapclient.Client {
+	t.Helper()
+
 	mb := maildir.New()
 	idx := file.New()
 	resolver := &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"}
@@ -84,6 +89,14 @@ func startTestServer(t *testing.T) *imapclient.Client {
 
 // startAuthClient starts a server, logs in as the given user+pass and
 // returns the authenticated client.
+// startTestServerAt is startTestServer with the storage root handed back, for a
+// test that has to look at what reached the disk.
+func startTestServerAt(t *testing.T) (*imapclient.Client, string) {
+	t.Helper()
+	dir := t.TempDir()
+	return startTestServerIn(t, dir), dir
+}
+
 func startAuthClient(t *testing.T, user, pass string) *imapclient.Client {
 	t.Helper()
 	c := startTestServer(t)
@@ -2021,5 +2034,66 @@ func TestFetchBodyNonPeekSetsSeen(t *testing.T) {
 	}
 	if !hasSeen2 {
 		t.Errorf("\\Seen lost after index re-read; flags: %v", msgs2[0].Flags)
+	}
+}
+
+// A STORE reaches the filename on disk, not only the index.
+//
+// This is the session's half of #1601: the driver knows how to record flags in
+// the name, and something has to hand it the settled set. Without that call the
+// store still describes each message as it was delivered, and an index rebuilt
+// from the directory comes back with the wrong flags and no keywords -- in our
+// own store, with no other implementation involved.
+func TestStoreReachesTheFilenameOnDisk(t *testing.T) {
+	c, root := startTestServerAt(t)
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+	if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	body := []byte(testMsg)
+	ac := c.Append("INBOX", int64(len(body)), nil)
+	if _, err := ac.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := ac.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	store := &imap.StoreFlags{
+		Op:    imap.StoreFlagsAdd,
+		Flags: []imap.Flag{imap.FlagSeen, imap.Flag("$Important")},
+	}
+	if err := c.Store(imap.SeqSetNum(1), store, nil).Close(); err != nil {
+		t.Fatalf("STORE: %v", err)
+	}
+
+	cur := filepath.Join(root, "test.com", "user", "Maildir", "cur")
+	entries, err := os.ReadDir(cur)
+	if err != nil {
+		t.Fatalf("read %s: %v", cur, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("%d files in cur/, want 1", len(entries))
+	}
+	name := entries[0].Name()
+	info := name
+	if i := strings.Index(name, ":2,"); i >= 0 {
+		info = name[i+3:]
+	}
+	if !strings.Contains(info, "S") {
+		t.Errorf("the filename is %q, and the client set \\Seen", name)
+	}
+	if !strings.ContainsAny(info, "abcdefghijklmnopqrstuvwxyz") {
+		t.Errorf("the filename is %q, and the client set a keyword", name)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "test.com", "user", "Maildir", "dovecot-keywords"))
+	if err != nil {
+		t.Fatalf("keyword file: %v", err)
+	}
+	if !strings.Contains(string(raw), "$Important") {
+		t.Errorf("the keyword file is %q, and the client set $Important", raw)
 	}
 }

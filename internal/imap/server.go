@@ -634,6 +634,52 @@ func (s *session) emitMailboxChange(f *mailbox.Folder, eventType locks.EventType
 	s.emitMailboxChangeSized(f, eventType, uid, 0)
 }
 
+// pendingStore is one message a STORE touched: what the index settled on, and
+// the file it was in when the command started.
+type pendingStore struct {
+	seqNum   uint32
+	uid      uint32
+	newFlags []string
+	newKW    []string
+	filename string
+	altTier  bool
+}
+
+// writeFlagsToStorage hands the settled flag set to a driver that records it
+// outside the index, and records the name it comes back with.
+//
+// Best effort by design: the flags are already committed to the index, which is
+// what the client was told. A rename that fails leaves the store describing an
+// older state -- worth a warning and a later reconcile, not an error on a
+// command that succeeded.
+func (s *session) writeFlagsToStorage(pending []pendingStore) {
+	writer, ok := mailbox.Driver(s.folderBox()).(mailbox.FlagWriter)
+	if !ok {
+		return
+	}
+	folder := s.folder.Name
+	idx := s.folderIdx()
+	for i := range pending {
+		p := &pending[i]
+		if p.filename == "" {
+			continue
+		}
+		name, err := writer.WriteFlags(folder, p.filename, p.newFlags, p.newKW)
+		if err != nil {
+			slog.Warn("imap: could not record flags in storage", "folder", folder,
+				"uid", p.uid, "err", err)
+			continue
+		}
+		if name == p.filename {
+			continue
+		}
+		if err := idx.UpdateFilename(s.folder.ID, p.uid, name); err != nil {
+			slog.Warn("imap: could not record the new filename", "folder", folder,
+				"uid", p.uid, "name", name, "err", err)
+		}
+	}
+}
+
 // usageDelta is the size to move the running total by for one message.
 //
 // VSize is the CRLF-counted size and is what quota is charged in, but records
@@ -3325,14 +3371,6 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 	var modifiedUIDs imaplib.UIDSet
 
 	// Pass 1: determine which messages to update and compute new flag sets.
-	type pendingStore struct {
-		seqNum   uint32
-		uid      uint32
-		newFlags []string
-		newKW    []string
-		filename string
-		altTier  bool
-	}
 	var pending []pendingStore
 	batchUpdates := make(map[uint32]mailbox.FlagsUpdate)
 
@@ -3440,6 +3478,18 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 			mw.Close() //nolint:errcheck
 		}
 	}
+
+	// One point, after the index has settled what the set is and after imapsieve
+	// has had its say: a driver that keeps flags outside the index is told the
+	// whole set once. Maildir is that driver -- its filename is where the state
+	// lives, and a change that never reaches the name leaves the store
+	// describing the message as it was delivered (#1601).
+	//
+	// After the script, not before: a FLAG cause may refile the message, and a
+	// rename racing that leaves the script looking for a name that no longer
+	// exists. A message the script moved has no file left here, and this skips
+	// it rather than writing flags into the folder it left.
+	defer s.writeFlagsToStorage(pending)
 
 	// imapsieve (RFC 6785): after the STORE responses are sent, the FLAG cause
 	// fires on the selected mailbox for each message whose flags changed; the
