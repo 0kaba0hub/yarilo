@@ -71,3 +71,61 @@ func TestAMapWithABaseIsReadFromBothHalves(t *testing.T) {
 		t.Errorf("the log past the base's tail holds %d entries; if it held everything this fixture proves nothing", len(tail))
 	}
 }
+
+// A map whose log has rotated: everything is in the base and the current log is
+// a bare header.
+//
+// The strongest input for the rule #1587 established, and the one the field hit
+// before any fixture did: reading the log alone returns **nothing at all** —
+// three thousand messages, none of them found, and the folder that names one of
+// them cannot be converted.
+//
+// The oracle is the reference's own count over the store this came from:
+// messages=3020 uidnext=3021.
+func TestARotatedMapIsReadFromItsBase(t *testing.T) {
+	dir := t.TempDir()
+	for name, b := range map[string][]byte{
+		"dovecot.map.index":     dboxref.MapRotatedBase(t),
+		"dovecot.map.index.log": dboxref.MapRotatedLog(t),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := dboxconv.ReadForeignMap(dir)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	const want = 3020
+	if len(got) != want {
+		t.Fatalf("read %d entries, and the reference reports %d messages", len(got), want)
+	}
+	for _, e := range got {
+		if e.RefCount == 0 {
+			t.Fatalf("map uid %d reads as unreferenced on a store that has expunged nothing", e.MapUID)
+		}
+	}
+
+	// What the log holds on its own, which is what a reader without the base
+	// would have to work with.
+	h, err := dboxindex.ParseHeader(dboxref.MapRotatedBase(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exts, err := dboxindex.ParseExtensions(dboxref.MapRotatedBase(t), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lh, err := dboxindex.ParseLogHeader(dboxref.MapRotatedLog(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromLog, err := dboxindex.ReadMap(dboxref.MapRotatedLog(t), int(lh.HeaderSize), exts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fromLog) != 0 {
+		t.Errorf("the current log holds %d entries; this fixture is meant to have them all in the base", len(fromLog))
+	}
+}

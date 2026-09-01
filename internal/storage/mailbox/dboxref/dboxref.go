@@ -65,6 +65,12 @@ func Subscriptions(t *testing.T) []byte { return read(t, "testdata/subscriptions
 func MapBase(t *testing.T) []byte    { return read(t, "testdata/map-based.index") }
 func MapBaseLog(t *testing.T) []byte { return read(t, "testdata/map-based.log") }
 
+// A map from a store whose log has rotated: the base holds every record and the
+// current log is a bare header. Read the log alone and the map comes back
+// empty -- three thousand messages, none of them found.
+func MapRotatedBase(t *testing.T) []byte { return read(t, "testdata/map-rotated.index") }
+func MapRotatedLog(t *testing.T) []byte  { return read(t, "testdata/map-rotated.log") }
+
 // MapLog is the mdbox map's transaction log. No base accompanies it, because
 // this store's map log has not rotated and the base is rewritten only once
 // enough log has been read since the last rewrite -- so a reader must handle

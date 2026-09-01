@@ -405,3 +405,56 @@ working day. Nothing about the format depends on them.
 count is the fixture. Read both back with the reference's own `status`, and
 check the base is still short -- with the two equal, the test it guards passes
 for the wrong reason.
+
+
+---
+
+# A map whose log has rotated (#1583, #1587)
+
+| file | what it is |
+|---|---|
+| `map-rotated.index` | the map's base after a rotation: every record is here |
+| `map-rotated.log` | the current log, a bare 40-byte header |
+
+Three thousand and twenty messages, all of them in the base. The reference's own
+count over the store this came from:
+
+```
+doveadm mailbox status "messages uidnext" INBOX
+INBOX messages=3020 uidnext=3021
+```
+
+## What it establishes
+
+Reading the log alone returns **nothing at all** — not a short map, an empty
+one. Every folder naming a map uid then fails to convert, and the mailbox is
+unavailable in full. That is what the field hit before any fixture could show
+it, and it is the strongest input for the rule that a map is its base plus its
+log.
+
+## What it does not establish, and why
+
+**The sequence numbers agree here.** The base says `log_file_seq = 3` and the
+current log is sequence 3; the rotated one is 2. The store was rotated by the
+reference's own resync, which rewrites the base at the same time, so the base is
+never left pointing at the file the rotation moved away.
+
+So this fixture does not exercise the check in #1589 -- a base whose tail offset
+belongs to a log that is no longer on disk. That test keeps its constructed
+input: the fixture's own base with one header field moved to a sequence its log
+does not carry. Said here rather than implied, because a fixture that looks like
+it covers a case it does not is worse than no fixture.
+
+## What was left out
+
+The store also had a 423 KB `dovecot.map.index.log.2`. It is not here: on this
+path nothing reads it -- the sequences agree, so the rotated log is never
+consulted -- and carrying it would triple this directory for bytes no test
+touches. If a rotated-away log ever needs a fixture, it needs one whose base
+points at it, which this store is not.
+
+## How it was made
+
+Captured from a sandbox store of 3020 messages after `doveadm force-resync`,
+which is what rotated the log. Not reproducible on the local install: the folder
+logs rotate under the size knobs and the map's does not.
