@@ -283,25 +283,13 @@ func (u *userMailbox) Init() error {
 	return u.adoptFolderNames()
 }
 
-// adoptFolderNames brings the folder directories to the encoding this
-// deployment writes, and reports nothing when there is nothing to do.
+// adoptFolderNames brings the folder directories to this deployment's encoding.
+// Where the two spellings differ nothing matches by name and a folder is listed
+// as mojibake, selectable under no name a client can send (#1586, #1593).
 //
-// A store another implementation left spells its folder names in modified
-// UTF-7; ours spells them the way mailbox_list_utf8 says. Where the two differ
-// nothing matches by name: a folder is listed as mojibake and is not selectable
-// under any name a client can send, which is what a Cyrillic folder did on a
-// store taken over (#1586, #1593).
-//
-// Runs on Init, which is once per session and one directory read when there is
-// nothing to rename -- and there is nothing to rename on every store already in
-// this deployment's encoding, which is all of them but the one being adopted.
-//
-// The levels are converted one at a time. Splitting on the layout's separator
-// is safe against an encoded name for the reason it is safe elsewhere here:
-// modified base64 is A-Z a-z 0-9 '+' ',', so a '.' can never appear inside an
-// encoded run. A literal '.' inside a single level is a different matter and is
-// the layout's own ambiguity, resolved only by a storage escape character --
-// unchanged by this and not made worse.
+// Level by level: splitting on the layout separator is safe because modified
+// base64 is A-Z a-z 0-9 '+' ',', so '.' never appears inside an encoded run. On
+// Init, one directory read when there is nothing to rename.
 func (u *userMailbox) adoptFolderNames() error {
 	// Maildir++ keeps every folder as a dotted directory beside INBOX, in the
 	// mail path.
