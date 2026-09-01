@@ -1174,6 +1174,9 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	if refreshed := s.dboxHealIfCorrupt(h, rel, f); refreshed != nil {
 		f = refreshed
 	}
+	if refreshed := s.dboxRestoreIfIndexLost(h, rel, f); refreshed != nil {
+		f = refreshed
+	}
 	// Mail stored before per-message GUIDs carries none, so stamp it once here.
 	// Not fatal: the folder stays pending and every other operation works.
 	if err := idxrebuild.BackfillGUIDs(h.box, h.idx, f, rel); err != nil {

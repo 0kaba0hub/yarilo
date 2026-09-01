@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 
+	"github.com/yarilomail/yarilo/internal/storage/idxrebuild"
+
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -115,5 +117,61 @@ func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) 
 		slog.Warn("imap: reopen after heal failed", "folder", rel, "err", err)
 		return nil
 	}
+	return refreshed
+}
+
+// dboxRestoreIfIndexLost reimports a dbox folder whose index is gone while its
+// messages are still in storage, and returns a refreshed handle when it did.
+//
+// Losing the folder index used to mean losing the mailbox: the open created a
+// fresh empty index beside a directory full of mail, so the folder answered
+// 0 EXISTS with a new UIDVALIDITY, and nothing anywhere said the messages were
+// right there. maildir has always had this repair -- its proactive sync
+// reimports from disk -- and dbox had none: the reactive heal fires on a read
+// that trips over corrupt storage, and a folder with no records has no read to
+// trip (#1608).
+//
+// Only when the index is empty and the storage is not. Both empty is an
+// ordinary new folder and must stay one.
+//
+// UIDVALIDITY cannot be brought back: it lived in the index that was lost, so
+// the rebuild's fresh one stands and every client resynchronises. That is the
+// cost of the repair, not a reason to withhold it -- the alternative on the
+// table is a mailbox that reads as empty.
+func (s *session) dboxRestoreIfIndexLost(h *nsHandle, rel string, f *mailbox.Folder) *mailbox.Folder {
+	if f.Messages > 0 {
+		return nil
+	}
+	box := mailbox.Driver(h.box)
+	// Storage-wide scanners are excluded here on purpose. Their repair is the
+	// storage-wide rebuild, which its own contract says must run with the
+	// user's mailboxes quiesced -- firing it from a folder open can reclaim
+	// live mail out from under a concurrent delivery (#1608).
+	if fa, ok := box.(mailbox.FolderAgnosticStorage); ok && fa.FolderAgnosticScan() {
+		return nil
+	}
+	if _, ok := box.(mailbox.ReactiveHealer); !ok {
+		// A dbox driver, which is what this is for; maildir repairs itself
+		// through its own sync.
+		return nil
+	}
+	recs, err := h.box.Scan(rel)
+	if err != nil || len(recs) == 0 {
+		return nil
+	}
+	slog.Warn("imap: folder index is missing and its messages are in storage; rebuilding from the files",
+		"folder", rel, "files", len(recs))
+	st, err := idxrebuild.RebuildFolder(h.box, h.idx, f)
+	if err != nil {
+		slog.Warn("imap: rebuild after index loss failed", "folder", rel, "err", err)
+		return nil
+	}
+	refreshed, err := h.idx.OpenFolder(rel, f.UIDValidity)
+	if err != nil {
+		slog.Warn("imap: reopen after rebuild failed", "folder", rel, "err", err)
+		return nil
+	}
+	slog.Info("imap: rebuilt a folder from storage after index loss",
+		"folder", rel, "messages", st.UIDsAssigned+st.UIDsPreserved, "uidvalidity", refreshed.UIDValidity)
 	return refreshed
 }
