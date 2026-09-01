@@ -15,12 +15,13 @@
 //   - it is the authority for a folder's identity whenever that folder's index
 //     cannot answer, rather than a copy that may lag.
 //
-// The watermark is the piece their design keeps separately, in a durable
-// allocator file beside the mail, and the reason is worth restating: without
-// one, a fresh UIDVALIDITY comes from the clock, and a folder deleted and
-// created again inside one second is handed the same number with different
-// contents -- which RFC 3501 §6.3.4 forbids precisely because a client's cached
-// UIDs would still look valid.
+// Handing out a fresh value is not this record's job and is deliberately not
+// duplicated here: that is the allocator's (internal/userstate/uidvalidity,
+// #1614), and the two compose. The allocator guarantees a number is never
+// issued twice; this record preserves a number that was issued, across the loss
+// of the index that held it. A folder with no past takes its value from the
+// allocator; a folder whose index was lost takes it from here, and no
+// allocation happens at all -- the identity is not new.
 package folders
 
 import (
@@ -62,35 +63,7 @@ func New(root, user, owner string, l locks.Locker) *Store {
 type state struct {
 	uidValidity map[string]uint32
 	created     map[string]int64
-	watermark   uint32
 	lines       int
-}
-
-// Allocate returns a UIDVALIDITY that has never been handed out before, and
-// raises the watermark past it.
-//
-// requested is what the caller would have used -- a wall-clock stamp, today --
-// and it is honoured when it is above the watermark. That keeps the values
-// recognisable as timestamps on a healthy system while making a repeat
-// impossible on an unhealthy one: a clock that steps backwards, or two folders
-// created inside one second, both get the watermark instead.
-func (s *Store) Allocate(requested uint32) (uint32, error) {
-	var out uint32
-	err := s.withLock(func() error {
-		st, err := s.load()
-		if err != nil {
-			return err
-		}
-		out = requested
-		if out < st.watermark {
-			out = st.watermark
-		}
-		if out == 0 {
-			out = uint32(time.Now().Unix())
-		}
-		return s.append(fmt.Sprintf("n %x", uint64(out)+1))
-	})
-	return out, err
 }
 
 // Record stores a folder's identity. Idempotent: recording the same pair twice
@@ -108,15 +81,7 @@ func (s *Store) Record(folder string, uidValidity uint32, created time.Time) err
 			return nil
 		}
 		defer func() { s.foldIfLong(st) }()
-		line := fmt.Sprintf("+ %x %x %s", uidValidity, created.Unix(), folder)
-		if uidValidity >= st.watermark {
-			// One append rather than two: the watermark has to pass a value
-			// that was not allocated here -- an adopted folder carries theirs.
-			if err := s.append(fmt.Sprintf("n %x", uint64(uidValidity)+1)); err != nil {
-				return err
-			}
-		}
-		return s.append(line)
+		return s.append(fmt.Sprintf("+ %x %x %s", uidValidity, created.Unix(), folder))
 	})
 }
 
@@ -185,7 +150,6 @@ func (s *Store) foldIfLong(st *state) {
 		return
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "n %x\n", fresh.watermark)
 	for name, uv := range fresh.uidValidity {
 		fmt.Fprintf(&b, "+ %x %x %s\n", uv, fresh.created[name], name)
 	}
@@ -217,10 +181,6 @@ func (s *Store) load() (*state, error) {
 		st.lines++
 		line := sc.Text()
 		switch {
-		case strings.HasPrefix(line, "n "):
-			if v, perr := strconv.ParseUint(line[2:], 16, 32); perr == nil && uint32(v) > st.watermark {
-				st.watermark = uint32(v)
-			}
 		case strings.HasPrefix(line, "+ "):
 			rest := line[2:]
 			uv, rest, ok := cutHex(rest)
