@@ -973,6 +973,15 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 		afterScan()
 	}
 
+	// Nothing to apply, no lock at all: fifty sessions polling one folder each
+	// took it to find the first had done the work (#1630). The comparison needs
+	// no lock -- the index answers without one, and the section re-reads under
+	// the lock before writing. A stale answer errs toward taking the lock: a
+	// record it missed shows up as a file the index does not know.
+	if u.reconcileIsClean(idx, folder, scanned) {
+		return st, nil
+	}
+
 	err = u.withMailboxLock(folder.Name, func() error {
 		u.inSection.Add(1)
 		defer u.inSection.Add(-1)
@@ -1563,6 +1572,10 @@ func (u *userMailbox) keywordLettersLocked(folder string, keywords []string) (st
 // described (#1626).
 var sectionProbe func(dirReads, stats int)
 
+// cleanProbe reports how many records the clean-check compared, so a test
+// asserting "no lock taken" knows it ran over a real folder (#1630).
+var cleanProbe func(records int)
+
 // movePhaseProbe reports whether the new/ move phase took the lock, so a test
 // asserting "one acquisition, not two" knows the phase was skipped rather than
 // assuming it (#1630).
@@ -1913,4 +1926,56 @@ func (u *userMailbox) inCurDir(folder, filename string) bool {
 	}
 	_, err := os.Lstat(filepath.Join(u.folderPath(folder), "cur", filename))
 	return err == nil
+}
+
+// reconcileIsClean reports whether the scan and the index already agree, so the
+// apply phase has nothing to do and need not take its lock. Every difference is
+// work: an unknown file, a vanished one, a renamed one -- which in maildir is
+// what a flag change is -- a duplicate record, and a record with no GUID where
+// storage has one. It answers false whenever it cannot be sure, including on a
+// folder with no records, which may still be waiting to adopt a UID space.
+func (u *userMailbox) reconcileIsClean(idx mailbox.UserIndex, folder *mailbox.Folder, scanned []mailbox.ScanRecord) bool {
+	reader, ok := idx.(mailbox.UnlockedReader)
+	if !ok {
+		return false
+	}
+	existing, err := reader.GetMessagesUnlocked(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil || len(existing) == 0 {
+		return false
+	}
+	var zeroGUID [16]byte
+	byName := make(map[string]*mailbox.MessageMeta, len(existing))
+	for _, m := range existing {
+		if m.Filename == "" {
+			return false
+		}
+		if _, dup := byName[m.Filename]; dup {
+			// Two records on one file: the pass collapses them, which is work.
+			return false
+		}
+		byName[m.Filename] = m
+	}
+	// Counted, not just matched: a record for a file the scan does not report
+	// is work even when every scanned file is known.
+	if len(byName) != len(scanned) {
+		return false
+	}
+	for i := range scanned {
+		if scanned[i].Filename == "" {
+			return false
+		}
+		m, known := byName[scanned[i].Filename]
+		if !known {
+			return false
+		}
+		if m.GUID == zeroGUID && scanned[i].GUID != zeroGUID {
+			// The record has no identity and the storage has one for it:
+			// stamping it is the only thing that ever will.
+			return false
+		}
+	}
+	if cleanProbe != nil {
+		cleanProbe(len(existing))
+	}
+	return true
 }
