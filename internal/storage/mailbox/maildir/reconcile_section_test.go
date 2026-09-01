@@ -2,10 +2,13 @@ package maildir
 
 import (
 	"os"
+
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	fileidx "github.com/yarilomail/yarilo/internal/storage/index/file"
 
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -106,6 +109,29 @@ func TestFlagsAreNotWrittenFromANameThatMovedOn(t *testing.T) {
 	if hasFlagIn(after[0].Flags, `\Seen`) {
 		t.Errorf("flags are %v: written from the name the scan saw, not from the disk", after[0].Flags)
 	}
+}
+
+// recSetupLocked is recSetup with a locker wired, so acquisitions can be
+// counted.
+func recSetupLocked(t *testing.T) (*userMailbox, mailbox.UserIndex, *mailbox.Folder) {
+	t.Helper()
+	root := t.TempDir()
+	const user = "u@x.com"
+	home := testHome(root, user)
+	info := &mailbox.UserInfo{Username: user, Home: home}
+	box := New(WithLocker(&countingLocker{})).OpenUser(info).(*userMailbox)
+	if err := box.Init(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := box.Create("INBOX"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	idx := fileidx.New().OpenUser(info)
+	folder, err := idx.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatalf("open folder: %v", err)
+	}
+	return box, idx, folder
 }
 
 func hasFlagIn(all []string, want string) bool {
@@ -248,4 +274,156 @@ func TestTheCachedUIDMapIsNotWrittenIntoAfterItEscapes(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// A reconcile of a folder with an empty new/ takes the folder lock once, not
+// twice.
+//
+// #1628 split the section in two and took the lock for both halves, including
+// the half that had nothing to do -- and every acquisition is a round trip to
+// the lock service, paid on every poll of every session (#1630).
+//
+// The probe is what makes this a real assertion: without it the test would pass
+// on a folder that skipped the move because there was nothing to reconcile at
+// all, which proves nothing about the acquisition it was written for.
+func TestAReconcileWithNothingInNewTakesTheLockOnce(t *testing.T) {
+	box, idx, folder := recSetupLocked(t)
+
+	// A message already in cur/ and unknown to the index, so the pass has work
+	// to do -- and new/ is empty, so the move phase must not take the lock.
+	deliverToCur(t, box, "1700000001.M1Pa.host:2,", "From: a@b\r\n\r\nx\r\n")
+
+	var moveTaken bool
+	movePhaseProbe = func(taken bool) { moveTaken = taken }
+	defer func() { movePhaseProbe = nil }()
+
+	l := box.b.locker.(*countingLocker)
+	before := l.acquires.Load()
+	st, err := box.ReconcileIndex(idx, folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := l.acquires.Load() - before
+
+	if st.Imported != 1 {
+		t.Fatalf("the pass imported %d messages, want 1 -- it must have work to do", st.Imported)
+	}
+	if moveTaken {
+		t.Fatal("the move phase ran although new/ is empty, so this measures the wrong thing")
+	}
+	if got != 1 {
+		t.Errorf("the reconcile took the folder lock %d times, want 1", got)
+	}
+}
+
+// And when new/ does hold something, the move happens: the saving must not cost
+// a delivery its migration.
+func TestAReconcileWithNewMailStillMovesIt(t *testing.T) {
+	box, idx, folder := recSetupLocked(t)
+	deliverToNew(t, box, "1700000002.M1Pb.host", "From: a@b\r\n\r\nx\r\n")
+
+	var moveTaken bool
+	movePhaseProbe = func(taken bool) { moveTaken = taken }
+	defer func() { movePhaseProbe = nil }()
+
+	if _, err := box.ReconcileIndex(idx, folder); err != nil {
+		t.Fatal(err)
+	}
+	if !moveTaken {
+		t.Error("the move phase was skipped although new/ held a message")
+	}
+	entries, err := os.ReadDir(filepath.Join(box.folderPath("INBOX"), "new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("new/ still holds %d files after the reconcile", len(entries))
+	}
+	msgs, err := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("index = %v, err = %v", msgs, err)
+	}
+	// And the name it recorded is one Fetch can open, which is cur/ and only
+	// cur/.
+	if _, err := box.Fetch("INBOX", msgs[0].Filename, false); err != nil {
+		t.Errorf("the index names %q, which cannot be read: %v", msgs[0].Filename, err)
+	}
+}
+
+// A message that arrives in new/ after the check is not imported under a name
+// Fetch cannot open. It waits for the next pass, which moves it first.
+func TestAMessageArrivingInNewAfterTheCheckIsNotImportedFromThere(t *testing.T) {
+	box, idx, folder := recSetupLocked(t)
+
+	afterScan = func() { afterScan = nil }
+	// The delivery lands after hasNewMail said the directory was empty, so the
+	// scan sees it in new/.
+	movePhaseProbe = func(taken bool) {
+		movePhaseProbe = nil
+		if !taken {
+			deliverToNew(t, box, "1700000003.M1Pc.host", "From: a@b\r\n\r\nx\r\n")
+		}
+	}
+	defer func() { movePhaseProbe = nil; afterScan = nil }()
+
+	if _, err := box.ReconcileIndex(idx, folder); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range msgs {
+		if _, ferr := box.Fetch("INBOX", m.Filename, false); ferr != nil {
+			t.Errorf("the index names %q, which Fetch cannot open: %v", m.Filename, ferr)
+		}
+	}
+
+	// The next pass moves it and imports it properly.
+	folder, err = idx.OpenFolder("INBOX", folder.UIDValidity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := box.ReconcileIndex(idx, folder); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err = idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("index = %v, err = %v", msgs, err)
+	}
+	if _, ferr := box.Fetch("INBOX", msgs[0].Filename, false); ferr != nil {
+		t.Errorf("after the next pass %q still cannot be read: %v", msgs[0].Filename, ferr)
+	}
+}
+
+// A new/ that exists and cannot be read must fail the reconcile, not be treated
+// as empty.
+//
+// Skipping the phase on any error is silent in the worst way: only cur/ is
+// imported from, so the mail in new/ never reaches the index and nothing is
+// reported. Before the skip existed such a store failed on every pass, loudly,
+// which is the behaviour to keep (#1630).
+func TestAnUnreadableNewDirectoryFailsRatherThanBeingSkipped(t *testing.T) {
+	box, idx, folder := recSetupLocked(t)
+	newDir := filepath.Join(box.folderPath("INBOX"), "new")
+	if err := os.RemoveAll(newDir); err != nil {
+		t.Fatal(err)
+	}
+	// A plain file where the directory should be: ReadDir fails with something
+	// that is not "does not exist", on every platform and without depending on
+	// who the test runs as.
+	if err := os.WriteFile(newDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var moveTaken bool
+	movePhaseProbe = func(taken bool) { moveTaken = taken }
+	defer func() { movePhaseProbe = nil }()
+
+	if _, err := box.ReconcileIndex(idx, folder); err == nil {
+		t.Error("the reconcile succeeded although new/ cannot be read")
+	}
+	if !moveTaken {
+		t.Error("the move phase was skipped, so the fault was never reported")
+	}
 }

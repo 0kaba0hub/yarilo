@@ -283,25 +283,13 @@ func (u *userMailbox) Init() error {
 	return u.adoptFolderNames()
 }
 
-// adoptFolderNames brings the folder directories to the encoding this
-// deployment writes, and reports nothing when there is nothing to do.
+// adoptFolderNames brings the folder directories to this deployment's encoding.
+// Where the two spellings differ nothing matches by name and a folder is listed
+// as mojibake, selectable under no name a client can send (#1586, #1593).
 //
-// A store another implementation left spells its folder names in modified
-// UTF-7; ours spells them the way mailbox_list_utf8 says. Where the two differ
-// nothing matches by name: a folder is listed as mojibake and is not selectable
-// under any name a client can send, which is what a Cyrillic folder did on a
-// store taken over (#1586, #1593).
-//
-// Runs on Init, which is once per session and one directory read when there is
-// nothing to rename -- and there is nothing to rename on every store already in
-// this deployment's encoding, which is all of them but the one being adopted.
-//
-// The levels are converted one at a time. Splitting on the layout's separator
-// is safe against an encoded name for the reason it is safe elsewhere here:
-// modified base64 is A-Z a-z 0-9 '+' ',', so a '.' can never appear inside an
-// encoded run. A literal '.' inside a single level is a different matter and is
-// the layout's own ambiguity, resolved only by a storage escape character --
-// unchanged by this and not made worse.
+// Level by level: splitting on the layout separator is safe because modified
+// base64 is A-Z a-z 0-9 '+' ',', so '.' never appears inside an encoded run. On
+// Init, one directory read when there is nothing to rename.
 func (u *userMailbox) adoptFolderNames() error {
 	// Maildir++ keeps every folder as a dotted directory beside INBOX, in the
 	// mail path.
@@ -958,37 +946,20 @@ func (u *userMailbox) moveNewToCurLocked(folder string) error {
 func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Folder) (mailbox.SyncStats, error) {
 	var st mailbox.SyncStats
 	adopted := false
-	// Two short holds with the walk between them: held across the scan, the
-	// lock was held for a stat of every file in the folder (#1626). The moves
-	// come first because moving a file out of new/ renames it, and a scan taken
-	// earlier would describe names that no longer exist.
-	if err := u.withMailboxLock(folder.Name, func() error {
-		if err := u.moveNewToCurLocked(folder.Name); err != nil {
-			return err
+	// The move precedes the scan because it renames, and it is asked about
+	// before the lock because every acquisition is a round trip -- one taken to
+	// find an empty directory is paid on every poll (#1630). A message landing
+	// after the check waits for the next pass.
+	movedNew := u.hasNewMail(folder.Name)
+	if movePhaseProbe != nil {
+		movePhaseProbe(movedNew)
+	}
+	if movedNew {
+		if err := u.withMailboxLock(folder.Name, func() error {
+			return u.moveNewToCurLocked(folder.Name)
+		}); err != nil {
+			return st, err
 		}
-		// A folder with no records of ours and a uidlist that already names a
-		// UID space: this is a store being taken over, so the space is taken
-		// with it. The index refuses this once the folder holds messages, which
-		// is what keeps it to the one open that adopts.
-		if a, ok := idx.(mailbox.UIDSpaceAdopter); ok {
-			if uidValidity, nextUID, have := u.UIDSpace(folder.Name); have {
-				err := a.AdoptUIDSpace(folder.ID, uidValidity, nextUID)
-				switch {
-				case err == nil:
-					adopted = true
-				case errors.Is(err, mailbox.ErrUIDSpaceInUse):
-					// An ordinary folder with mail in it, which is most of them.
-					// Whether a folder is empty is the index's to answer and not
-					// a caller's: the handle here is a snapshot, and one taken
-					// before somebody else's append says the wrong thing.
-				default:
-					return fmt.Errorf("maildir/sync: adopt uid space: %w", err)
-				}
-			}
-		}
-		return nil
-	}); err != nil {
-		return st, err
 	}
 
 	// The walk, holding nothing. A flag change renames only the part after
@@ -1005,6 +976,24 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 	err = u.withMailboxLock(folder.Name, func() error {
 		u.inSection.Add(1)
 		defer u.inSection.Add(-1)
+		// A store being taken over: its uidlist already names a UID space.
+		// Here rather than in its own acquisition -- it must precede the
+		// appends, and nothing in the scan depends on it.
+		if a, ok := idx.(mailbox.UIDSpaceAdopter); ok {
+			if uidValidity, nextUID, have := u.UIDSpace(folder.Name); have {
+				aerr := a.AdoptUIDSpace(folder.ID, uidValidity, nextUID)
+				switch {
+				case aerr == nil:
+					adopted = true
+				case errors.Is(aerr, mailbox.ErrUIDSpaceInUse):
+					// An ordinary folder with mail in it, which is most of them.
+					// Whether a folder is empty is the index's to answer, not a
+					// caller's: the handle here is a snapshot.
+				default:
+					return fmt.Errorf("maildir/sync: adopt uid space: %w", aerr)
+				}
+			}
+		}
 		defer func() {
 			if sectionProbe != nil {
 				sectionProbe(int(u.sectionDir.Load()), int(u.sectionFS.Load()))
@@ -1095,9 +1084,10 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 			if _, ok := tracked[base]; ok {
 				continue
 			}
-			// The scan was unlocked: a record appended for a message somebody
-			// expunged meanwhile serves a uid that reads as corruption.
-			if !u.stillOnDisk(folder.Name, rec.Filename) {
+			// In cur/ and still there: the scan was unlocked, and a record for
+			// a message since expunged -- or one still in new/ -- serves a uid
+			// whose body cannot be read.
+			if !u.inCurDir(folder.Name, rec.Filename) {
 				continue
 			}
 			// Claim the base before appending: a scan that reports one message
@@ -1573,6 +1563,11 @@ func (u *userMailbox) keywordLettersLocked(folder string, keywords []string) (st
 // described (#1626).
 var sectionProbe func(dirReads, stats int)
 
+// movePhaseProbe reports whether the new/ move phase took the lock, so a test
+// asserting "one acquisition, not two" knows the phase was skipped rather than
+// assuming it (#1630).
+var movePhaseProbe func(taken bool)
+
 // afterScan runs between the unlocked scan and the apply, so a test can make
 // the scan stale on purpose -- which is the only way to exercise the rule that
 // a name the scan saw may already have moved on (#1626).
@@ -1888,4 +1883,34 @@ func (u *userMailbox) stillOnDisk(folder, filename string) bool {
 		}
 	}
 	return false
+}
+
+// hasNewMail reports whether new/ holds anything to move: one directory read,
+// unlocked, deciding only whether a round trip is worth taking.
+//
+// Unreadable answers yes, so the locked phase runs and fails loudly: answering
+// no would skip the move for good on a faulty mount, and since only cur/ is
+// imported from, the mail would sit invisible with nothing reported (#1630).
+func (u *userMailbox) hasNewMail(folder string) bool {
+	entries, err := os.ReadDir(filepath.Join(u.folderPath(folder), "new"))
+	if err != nil {
+		return !errors.Is(err, os.ErrNotExist)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// inCurDir reports whether a scanned name is in cur/. Only those are imported:
+// Fetch opens cur/ alone, so a record naming a file in new/ has an unreadable
+// body until the next pass moves it (#1630).
+func (u *userMailbox) inCurDir(folder, filename string) bool {
+	if u.inSection.Load() > 0 {
+		u.sectionFS.Add(1)
+	}
+	_, err := os.Lstat(filepath.Join(u.folderPath(folder), "cur", filename))
+	return err == nil
 }
