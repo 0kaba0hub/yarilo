@@ -149,8 +149,10 @@ say it.
 - **Untouchable**: `//go:*` directives, `//nolint`, cgo preambles, license
   headers, generated files.
 - **English only.**
-- **Ceiling**: comment lines stay ≤10% of Go lines per package, measured by the
-  comment-count tool and enforced by the CI gate (#1620).
+- **Ceiling**: lines sitting in blocks of 3+ stay ≤8% of Go lines per package,
+  measured by `hack/commentcensus` and enforced by the CI gate (#1620). Blocks,
+  not total comment lines: one-line godoc is kept, so counting it would fail a
+  small package holding no narrative at all.
 
 ---
 
