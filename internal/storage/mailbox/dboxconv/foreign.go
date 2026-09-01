@@ -42,6 +42,8 @@ const (
 	foreignMapIndex   = "dovecot.map.index"
 	foreignMapLog     = "dovecot.map.index.log"
 	foreignMapLogPrev = "dovecot.map.index.log.2"
+	// The message-file prefix both implementations write for sdbox.
+	sdboxPrefix = "u."
 )
 
 // StoreRoot is where a dbox store lives, the same rule the drivers apply:

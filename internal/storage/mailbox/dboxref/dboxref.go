@@ -11,6 +11,7 @@ package dboxref
 
 import (
 	"embed"
+	"fmt"
 	"testing"
 )
 
@@ -88,4 +89,19 @@ func read(t *testing.T, name string) []byte {
 		t.Fatalf("reference fixture %s: %v", name, err)
 	}
 	return b
+}
+
+// An sdbox folder as the reference wrote it, with its index under a separate
+// root: four messages named by uid, a fifth expunged so next_uid runs past the
+// last surviving one, two system flags and two keywords, one of them on two
+// messages. The folder has a log and no base index, which is what a store the
+// reference has not folded yet looks like.
+func SdboxInboxLog(t *testing.T) []byte    { return read(t, "testdata/sdbox-inbox.log") }
+func SdboxCyrillicLog(t *testing.T) []byte { return read(t, "testdata/sdbox-cyrillic.log") }
+
+// SdboxInboxMessage returns one of that folder's message files, uid 1 to 4.
+// Each carries its own guid in its trailer -- the only place an sdbox guid
+// exists, since their folder index has no guid extension.
+func SdboxInboxMessage(t *testing.T, uid int) []byte {
+	return read(t, fmt.Sprintf("testdata/sdbox-inbox-u.%d", uid))
 }

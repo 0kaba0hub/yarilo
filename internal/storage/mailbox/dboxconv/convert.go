@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxindex"
@@ -204,3 +205,94 @@ func RemoveForeignFolder(dir string) error {
 	}
 	return nil
 }
+
+// ConvertSdboxFolder makes their sdbox folder index ours.
+//
+// No map and no correspondence: a message is a file in the folder's own
+// directory, so its position is its path and nothing store-wide has to be whole
+// first. What is left is their folder index, which carries the same uids, flags,
+// keywords and guids an mdbox one does (#1592).
+//
+// The file name is read off the disk rather than derived, because two naming
+// schemes are in the field and a folder can hold both: "u.<guid>" is what a
+// store written with guids has, and "u.<uid>" is the older scheme. Deriving one
+// of them would point the index at a file that is not there, and the folder
+// would open with every body unreadable -- which is the failure that looks like
+// corruption rather than like a wrong guess.
+func ConvertSdboxFolder(indexDir, mailDir string) ([]*mailbox.MessageMeta, dboxindex.HeaderState, error) {
+	f, err := ReadForeignFolder(indexDir)
+	if err != nil {
+		return nil, dboxindex.HeaderState{}, err
+	}
+	present, err := sdboxFilesPresent(mailDir)
+	if err != nil {
+		return nil, f.Header, err
+	}
+	out := make([]*mailbox.MessageMeta, 0, len(f.Records))
+	for _, r := range f.Records {
+		// No guid here, and none in their index to take: an sdbox folder index
+		// of theirs has no guid extension at all -- read off a store the
+		// reference wrote, whose extensions are dbox-hdr, hdr-pop3-uidl, cache,
+		// vsize and hdr-vsize. The identity lives in the message file, which is
+		// what the driver's own scan reads, so the conversion leaves the folder
+		// marked guid-pending and the backfill that already runs on every
+		// select stamps them from there (#1592).
+		//
+		// No size and no save date either, for the same reason: their record
+		// carries neither. The index recomputes what it needs on first read.
+		m := &mailbox.MessageMeta{
+			UID:      r.UID,
+			Flags:    flagNames(r.Flags),
+			Keywords: r.Keywords,
+		}
+		name, ok := sdboxNameFor(present, r.UID)
+		if !ok {
+			// A record whose file is gone: their store lost it, or an expunge
+			// of theirs never reached this index. Skipped rather than carried,
+			// since a record pointing at nothing serves an unreadable message
+			// under a uid a client will keep asking for.
+			continue
+		}
+		m.Filename = name
+		out = append(out, m)
+	}
+	return out, f.Header, nil
+}
+
+// sdboxFilesPresent is the set of message files in a folder directory, by name.
+func sdboxFilesPresent(dir string) (map[string]struct{}, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("dboxconv: read %s: %w", dir, err)
+	}
+	out := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), sdboxPrefix) {
+			out[e.Name()] = struct{}{}
+		}
+	}
+	return out, nil
+}
+
+// sdboxNameFor picks the file this record names.
+//
+// "u.<uid>" first because that is what the reference writes -- checked against
+// a store it produced, where every file is named by uid and not one by guid.
+// Our own driver names new files "u.<guidhex>", so a folder converted here and
+// then written to holds both spellings and both are looked for.
+func sdboxNameFor(present map[string]struct{}, uid uint32) (string, bool) {
+	if name := sdboxPrefix + strconv.FormatUint(uint64(uid), 10); nameIn(present, name) {
+		return name, true
+	}
+	return "", false
+}
+
+func nameIn(present map[string]struct{}, name string) bool {
+	_, ok := present[name]
+	return ok
+}
+
+// RemoveForeignSdboxFolder unlinks their folder index, the last step of an
+// sdbox conversion. The message files are theirs and ours both -- the same
+// files, read in place -- so nothing else in the directory is touched.
+func RemoveForeignSdboxFolder(dir string) error { return RemoveForeignFolder(dir) }
