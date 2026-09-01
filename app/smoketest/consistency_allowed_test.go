@@ -22,6 +22,15 @@ func TestAllowedDifferencesAreToleratedAndOtherwiseRefused(t *testing.T) {
 		{"flag case is a spelling", "flag against keyword spelling", "flags", `\Flagged`, "$FLAGGED"},
 		{"internal date rendering", "date normalisation", "internalDate",
 			"14-Aug-2026 09:30:00 +0300", "2026-08-14T06:30:00Z"},
+		// A day of the month below ten, which RFC 3501 pads to two characters
+		// with a space. Every earlier row used a two-digit day, so the layout
+		// that could not read this one passed every test for as long as the
+		// month was past the ninth (#1618). Kept as the literal the sandbox
+		// actually sent.
+		{"internal date on a single-digit day", "date normalisation", "internalDate",
+			" 1-Sep-2026 15:37:19 +0000", "2026-09-01T15:37:19Z"},
+		{"internal date on a single-digit day, unpadded", "date normalisation", "internalDate",
+			"1-Sep-2026 15:37:19 +0000", "2026-09-01T15:37:19Z"},
 		{"encoded-word against decoded text", "encoded-word against decoded text", "subject",
 			"=?utf-8?Q?Rechnung_f=C3=BCr_M=C3=A4rz_=E2=82=AC42?=", "Rechnung für März €42"},
 		{"address ordering", "address ordering", "addresses",
