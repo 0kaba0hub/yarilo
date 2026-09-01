@@ -1,7 +1,6 @@
 package file
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,12 +12,6 @@ import (
 	"github.com/yarilomail/yarilo/internal/userstate/subs"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
-
-// ErrSdboxAdoptionUnsupported says a store of theirs is in a shape this server
-// cannot take over in place. The offline importer reads the same store and
-// writes ours, which is the way through.
-var ErrSdboxAdoptionUnsupported = errors.New(
-	"adoption of a foreign sdbox store is not implemented -- import it offline with yarilo-migrate --src dbox-ref")
 
 // mailRootDir is where the messages are, as opposed to where our index is. The
 // two are different questions: our index follows INDEX=, their files sit with
@@ -96,24 +89,15 @@ func (u *userIndex) foreignMapDir(root string) (string, bool) {
 // -- is one critical section. Two sessions opening a folder at once convert it
 // once, and no session can observe a half-removed pair (#1524).
 //
-// mdbox only. Their sdbox store keeps each message in its own file inside the
-// folder, with no map to convert and a different question to answer about
-// naming, so adopting one is separate work.
-//
-// Separate work, and refused rather than skipped. Returning quietly opened the
-// folder as new: our index written beside theirs, and not one message visible,
-// because nothing scans a dbox directory into an index the way the maildir
-// sync does. An empty mailbox that looks healthy is the answer nobody checks,
-// and the mail is right there on disk (#1592).
+// Both dbox drivers. What differs is where a message is: mdbox addresses one
+// through a store-wide map, which has to be whole before any folder reads
+// through it, and sdbox does not -- a single-message file sits in its folder's
+// own directory, so its position is its path. The sdbox half is
+// convertForeignSdboxFolder.
 func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
-	if u.driver != "mdbox" {
-		if u.driver == "sdbox" || u.driver == "dbox" {
-			if dir, _, ok := u.foreignFolderDir(fs.folder); ok {
-				return false, fmt.Errorf(
-					"fileindex/convert: folder %q: %s holds a foreign sdbox index: %w",
-					fs.folder, dir, ErrSdboxAdoptionUnsupported)
-			}
-		}
+	switch u.driver {
+	case "mdbox", "sdbox", "dbox":
+	default:
 		return false, nil
 	}
 	dir, foreignRoot, ok := u.foreignFolderDir(fs.folder)
@@ -137,6 +121,9 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 		if dir, foreignRoot, ok = u.foreignFolderDir(fs.folder); !ok {
 			return false, nil
 		}
+	}
+	if u.driver != "mdbox" {
+		return u.convertForeignSdboxFolder(fs, dir)
 	}
 	// Before any of the work: a conversion writes our index, imports their map
 	// and unlinks their files, so a store that cannot be written to fails
@@ -419,5 +406,89 @@ func (u *userIndex) adoptForeignNames() (bool, error) {
 	}
 	slog.Info("fileindex: brought a foreign store's folder names to this deployment's encoding",
 		"user", u.username, "renamed", total, "list_utf8", u.listUTF8)
+	return true, nil
+}
+
+// convertForeignSdboxFolder is the same conversion for a store that keeps one
+// message per file: their folder index becomes ours, and the mail is already
+// where our driver looks for it (#1592).
+//
+// Everything store-wide falls away. There is no map to import first, no
+// correspondence to pair uids through, and no map guids to stamp. What is left
+// is their folder index and the two pieces that belong to any store being taken
+// over: the name encoding, done by the caller before this is reached, and the
+// subscriptions.
+//
+// The critical section is the one the mdbox path uses and for the same reason:
+// ours is written and fsynced, then theirs is unlinked, all under the folder
+// lock the caller holds.
+func (u *userIndex) convertForeignSdboxFolder(fs *folderState, dir string) (bool, error) {
+	// Their index and their mail are two directories whenever their INDEX= is
+	// set, and the reference store this was checked against has exactly that
+	// shape: index/mailboxes/INBOX holds the log, sdbox/mailboxes/INBOX/
+	// dbox-Mails holds u.1 to u.4. Reading the file names from the index
+	// directory finds none, and the folder converts to nothing at all.
+	mailDir := filepath.Join(u.mailRootDir(),
+		mailbox.FolderSubpathEscaped(u.driver, fs.folder, fs.folder, u.separator, u.escapeChar))
+
+	// Two directories rather than four: ours to write the index into, theirs to
+	// unlink from. Neither of the storage directories exists in this shape.
+	if err := os.MkdirAll(fs.indexDir, 0o700); err != nil {
+		return false, fmt.Errorf("fileindex/convert: folder %q: %w (%v)", fs.folder, dboxconv.ErrReadOnly, err)
+	}
+	if err := dboxconv.CheckWritable(fs.indexDir, dir); err != nil {
+		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
+	}
+
+	if dboxconv.HasForeignSubscriptions(u.mailRootDir()) {
+		if err := u.carryForeignSubscriptions(); err != nil {
+			return false, err
+		}
+	}
+
+	metas, hdr, missing, err := dboxconv.ConvertSdboxFolder(dir, mailDir)
+	if err != nil {
+		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
+	}
+	for _, uid := range missing {
+		slog.Warn("fileindex: a message their index names has no file, so it is not carried over",
+			"user", u.username, "folder", fs.folder, "uid", uid, "dir", mailDir)
+	}
+	if hdr.UIDValidity == 0 {
+		return false, fmt.Errorf("fileindex/convert: folder %q: their index carries no uid_validity", fs.folder)
+	}
+	if err := fs.createFresh(hdr.UIDValidity); err != nil {
+		return false, err
+	}
+	// Their sdbox index carries no guid, so the records appended below have
+	// none. A fresh index is marked guid-complete, which would mean nothing
+	// ever comes back to fill them and every adopted message loses its EMAILID
+	// for good; marked pending, the backfill that already runs on every select
+	// stamps them from the message files through the driver's own scan -- the
+	// one place that knows how to read them (#1592).
+	if ext := findExt(fs.file.Extensions, extNameGUID); ext != nil {
+		ext.HdrData = encodeGUIDHdr(guidStatePending)
+	}
+	for _, meta := range metas {
+		if err := fs.appendLocked(meta); err != nil {
+			return false, fmt.Errorf("fileindex/convert: folder %q uid %d: %w", fs.folder, meta.UID, err)
+		}
+	}
+	if hdr.NextUID > fs.file.Header.NextUID {
+		fs.file.Header.NextUID = hdr.NextUID
+	}
+	fs.fsyncOnFlush = true
+	defer func() { fs.fsyncOnFlush = false }()
+	if err := fs.flush(true); err != nil {
+		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
+	}
+	if err := fsyncDir(fs.indexDir); err != nil {
+		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
+	}
+	if err := dboxconv.RemoveForeignSdboxFolder(dir); err != nil {
+		return false, err
+	}
+	slog.Info("fileindex: converted a foreign folder", "user", u.username, "folder", fs.folder,
+		"messages", len(metas), "skipped", len(missing), "from", dir)
 	return true, nil
 }

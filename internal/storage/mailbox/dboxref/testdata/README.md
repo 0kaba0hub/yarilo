@@ -458,3 +458,47 @@ points at it, which this store is not.
 Captured from a sandbox store of 3020 messages after `doveadm force-resync`,
 which is what rotated the log. Not reproducible on the local install: the folder
 logs rotate under the size knobs and the map's does not.
+
+## The sdbox fixtures
+
+`sdbox-inbox.log`, `sdbox-cyrillic.log` and `sdbox-inbox-u.1` … `u.4` were taken
+from a store the reference wrote, on 2.4.5, with `mail_driver = sdbox` and a
+`mail_index_path` of its own — so the index sits under its own root and the
+messages stay with the mail, which is the shape a deployment with `INDEX=` set
+produces.
+
+The store: five messages saved to INBOX, `\Seen` on uid 1, `\Answered` on uid 2,
+`$Important` on uid 3, `$Important $Label` on uid 4, and uid 5 expunged. A
+Cyrillic folder and a folder inside it, both subscribed, INBOX not.
+
+What its own server reported for that folder, which is the oracle the tests
+assert against:
+
+```
+uidvalidity=1788252508 uidnext=6 messages=4
+uid 1  \Seen                      c2d304036291966a4a0000000a4d75c4
+uid 2  \Answered                  692555046291966a4d0000000a4d75c4
+uid 3  $Important                 e13e86056291966a510000000a4d75c4
+uid 4  $Important $Label          c919ef066291966a540000000a4d75c4
+```
+
+Three things these files settle that a constructed input would only have
+confirmed about our own reading:
+
+**The message files are named by uid**, `u.1` … `u.4`, not by guid. Our own
+driver names new files `u.<guidhex>`, so the two spellings meet in one folder
+after a conversion.
+
+**Their sdbox folder index has no `guid` extension.** Its extensions are
+`dbox-hdr`, `hdr-pop3-uidl`, `cache`, `vsize` and `hdr-vsize`. The guid is in
+each message file's trailer, which is where their own server reads it, and a
+conversion that expected it in the index would write four zero guids — a fresh
+index of ours is marked guid-complete, so nothing would ever come back to fill
+them.
+
+**There is no base index at all**, only `dovecot.index.log`: a folder the
+reference has written but not yet folded.
+
+To re-take: build the store the same way, `doveadm fetch 'uid flags guid'` and
+`doveadm mailbox status` with the server stopped, and update the oracle above
+together with the numbers in the tests.
