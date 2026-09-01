@@ -93,6 +93,9 @@ namespaces:
     location: "maildir:%h/Maildir"
 
 storage:
+  ## Their folder names on disk are modified UTF-7; this says so, for the
+  ## conversion window against a store another implementation wrote.
+  mailbox_list_utf8: true
   mail_volatile_path: "/tmp/yarilo-volatile/%2.256Nu/%u"
   ## On-disk format of the per-user mdbox map index. Declared, not inherited:
   ## the value decides what an older image can still open.
