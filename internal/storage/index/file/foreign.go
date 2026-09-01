@@ -272,6 +272,7 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	if err := fs.createFresh(hdr.UIDValidity); err != nil {
 		return false, err
 	}
+	u.rememberIdentity(fs.folder, hdr.UIDValidity)
 	for _, meta := range metas {
 		if err := fs.appendLocked(meta); err != nil {
 			return false, fmt.Errorf("fileindex/convert: folder %q uid %d: %w", fs.folder, meta.UID, err)
@@ -463,6 +464,10 @@ func (u *userIndex) convertForeignSdboxFolder(fs *folderState, dir string) (bool
 	if err := fs.createFresh(hdr.UIDValidity); err != nil {
 		return false, err
 	}
+	// Their number, recorded before their index is unlinked below. After that
+	// unlink it exists nowhere else, so a crash between the two would lose the
+	// identity the whole adoption is built to keep (#1611).
+	u.rememberIdentity(fs.folder, hdr.UIDValidity)
 	// Their sdbox index carries no guid, so the records appended below have
 	// none. A fresh index is marked guid-complete, which would mean nothing
 	// ever comes back to fill them and every adopted message loses its EMAILID
@@ -552,5 +557,51 @@ func (u *userIndex) freshUIDValidity(requested uint32) uint32 {
 			"user", u.username, "requested", requested, "err", err)
 		return requested
 	}
+	return v
+}
+
+// identityFor is the UIDVALIDITY a folder is opened with when it has no index.
+//
+// Two different situations arrive here as one: a folder that is new, and a
+// folder whose index was lost. They must not get the same answer. A folder the
+// record knows is not new -- its identity is what it was created with, and
+// handing it a fresh number makes every client resynchronise and lose the very
+// thing adoption spends effort keeping (#1611).
+//
+// Recorded on the way out, so the next loss has something to read. A record
+// that cannot be written is logged and not fatal: the folder opens with the
+// value it would have had before this existed.
+func (u *userIndex) identityFor(folder string, requested uint32) uint32 {
+	if u.folders != nil {
+		if v, ok, err := u.folders.UIDValidity(folder); err != nil {
+			slog.Warn("fileindex: folder identity record unreadable", "user", u.username, "folder", folder, "err", err)
+		} else if ok {
+			slog.Info("fileindex: folder index was missing; its identity came from the record",
+				"user", u.username, "folder", folder, "uidvalidity", v)
+			return v
+		}
+	}
+	v := u.freshUIDValidity(requested)
+	u.rememberIdentity(folder, v)
+	return v
+}
+
+// rememberIdentity stores what a folder was created with.
+func (u *userIndex) rememberIdentity(folder string, uidValidity uint32) {
+	if u.folders == nil {
+		return
+	}
+	if err := u.folders.Record(folder, uidValidity, time.Now()); err != nil {
+		slog.Warn("fileindex: folder identity not recorded", "user", u.username, "folder", folder, "err", err)
+	}
+}
+
+// newFolderUIDValidity is the value a folder being created is given: always a
+// fresh one. A create must not inherit an identity, even under a name the
+// record still knows -- that is a folder deleted and made again, and RFC 3501
+// §6.3.4 requires it to look new to a client.
+func (u *userIndex) newFolderUIDValidity(folder string, requested uint32) uint32 {
+	v := u.freshUIDValidity(requested)
+	u.rememberIdentity(folder, v)
 	return v
 }

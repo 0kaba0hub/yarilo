@@ -29,6 +29,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/logrotate"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
+	"github.com/yarilomail/yarilo/internal/userstate/folders"
 	"github.com/yarilomail/yarilo/internal/userstate/uidvalidity"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -240,6 +241,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 			open:        make(map[uint64]*folderState),
 		}
 		ui.uidValidity = uidvalidity.New(ui.controlRoot, ui.username, ui.owner, b.locker)
+		ui.folders = folders.New(ui.controlRoot, ui.username, ui.owner, b.locker)
 		ref = &refUserIndex{ui: ui}
 		b.users[key] = ref
 	}
@@ -456,8 +458,11 @@ type userIndex struct {
 	// uidValidity hands out a value for a folder that has no past, and never
 	// hands one out twice.
 	uidValidity *uidvalidity.Allocator
-	username    string
-	owner       string
+	// folders remembers what each folder was created with, so losing a folder
+	// index does not lose its identity.
+	folders  *folders.Store
+	username string
+	owner    string
 
 	mu    sync.Mutex
 	next  uint64                  // monotonic per-session folder ID counter
@@ -982,6 +987,14 @@ func (u *userIndex) RenameFolder(oldName, newName string) error {
 			delete(u.byDir, u.indexDir(oldName))
 		}
 		u.mu.Unlock()
+		// The identity moves with the folder: a rename keeps the UIDVALIDITY,
+		// which is what a rename means to a client.
+		if u.folders != nil {
+			if err := u.folders.Rename(oldName, newName); err != nil {
+				slog.Warn("fileindex: folder identity not moved with the rename",
+					"user", u.username, "from", oldName, "to", newName, "err", err)
+			}
+		}
 		return nil
 	})
 }
@@ -1025,6 +1038,15 @@ func (u *userIndex) DeleteFolder(folder string) error {
 			delete(u.byDir, u.indexDir(folder))
 		}
 		u.mu.Unlock()
+		// The identity goes with the folder. It must: RFC 3501 §6.3.4 requires
+		// a folder created again under this name to look new to a client, and
+		// an entry surviving the delete would hand back the old number.
+		if u.folders != nil {
+			if err := u.folders.Remove(folder); err != nil {
+				slog.Warn("fileindex: folder identity not removed with the folder",
+					"user", u.username, "folder", folder, "err", err)
+			}
+		}
 		return nil
 	})
 }
