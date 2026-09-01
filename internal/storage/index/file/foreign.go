@@ -446,9 +446,13 @@ func (u *userIndex) convertForeignSdboxFolder(fs *folderState, dir string) (bool
 		}
 	}
 
-	metas, hdr, err := dboxconv.ConvertSdboxFolder(dir, mailDir)
+	metas, hdr, missing, err := dboxconv.ConvertSdboxFolder(dir, mailDir)
 	if err != nil {
 		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
+	}
+	for _, uid := range missing {
+		slog.Warn("fileindex: a message their index names has no file, so it is not carried over",
+			"user", u.username, "folder", fs.folder, "uid", uid, "dir", mailDir)
 	}
 	if hdr.UIDValidity == 0 {
 		return false, fmt.Errorf("fileindex/convert: folder %q: their index carries no uid_validity", fs.folder)
@@ -485,6 +489,6 @@ func (u *userIndex) convertForeignSdboxFolder(fs *folderState, dir string) (bool
 		return false, err
 	}
 	slog.Info("fileindex: converted a foreign folder", "user", u.username, "folder", fs.folder,
-		"messages", len(metas), "from", dir)
+		"messages", len(metas), "skipped", len(missing), "from", dir)
 	return true, nil
 }

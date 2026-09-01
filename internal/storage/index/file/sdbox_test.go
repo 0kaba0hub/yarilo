@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,5 +164,64 @@ func TestAnOrdinarySdboxFolderStillOpens(t *testing.T) {
 	defer idx.Close() //nolint:errcheck
 	if _, err := idx.OpenFolder("INBOX", 1); err != nil {
 		t.Fatalf("an ordinary sdbox folder was refused: %v", err)
+	}
+}
+
+// A message their index names and their directory does not hold is left out --
+// and said out loud. Skipping it quietly is the healthy-looking emptiness this
+// whole path exists to avoid, one message at a time: the folder opens, four
+// records became three, and nothing anywhere says which one went (#1592).
+func TestASdboxRecordWithNoFileIsReportedNotJustSkipped(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "sdbox", "mailboxes", "INBOX", "dbox-Mails")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dovecot.index.log"), dboxref.SdboxInboxLog(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// u.2 is not written: their expunge unlinked the file and their index still
+	// names it.
+	for _, uid := range []int{1, 3, 4} {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("u.%d", uid)),
+			dboxref.SdboxInboxMessage(t, uid), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	idx := indexfile.New().OpenUser(&mailbox.UserInfo{Username: "u1@example.com", Home: home, Driver: "sdbox"})
+	defer idx.Close() //nolint:errcheck
+	f, err := idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	msgs, err := idx.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("index holds %d messages, want 3", len(msgs))
+	}
+
+	out := logged.String()
+	// The uid alone is not enough of a check: other lines carry uids too. What
+	// has to be there is a line saying this message was not carried over, and
+	// which one it was.
+	named := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "has no file") && strings.Contains(line, "uid=2") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("the message that was dropped is not named in the log:\n%s", out)
+	}
+	if !strings.Contains(out, "skipped=1") {
+		t.Errorf("the conversion did not report how many messages it could not carry:\n%s", out)
 	}
 }

@@ -48,7 +48,7 @@ func TestSdboxFolderConvertsToWhatTheirServerReported(t *testing.T) {
 	indexDir, mailDir := sdboxStore(t, "sdbox-inbox.log",
 		"sdbox-inbox-u.1", "sdbox-inbox-u.2", "sdbox-inbox-u.3", "sdbox-inbox-u.4")
 
-	metas, hdr, err := ConvertSdboxFolder(indexDir, mailDir)
+	metas, hdr, missing, err := ConvertSdboxFolder(indexDir, mailDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +73,9 @@ func TestSdboxFolderConvertsToWhatTheirServerReported(t *testing.T) {
 		{2, "u.2", `\Answered`, ""},
 		{3, "u.3", "", "$Important"},
 		{4, "u.4", "", "$Important $Label"},
+	}
+	if len(missing) != 0 {
+		t.Errorf("uids reported missing = %v, and every file is in the folder", missing)
 	}
 	if len(metas) != len(want) {
 		t.Fatalf("got %d messages, their server reported %d", len(metas), len(want))
@@ -113,7 +116,7 @@ func TestTheirSdboxIndexCarriesNoGUID(t *testing.T) {
 		}
 	}
 
-	metas, _, err := ConvertSdboxFolder(indexDir, mailDir)
+	metas, _, _, err := ConvertSdboxFolder(indexDir, mailDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +135,7 @@ func TestSdboxRecordWithNoFileIsSkipped(t *testing.T) {
 	indexDir, mailDir := sdboxStore(t, "sdbox-inbox.log",
 		"sdbox-inbox-u.1", "sdbox-inbox-u.3", "sdbox-inbox-u.4")
 
-	metas, _, err := ConvertSdboxFolder(indexDir, mailDir)
+	metas, _, missing, err := ConvertSdboxFolder(indexDir, mailDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,5 +146,11 @@ func TestSdboxRecordWithNoFileIsSkipped(t *testing.T) {
 		if m.UID == 2 {
 			t.Errorf("uid 2 was carried, and its file is not in the folder")
 		}
+	}
+	// Skipping it quietly is the same healthy-looking emptiness this path
+	// exists to avoid, one message at a time: the uid is reported so the
+	// caller can say which message the folder lost.
+	if len(missing) != 1 || missing[0] != 2 {
+		t.Errorf("uids reported missing = %v, want [2]", missing)
 	}
 }

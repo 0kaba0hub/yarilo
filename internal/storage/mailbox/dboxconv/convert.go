@@ -219,15 +219,19 @@ func RemoveForeignFolder(dir string) error {
 // of them would point the index at a file that is not there, and the folder
 // would open with every body unreadable -- which is the failure that looks like
 // corruption rather than like a wrong guess.
-func ConvertSdboxFolder(indexDir, mailDir string) ([]*mailbox.MessageMeta, dboxindex.HeaderState, error) {
+// The uids it could not place are returned rather than counted away: a folder
+// whose index names four messages and whose directory holds three is something
+// an operator has to be told about, by number and by uid.
+func ConvertSdboxFolder(indexDir, mailDir string) ([]*mailbox.MessageMeta, dboxindex.HeaderState, []uint32, error) {
 	f, err := ReadForeignFolder(indexDir)
 	if err != nil {
-		return nil, dboxindex.HeaderState{}, err
+		return nil, dboxindex.HeaderState{}, nil, err
 	}
 	present, err := sdboxFilesPresent(mailDir)
 	if err != nil {
-		return nil, f.Header, err
+		return nil, f.Header, nil, err
 	}
+	var missing []uint32
 	out := make([]*mailbox.MessageMeta, 0, len(f.Records))
 	for _, r := range f.Records {
 		// No guid here, and none in their index to take: an sdbox folder index
@@ -247,16 +251,19 @@ func ConvertSdboxFolder(indexDir, mailDir string) ([]*mailbox.MessageMeta, dboxi
 		}
 		name, ok := sdboxNameFor(present, r.UID)
 		if !ok {
-			// A record whose file is gone: their store lost it, or an expunge
-			// of theirs never reached this index. Skipped rather than carried,
-			// since a record pointing at nothing serves an unreadable message
-			// under a uid a client will keep asking for.
+			// A record whose file is gone: an expunge of theirs unlinks the
+			// file, and their index can still name it for a moment. Skipped
+			// rather than carried, since a record pointing at nothing serves an
+			// unreadable message under a uid a client keeps asking for -- and
+			// reported, because a folder losing messages silently is the same
+			// healthy-looking emptiness this whole path exists to avoid.
+			missing = append(missing, r.UID)
 			continue
 		}
 		m.Filename = name
 		out = append(out, m)
 	}
-	return out, f.Header, nil
+	return out, f.Header, missing, nil
 }
 
 // sdboxFilesPresent is the set of message files in a folder directory, by name.
