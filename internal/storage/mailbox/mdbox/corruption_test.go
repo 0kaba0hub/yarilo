@@ -190,3 +190,23 @@ func TestScanIncludesAltTier(t *testing.T) {
 		t.Fatalf("got %d records after moving m.1 to alt, want 1 (alt dir must be scanned)", len(recs))
 	}
 }
+
+// mdbox keeps flags and keywords in the index, not in storage, so a scan reports
+// neither -- and a rebuild reads that emptiness as "keep what the index has".
+// A driver that started putting keywords in ScanRecord.Flags instead would make
+// the rebuild replace the index's set with a flags-only one (#1605).
+func TestScanReportsNoFlagsOrKeywords(t *testing.T) {
+	u := openTestUserMailbox(t, t.TempDir())
+	mustSave(t, u, "From: a@a.com\r\nSubject: s\r\n\r\nbody\r\n")
+	recs, err := u.scanStorage()
+	if err != nil {
+		t.Fatalf("scanStorage: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("got %d records, want 1", len(recs))
+	}
+	if len(recs[0].Flags) != 0 || len(recs[0].Keywords) != 0 {
+		t.Errorf("Flags = %v, Keywords = %v; storage holds neither",
+			recs[0].Flags, recs[0].Keywords)
+	}
+}

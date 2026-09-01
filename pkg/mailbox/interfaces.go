@@ -293,7 +293,12 @@ type ScanRecord struct {
 	Size         uint32
 	VSize        uint32
 	InternalDate time.Time
-	Flags        []string
+	// Flags holds only system flags (backslash-prefixed). Keywords live in
+	// Keywords and never in here: a merged list reads as a flag set to every
+	// consumer that forwards it on, and one that did dropped every keyword an
+	// adopted store held (#1605).
+	Flags    []string
+	Keywords []string
 	// OrigMailbox is the mailbox a message was originally saved into, recovered
 	// from storage metadata (mdbox trailer). Empty when unrecorded. A storage-wide
 	// rebuild uses it to restore an orphan to its home folder instead of guessing.

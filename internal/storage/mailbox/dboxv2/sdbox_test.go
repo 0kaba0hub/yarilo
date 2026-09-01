@@ -340,3 +340,26 @@ func TestSaveGUIDAndMovePreservesIt(t *testing.T) {
 		t.Errorf("source folder still holds %d messages", len(left))
 	}
 }
+
+// dbox keeps flags and keywords in the index, not in storage, so a scan reports
+// neither -- and a rebuild reads that emptiness as "keep what the index has".
+// A driver that started putting keywords in ScanRecord.Flags instead would make
+// the rebuild replace the index's set with a flags-only one (#1605).
+func TestScanReportsNoFlagsOrKeywords(t *testing.T) {
+	_, mb, _ := newTestUser(t)
+	body := "hello world"
+	if _, _, _, err := mb.Save("INBOX", strings.NewReader(body), 7, int64(len(body)),
+		[]string{`\Seen`}, [16]byte{}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	recs, err := mb.Scan("INBOX")
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("got %d records, want 1", len(recs))
+	}
+	if len(recs[0].Flags) != 0 || len(recs[0].Keywords) != 0 {
+		t.Errorf("Flags = %v, Keywords = %v; storage holds neither", recs[0].Flags, recs[0].Keywords)
+	}
+}
