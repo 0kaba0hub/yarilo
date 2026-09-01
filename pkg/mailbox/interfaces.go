@@ -538,3 +538,32 @@ type FolderCreator interface {
 type ForeignNameAdopter interface {
 	AdoptForeignNames() error
 }
+
+// FlagWrite is one message's settled flag set, for a driver that records flags
+// outside the index.
+type FlagWrite struct {
+	UID      uint32
+	Filename string
+	Flags    []string
+	Keywords []string
+}
+
+// FlagWriteResult is what the store holds for one message afterwards: the name
+// it is under now, and the error that stopped it, if one did.
+type FlagWriteResult struct {
+	UID      uint32
+	Filename string
+	Err      error
+}
+
+// FlagWriterMulti records a whole command's flag writes at once.
+//
+// Separate from FlagWriter rather than replacing it: dbox keeps flags in the
+// index and implements neither, and a caller falls back to the single-message
+// form. The batch exists because the single one takes the folder's
+// cross-process lock per message, so one STORE over 200 messages took the lock
+// 200 times and every acquisition paid the BUSY retries of a contended folder
+// (#1623).
+type FlagWriterMulti interface {
+	WriteFlagsMulti(folder string, writes []FlagWrite) []FlagWriteResult
+}
