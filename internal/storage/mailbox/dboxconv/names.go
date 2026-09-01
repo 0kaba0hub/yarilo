@@ -73,12 +73,26 @@ func AdoptNames(mailboxesDir string, utf8 bool) (int, error) {
 		}
 		target := filepath.Join(parent, want)
 		if _, err := os.Stat(target); err == nil {
-			// Something already carries the name we would move to. Refused
-			// rather than merged: two folders becoming one is a loss no later
-			// step can undo, and a store in that shape needs a person.
+			// The target exists. Either somebody else already did this rename,
+			// or two different folders want one name.
+			//
+			// The source is what tells them apart: gone means the move
+			// happened -- a second connection on the same login runs this pass
+			// too, and a crash halfway leaves the same picture. Still there
+			// means two folders would become one, which is a loss no later step
+			// can undo, so that one needs a person (#1609).
+			if _, serr := os.Stat(dir); os.IsNotExist(serr) {
+				continue
+			}
 			return renamed, fmt.Errorf("dboxconv: renaming %s to %s: the target already exists", dir, target)
 		}
 		if err := os.Rename(dir, target); err != nil {
+			if os.IsNotExist(err) {
+				// Renamed by a twin between the walk and here.
+				if _, serr := os.Stat(target); serr == nil {
+					continue
+				}
+			}
 			return renamed, fmt.Errorf("dboxconv: rename %s to %s: %w", dir, target, err)
 		}
 		if err := fsyncDir(filepath.Clean(parent)); err != nil {
