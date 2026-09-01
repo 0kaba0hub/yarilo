@@ -122,6 +122,7 @@ func (s *session) imapSieveFileInto(name string, raw []byte, flags []string, cre
 	if create {
 		if h, rel, derr := s.dispatch(name); derr == nil {
 			_ = h.box.Create(rel) // idempotent for imapsieve fileinto :create
+			createFolderIndex(h.idx, rel, uint32(time.Now().Unix()))
 		}
 	}
 	dh, drel, df, err := s.ensureFolderHandle(name)

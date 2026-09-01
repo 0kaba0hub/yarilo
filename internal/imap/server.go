@@ -1296,6 +1296,7 @@ func (s *session) Create(name string, opts *imaplib.CreateOptions) error {
 	if err := h.box.Create(rel); err != nil {
 		return nameError(err)
 	}
+	createFolderIndex(h.idx, rel, uint32(time.Now().Unix()))
 	// Inheritance is materialised here rather than resolved on every check:
 	// the new mailbox gets its own ACL file carrying what it inherited, so the
 	// user who just created it -- often holding the create right only at the
@@ -1468,6 +1469,7 @@ func (s *session) renameInbox(dest string) error {
 		// (#1075).
 		return nameError(fmt.Errorf("imap/rename-inbox create: %w", err))
 	}
+	createFolderIndex(s.idx, dest, uint32(time.Now().Unix()))
 	srcFolder, err := s.idx.OpenFolder("INBOX", 0)
 	if err != nil {
 		return err
