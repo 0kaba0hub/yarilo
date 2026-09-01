@@ -283,6 +283,17 @@ func (s *session) openHandle(spec NamespaceSpec, name string, ui *mailbox.UserIn
 		return nil, fmt.Errorf("mailbox init: %w", err)
 	}
 	idx := s.srv.opts.Index.OpenUser(ui)
+	// Before anything lists this store: a store another implementation left
+	// has its folders named the way its configuration spelled them, and a
+	// listing served from that shows names this deployment cannot select
+	// (#1609). Non-fatal -- a store with nothing foreign in it does no work
+	// here, and one that could not be renamed is still served, wrongly named,
+	// exactly as before.
+	if a, ok := idx.(mailbox.ForeignNameAdopter); ok {
+		if err := a.AdoptForeignNames(); err != nil {
+			slog.Warn("imap: foreign folder names not adopted", "user", ui.Username, "err", err)
+		}
+	}
 	// Subscriptions live in the control root. One spelling of that rule, so
 	// this cannot drift from where the other services write (#1437).
 	subsRoot := mailbox.ControlRoot(ui)

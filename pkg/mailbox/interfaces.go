@@ -530,3 +530,11 @@ var ErrIndexLost = errors.New("folder index lost")
 type FolderCreator interface {
 	CreateFolder(folder string, uidValidity uint32) (*Folder, error)
 }
+
+// ForeignNameAdopter brings a store written by another implementation to this
+// deployment's folder-name encoding. Called when the store is opened, before
+// anything lists it: a listing served from their encoding shows names a client
+// cannot select (#1609).
+type ForeignNameAdopter interface {
+	AdoptForeignNames() error
+}

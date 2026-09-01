@@ -1404,3 +1404,7 @@ func (h *userHandle) BumpCacheGeneration(folderID uint64) (uint32, error) {
 	h.stampTrace(folderID)
 	return h.ui.BumpCacheGeneration(folderID)
 }
+
+// AdoptForeignNames satisfies mailbox.ForeignNameAdopter. On the handle as well
+// as on the index, because callers hold the handle.
+func (h *userHandle) AdoptForeignNames() error { return h.ui.AdoptForeignNames() }

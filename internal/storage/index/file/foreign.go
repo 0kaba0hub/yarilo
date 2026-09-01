@@ -1,15 +1,18 @@
 package file
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/dboxconv"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
 	"github.com/yarilomail/yarilo/internal/userstate/subs"
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -491,4 +494,39 @@ func (u *userIndex) convertForeignSdboxFolder(fs *folderState, dir string) (bool
 	slog.Info("fileindex: converted a foreign folder", "user", u.username, "folder", fs.folder,
 		"messages", len(metas), "skipped", len(missing), "from", dir)
 	return true, nil
+}
+
+// AdoptForeignNames brings a foreign store's folder directories to this
+// deployment's name encoding, before anything lists them.
+//
+// It used to run only from a folder conversion, which begins when a folder is
+// opened -- and a client lists before it opens anything. So the first listing
+// after a takeover served their encoding, and the subscribed folders in it came
+// back \NonExistent: their names had been read from their subscriptions file
+// and converted, and no directory of those names existed yet. Three of four
+// folders were unreachable until the connection after (#1609).
+//
+// Under the per-user index lock, because two connections on one login is
+// ordinary and this renames directories in two trees with no folder lock held.
+// The second holder finds nothing left to rename.
+func (u *userIndex) AdoptForeignNames() error {
+	run := func() error {
+		_, err := u.adoptForeignNames()
+		return err
+	}
+	if u.b.locker == nil {
+		return run()
+	}
+	key := locks.IndexKey(u.username)
+	if u.b.locker.HoldsResource(key) {
+		return run()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	lk, err := locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("fileindex/adopt names: %w", err)
+	}
+	defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
+	return run()
 }
