@@ -61,7 +61,7 @@ func main() {
 		asJSON    = flag.Bool("json", false, "print the summary as JSON")
 		check     = flag.Bool("check", false, "fail when a package is over what it is allowed")
 		update    = flag.Bool("update-baseline", false, "write the baseline from the tree as it stands")
-		maxRatio  = flag.Float64("max", 0.10, "the share a swept package may not exceed")
+		maxRatio  = flag.Float64("max", 0.08, "the share a swept package may not exceed")
 		baseline  = flag.String("baseline", "hack/commentcensus/baseline.json", "packages not swept yet, and what they hold today")
 	)
 	flag.Parse()
@@ -304,6 +304,21 @@ func printBlocks(blocks []Block) {
 	}
 }
 
+// blockShare is what the guard measures: the lines sitting in blocks of three
+// or more, against the package's Go lines.
+//
+// Not the total comment share, which counts one-line doc comments too. A small
+// package with many small exported functions sits near a tenth on godoc alone,
+// holding no narrative at all, and dboxconv proved it: swept to 41 lines in 12
+// blocks, it still read as 15.8% because 66 of its remaining comment lines are
+// one per function. This measure counts exactly what the pass removes (#1620).
+func blockShare(c PackageCensus) float64 {
+	if c.GoLines == 0 {
+		return 0
+	}
+	return float64(c.BlockLines) / float64(c.GoLines)
+}
+
 // The guard, and why it needs a baseline at all.
 //
 // The tree is at 22% today and the target is 10%, so a bare threshold would
@@ -333,9 +348,9 @@ func runCheck(path string, census []PackageCensus, maxRatio float64) bool {
 			limit = b
 			note = " (not swept yet; it may not grow)"
 		}
-		if c.Ratio > limit+1e-9 {
-			fmt.Printf("%s: %.1f%% of %d lines is comment, over %.1f%%%s\n",
-				c.Package, c.Ratio*100, c.GoLines, limit*100, note)
+		if share := blockShare(c); share > limit+1e-9 {
+			fmt.Printf("%s: %.1f%% of %d lines sits in %d blocks of 3+, over %.1f%%%s\n",
+				c.Package, share*100, c.GoLines, c.Blocks, limit*100, note)
 			ok = false
 		}
 	}
@@ -366,8 +381,8 @@ func readBaseline(path string) (map[string]float64, error) {
 func writeBaseline(path string, census []PackageCensus, maxRatio float64) error {
 	out := map[string]float64{}
 	for _, c := range census {
-		if c.GoLines > 0 && c.Ratio > maxRatio {
-			out[c.Package] = roundUp(c.Ratio)
+		if share := blockShare(c); c.GoLines > 0 && share > maxRatio {
+			out[c.Package] = roundUp(share)
 		}
 	}
 	body, err := json.MarshalIndent(out, "", "  ")

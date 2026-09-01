@@ -117,10 +117,11 @@ jobs:
           fi
           CGO_ENABLED=1 go vet -tags flatcurve ./...
 
-      # A package's comment share can only fall. The baseline records what each
-      # unswept package holds today; a swept one leaves it and the threshold
-      # alone holds it, so a new essay fails here instead of waiting for the
-      # next sweep (#1620).
+      # Lines in blocks of three or more, against the package's Go lines --
+      # exactly what the sweep removes, and not godoc, which it keeps. The
+      # baseline records what each unswept package holds today; a swept one
+      # leaves it and the 8% threshold alone holds it, so a new essay fails
+      # here instead of waiting for the next sweep (#1620).
       - name: Check the comment share
         run: go run ./hack/commentcensus -check
 
