@@ -395,3 +395,35 @@ func TestAMessageArrivingInNewAfterTheCheckIsNotImportedFromThere(t *testing.T) 
 		t.Errorf("after the next pass %q still cannot be read: %v", msgs[0].Filename, ferr)
 	}
 }
+
+// A new/ that exists and cannot be read must fail the reconcile, not be treated
+// as empty.
+//
+// Skipping the phase on any error is silent in the worst way: only cur/ is
+// imported from, so the mail in new/ never reaches the index and nothing is
+// reported. Before the skip existed such a store failed on every pass, loudly,
+// which is the behaviour to keep (#1630).
+func TestAnUnreadableNewDirectoryFailsRatherThanBeingSkipped(t *testing.T) {
+	box, idx, folder := recSetupLocked(t)
+	newDir := filepath.Join(box.folderPath("INBOX"), "new")
+	if err := os.RemoveAll(newDir); err != nil {
+		t.Fatal(err)
+	}
+	// A plain file where the directory should be: ReadDir fails with something
+	// that is not "does not exist", on every platform and without depending on
+	// who the test runs as.
+	if err := os.WriteFile(newDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var moveTaken bool
+	movePhaseProbe = func(taken bool) { moveTaken = taken }
+	defer func() { movePhaseProbe = nil }()
+
+	if _, err := box.ReconcileIndex(idx, folder); err == nil {
+		t.Error("the reconcile succeeded although new/ cannot be read")
+	}
+	if !moveTaken {
+		t.Error("the move phase was skipped, so the fault was never reported")
+	}
+}

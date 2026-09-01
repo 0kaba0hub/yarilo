@@ -1899,10 +1899,14 @@ func (u *userMailbox) stillOnDisk(folder, filename string) bool {
 
 // hasNewMail reports whether new/ holds anything to move: one directory read,
 // unlocked, deciding only whether a round trip is worth taking.
+//
+// Unreadable answers yes, so the locked phase runs and fails loudly: answering
+// no would skip the move for good on a faulty mount, and since only cur/ is
+// imported from, the mail would sit invisible with nothing reported (#1630).
 func (u *userMailbox) hasNewMail(folder string) bool {
 	entries, err := os.ReadDir(filepath.Join(u.folderPath(folder), "new"))
 	if err != nil {
-		return false
+		return !errors.Is(err, os.ErrNotExist)
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
