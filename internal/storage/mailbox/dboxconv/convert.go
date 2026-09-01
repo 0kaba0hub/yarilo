@@ -14,9 +14,8 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// systemFlagBits is their flag byte, one bit at a time. Listed rather than
-// masked: the bits above these are theirs to define, and a mask would carry
-// whatever they add next into our index as a flag nobody set.
+// systemFlagBits is their flag byte, listed rather than masked: a mask would
+// carry whatever bit they define next into our index as a flag nobody set.
 var systemFlagBits = []struct {
 	bit  uint8
 	name string
@@ -38,22 +37,10 @@ func flagNames(b uint8) []string {
 	return out
 }
 
-// ConvertMap makes their map records ours, pointing at the same storage files
-// at the same offsets. Nothing is read from or written to the message files:
-// the mail stays exactly where it is, which is what makes this conversion in
-// place rather than a copy.
-//
-// One per store, before any folder, because a folder that has not been
-// converted yet still addresses its mail through their map uids -- so theirs
-// stays on disk until the last folder is done (#1569).
-//
-// "Only if ours is still empty" is decided inside the map's own lock, together
-// with the append. Checked outside it, two sessions opening two different
-// folders at once both find an empty map and both import it, and the store ends
-// up with every record twice.
-//
-// Records with a zero refcount are skipped: that is a message waiting for their
-// purge, and carrying it over would restore somebody's deleted mail.
+// ConvertMap makes their map records ours, pointing at the same files at the
+// same offsets. One per store, before any folder (#1569). "Only if ours is
+// empty" is decided inside the map's lock with the append, or two sessions both
+// import. A zero refcount awaits their purge: carrying it restores deleted mail.
 func ConvertMap(storageDir string, dst *mdboxmap.Map) (int, error) {
 	return dst.ImportOnce(func() ([]mdboxmap.RecordLayout, error) {
 		entries, err := ReadForeignMap(storageDir)
@@ -65,12 +52,9 @@ func ConvertMap(storageDir string, dst *mdboxmap.Map) (int, error) {
 			if e.RefCount == 0 {
 				continue
 			}
-			// No GUID: their map does not carry one, and reading it would mean
-			// opening every storage file to parse every trailer. Our folder
-			// index still gets the right GUID -- it comes from their folder
-			// index, which does carry it -- so EMAILID survives; what is left
-			// without one is the map's own guid field, which only the storage
-			// rebuild pairs by (#1573).
+			// No GUID: theirs carries none and reading it means opening every
+			// storage file. EMAILID comes from their folder index; only the
+			// storage rebuild pairs by the map's own guid (#1573).
 			layouts = append(layouts, mdboxmap.RecordLayout{
 				FileID: e.FileID,
 				Offset: e.Offset,
@@ -81,15 +65,8 @@ func ConvertMap(storageDir string, dst *mdboxmap.Map) (int, error) {
 	})
 }
 
-// MapCorrespondence answers the only question a folder conversion asks of the
-// two maps: which of our map uids describes the bytes one of their map uids
-// describes.
-//
-// Derived rather than remembered. A record is identified by the file and offset
-// it occupies, which neither map invented and neither can disagree about, so
-// there is no sidecar to write, to keep in step, or to lose. It works for as
-// long as their map is still on disk, which is exactly as long as any folder
-// might still need it (#1569).
+// MapCorrespondence answers which of our map uids describes the bytes one of
+// theirs does, derived from file id and offset so there is no sidecar (#1569).
 type MapCorrespondence struct {
 	theirs map[uint32]dboxindex.MapEntry // their map uid -> where it points
 	ours   map[[2]uint32]uint32          // (file id, offset) -> our map uid
@@ -128,18 +105,9 @@ func (c *MapCorrespondence) Lookup(theirUID uint32) (ourUID, size uint32, err er
 	return our, e.Size, nil
 }
 
-// ConvertFolder turns one of their folders into our message metadata, ready for
-// the index backend to write, together with the header state that says which
-// UID space it belongs to.
-//
-// Their UIDs and their UIDVALIDITY are carried across unchanged. That is the
-// point of reading a store in place: a client reconnects to a different server
-// over the same mailbox and finds its own UIDs, so it resynchronises nothing.
-// New UIDs with a new UIDVALIDITY would make every client refetch every
-// mailbox, which costs what a migration over IMAP costs (#1568).
-//
-// RFC 3501 says UIDVALIDITY must change when UIDs are not preserved; here they
-// are, so it must not.
+// ConvertFolder turns one of their folders into our message metadata. Their
+// UIDs and UIDVALIDITY carry across unchanged, so a client resynchronises
+// nothing (#1568).
 func ConvertFolder(folderDir string, c *MapCorrespondence) ([]*mailbox.MessageMeta, dboxindex.HeaderState, error) {
 	f, err := ReadForeignFolder(folderDir)
 	if err != nil {
@@ -172,9 +140,8 @@ func ConvertFolder(folderDir string, c *MapCorrespondence) ([]*mailbox.MessageMe
 			Filename: strconv.FormatUint(uint64(ourMapUID), 10),
 			Flags:    flagNames(r.Flags),
 			Keywords: r.Keywords,
-			// Their map record's size is the whole record -- header, body and
-			// trailer -- so it is not the message size and is not put where one
-			// belongs. The index recomputes what it needs on first read.
+			// Their size is the whole record, header and trailer included, so
+			// it is not the message size. The index recomputes on first read.
 			Size:         0,
 			VSize:        0,
 			InternalDate: time.Unix(int64(saveDate), 0).UTC(),
@@ -190,13 +157,8 @@ func ConvertFolder(folderDir string, c *MapCorrespondence) ([]*mailbox.MessageMe
 	return out, f.Header, nil
 }
 
-// RemoveForeignFolder unlinks their folder files, and is the last step of a
-// conversion rather than part of it: ours has to be written and fsynced first,
-// so that a crash leaves a folder one of the two servers can still open. What
-// must never exist is a folder with neither.
-//
-// Their map is not touched here. It is store-wide, and a folder that has not
-// been converted yet still needs it (#1569).
+// RemoveForeignFolder unlinks their folder files, last: ours is fsynced first,
+// so a crash leaves a folder one of the two servers can still open (#1569).
 func RemoveForeignFolder(dir string) error {
 	for _, name := range []string{foreignIndex, foreignLog, foreignLogPrev, foreignCache} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
@@ -206,22 +168,9 @@ func RemoveForeignFolder(dir string) error {
 	return nil
 }
 
-// ConvertSdboxFolder makes their sdbox folder index ours.
-//
-// No map and no correspondence: a message is a file in the folder's own
-// directory, so its position is its path and nothing store-wide has to be whole
-// first. What is left is their folder index, which carries the same uids, flags,
-// keywords and guids an mdbox one does (#1592).
-//
-// The file name is read off the disk rather than derived, because two naming
-// schemes are in the field and a folder can hold both: "u.<guid>" is what a
-// store written with guids has, and "u.<uid>" is the older scheme. Deriving one
-// of them would point the index at a file that is not there, and the folder
-// would open with every body unreadable -- which is the failure that looks like
-// corruption rather than like a wrong guess.
-// The uids it could not place are returned rather than counted away: a folder
-// whose index names four messages and whose directory holds three is something
-// an operator has to be told about, by number and by uid.
+// ConvertSdboxFolder makes their sdbox folder index ours. No map: a message's
+// position is its path (#1592). The file name is read off the disk, not
+// derived, or every body reads as corruption; unplaceable uids are returned.
 func ConvertSdboxFolder(indexDir, mailDir string) ([]*mailbox.MessageMeta, dboxindex.HeaderState, []uint32, error) {
 	f, err := ReadForeignFolder(indexDir)
 	if err != nil {
@@ -234,16 +183,9 @@ func ConvertSdboxFolder(indexDir, mailDir string) ([]*mailbox.MessageMeta, dboxi
 	var missing []uint32
 	out := make([]*mailbox.MessageMeta, 0, len(f.Records))
 	for _, r := range f.Records {
-		// No guid here, and none in their index to take: an sdbox folder index
-		// of theirs has no guid extension at all -- read off a store the
-		// reference wrote, whose extensions are dbox-hdr, hdr-pop3-uidl, cache,
-		// vsize and hdr-vsize. The identity lives in the message file, which is
-		// what the driver's own scan reads, so the conversion leaves the folder
-		// marked guid-pending and the backfill that already runs on every
-		// select stamps them from there (#1592).
-		//
-		// No size and no save date either, for the same reason: their record
-		// carries neither. The index recomputes what it needs on first read.
+		// Their sdbox index has no guid extension, size or save date: identity
+		// lives in the message file, so the folder stays guid-pending and the
+		// select-time backfill stamps it (#1592).
 		m := &mailbox.MessageMeta{
 			UID:      r.UID,
 			Flags:    flagNames(r.Flags),
@@ -251,12 +193,8 @@ func ConvertSdboxFolder(indexDir, mailDir string) ([]*mailbox.MessageMeta, dboxi
 		}
 		name, ok := sdboxNameFor(present, r.UID)
 		if !ok {
-			// A record whose file is gone: an expunge of theirs unlinks the
-			// file, and their index can still name it for a moment. Skipped
-			// rather than carried, since a record pointing at nothing serves an
-			// unreadable message under a uid a client keeps asking for -- and
-			// reported, because a folder losing messages silently is the same
-			// healthy-looking emptiness this whole path exists to avoid.
+			// Their expunge unlinks the file while their index may still name
+			// it. Skipped rather than serving an unreadable uid, and reported.
 			missing = append(missing, r.UID)
 			continue
 		}
@@ -281,12 +219,8 @@ func sdboxFilesPresent(dir string) (map[string]struct{}, error) {
 	return out, nil
 }
 
-// sdboxNameFor picks the file this record names.
-//
-// "u.<uid>" first because that is what the reference writes -- checked against
-// a store it produced, where every file is named by uid and not one by guid.
-// Our own driver names new files "u.<guidhex>", so a folder converted here and
-// then written to holds both spellings and both are looked for.
+// sdboxNameFor picks the file this record names. They write "u.<uid>"; our
+// driver writes "u.<guidhex>", so a converted folder holds both spellings.
 func sdboxNameFor(present map[string]struct{}, uid uint32) (string, bool) {
 	if name := sdboxPrefix + strconv.FormatUint(uint64(uid), 10); nameIn(present, name) {
 		return name, true
@@ -299,7 +233,6 @@ func nameIn(present map[string]struct{}, name string) bool {
 	return ok
 }
 
-// RemoveForeignSdboxFolder unlinks their folder index, the last step of an
-// sdbox conversion. The message files are theirs and ours both -- the same
-// files, read in place -- so nothing else in the directory is touched.
+// RemoveForeignSdboxFolder unlinks their folder index, last. The message files
+// are read in place by both, so nothing else in the directory is touched.
 func RemoveForeignSdboxFolder(dir string) error { return RemoveForeignFolder(dir) }
