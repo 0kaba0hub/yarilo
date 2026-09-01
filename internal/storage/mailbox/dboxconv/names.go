@@ -11,31 +11,10 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
 )
 
-// AdoptNames brings the folder directories under root/mailboxes to the encoding
-// this deployment writes, and reports how many it renamed.
-//
-// A store the other implementation left spells its folder names in modified
-// UTF-7. Ours spells them the way mailbox_list_utf8 says. Where the two differ,
-// every name that is not plain ASCII is unreadable: listed as mojibake, and not
-// selectable under any name a client can send (#1586). Neither side can be
-// asked to bend at read time -- a store half in one encoding and half in the
-// other is a store neither implementation can read whole -- so adoption brings
-// the disk to what the running configuration says, once.
-//
-// Consequences, stated rather than discovered:
-//
-//   - the store becomes one-way at the first open, not folder by folder. A
-//     renamed directory is one the other implementation will not find, whether
-//     or not that folder has been converted yet;
-//   - a name that does not decode is left exactly as it is. It may be what a
-//     user typed;
-//   - plain ASCII is skipped, because the two encodings agree on it.
-//
-// Bottom-up, so a parent renamed first cannot invalidate the path of a child
-// still to be renamed. Each rename is followed by an fsync of the directory
-// holding it, so a crash leaves a tree that is part renamed rather than a
-// rename that reached no disk: the next open finds the trigger still in place
-// and finishes the pass.
+// AdoptNames brings the folder directories under root/mailboxes to this
+// deployment's encoding, which makes the store one-way from the first open
+// (#1586). Bottom-up so a renamed parent cannot invalidate a child's path, and
+// each rename is fsynced; a name that does not decode is left alone.
 func AdoptNames(mailboxesDir string, utf8 bool) (int, error) {
 	var dirs []string
 	err := filepath.WalkDir(mailboxesDir, func(p string, d fs.DirEntry, err error) error {
@@ -49,8 +28,7 @@ func AdoptNames(mailboxesDir string, utf8 bool) (int, error) {
 			return nil
 		}
 		if filepath.Base(p) == dboxMailsDir {
-			// The message directory, not a folder name. Its own children are
-			// message files, so there is nothing below it to walk either.
+			// The message directory, not a folder name.
 			return fs.SkipDir
 		}
 		dirs = append(dirs, p)
@@ -73,14 +51,8 @@ func AdoptNames(mailboxesDir string, utf8 bool) (int, error) {
 		}
 		target := filepath.Join(parent, want)
 		if _, err := os.Stat(target); err == nil {
-			// The target exists. Either somebody else already did this rename,
-			// or two different folders want one name.
-			//
-			// The source is what tells them apart: gone means the move
-			// happened -- a second connection on the same login runs this pass
-			// too, and a crash halfway leaves the same picture. Still there
-			// means two folders would become one, which is a loss no later step
-			// can undo, so that one needs a person (#1609).
+			// Source gone: a twin or a crash halfway already renamed. Source
+			// still there: two folders would become one, which nothing undoes (#1609).
 			if _, serr := os.Stat(dir); os.IsNotExist(serr) {
 				continue
 			}
@@ -107,9 +79,8 @@ func AdoptNames(mailboxesDir string, utf8 bool) (int, error) {
 // currently named name, and whether it could tell.
 func adoptedName(name string, utf8 bool) (string, bool) {
 	if isASCII(name) && !strings.Contains(name, "&") {
-		// The two encodings agree, and there is nothing to do. The ampersand is
-		// the exception: it is the escape in modified UTF-7, so a name carrying
-		// one is not the same string in both.
+		// The encodings agree on ASCII, except for "&": the modified UTF-7
+		// escape, so a name carrying one differs between them.
 		return name, true
 	}
 	if utf8 {
@@ -120,10 +91,8 @@ func adoptedName(name string, utf8 bool) (string, bool) {
 		}
 		return decoded, true
 	}
-	// Encoding an already-encoded name escapes its ampersand and produces
-	// &-BBIER... -- the double encoding this whole change exists to remove,
-	// reintroduced by the fix. A name that survives a decode and re-encode
-	// unchanged is already in their encoding and is left alone.
+	// A name unchanged by decode-and-re-encode is already theirs: re-encoding
+	// would escape its "&" into the double encoding this removes.
 	if decoded, err := mboxenc.FromModUTF7(name); err == nil && mboxenc.ToModUTF7(decoded) == name {
 		return name, true
 	}

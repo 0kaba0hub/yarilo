@@ -1,16 +1,7 @@
-// Package dboxconv converts another implementation's dbox store into ours, in
-// place: the messages are not copied, moved or rewritten. Their map entries
-// become ours, pointing at the same storage files at the same offsets, and
-// their folder indexes become ours beside them; then theirs are removed.
-//
-// The conversion is one-way and destructive by design (#1524). Once a folder is
-// converted the original server can no longer open it: it would find its index
-// missing and rebuild from the records, losing flags and keywords. That is
-// stated where an operator reads it, not implied.
-//
-// Layering: this package reads their format and builds our message metadata. It
-// does not write our folder index -- that belongs to the index backend, which
-// calls this.
+// Package dboxconv converts another implementation's dbox store into ours in
+// place: their map entries become ours, pointing at the same files at the same
+// offsets. One-way by design -- afterwards the original server would rebuild
+// and lose flags and keywords (#1524).
 package dboxconv
 
 import (
@@ -24,12 +15,8 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox/mdboxmap"
 )
 
-// Their file names. Kept in one place because the removal step has to name
-// exactly the same set the reading step understood: a file left behind that
-// they would still read makes a stale foreign index look authoritative.
-// foreignSubscriptions is their subscription file. Ours shares the name, and
-// on a deployment that does not move the control root it shares the directory:
-// the reading of that file lives in userstate/subs, which owns the path.
+// Their file names, in one place: the removal step must name exactly the set
+// the reading step understood.
 const dboxMailsDir = "dbox-Mails"
 
 const foreignSubscriptions = "subscriptions"
@@ -46,18 +33,13 @@ const (
 	sdboxPrefix = "u."
 )
 
-// StoreRoot is where a dbox store lives, the same rule the drivers apply:
-// mail_path when the deployment sets one, and <home>/<driver> when it does not.
-// Stated here rather than assumed, because the conversion has to read their
-// files from the directory the driver will later write ours into -- computing it
-// differently by one level puts the map somewhere nothing looks.
+// StoreRoot is where a dbox store lives, the rule the drivers apply: mail_path
+// when set, else <home>/<driver>. One level out puts the map where nothing looks.
 func StoreRoot(home, mailPath, driver string) string {
 	if mailPath != "" {
 		return mailPath
 	}
-	// The drivers root themselves one level below the home, under their own
-	// name, and they disagree about which name. Getting this wrong by one level
-	// puts the whole search somewhere nothing looks.
+	// The drivers disagree about which name they root under.
 	switch driver {
 	case "sdbox", "dbox":
 		return filepath.Join(home, "sdbox")
@@ -66,9 +48,8 @@ func StoreRoot(home, mailPath, driver string) string {
 	}
 }
 
-// HasForeignFolder reports whether dir holds another implementation's folder
-// index: either a base index or a log, since a folder written but not yet
-// flushed has only the second (#1564).
+// HasForeignFolder reports whether dir holds their folder index. Either file:
+// a folder written but not yet flushed has only the log (#1564).
 func HasForeignFolder(dir string) bool {
 	for _, name := range []string{foreignIndex, foreignLog} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
@@ -84,14 +65,9 @@ func HasForeignMap(storageDir string) bool {
 	return err == nil
 }
 
-// AnyForeignFolderLeft reports whether the store still holds a folder of theirs
-// that has not been converted.
-//
-// The walk is over directories rather than over their mailbox list index: a
-// folder is theirs while its index files are on disk, and that is the same
-// thing the conversion path decides on. Reading their list instead would answer
-// a different question -- what they believed existed -- and the two disagree
-// exactly when it matters, on a store somebody has been converting.
+// AnyForeignFolderLeft reports whether an unconverted folder of theirs is left.
+// It walks directories, not their list index, which answers a different
+// question -- what they believed existed.
 func AnyForeignFolderLeft(mailboxesDir string) (bool, error) {
 	found := false
 	err := filepath.WalkDir(mailboxesDir, func(p string, d fs.DirEntry, err error) error {
@@ -104,11 +80,8 @@ func AnyForeignFolderLeft(mailboxesDir string) (bool, error) {
 		if found {
 			return fs.SkipAll
 		}
-		// Every directory, not only the dbox-Mails leaves: under a separate
-		// index root the reference keeps a folder's index in the mailbox
-		// directory itself, with no leaf (#1583). Looking only at leaves there
-		// reports a store as fully converted while every folder of theirs is
-		// still on disk, and takes their map away from all of them.
+		// Every directory, not only the dbox-Mails leaves: with a separate
+		// index root their index sits in the mailbox directory itself (#1583).
 		if !d.IsDir() {
 			return nil
 		}
@@ -124,22 +97,10 @@ func AnyForeignFolderLeft(mailboxesDir string) (bool, error) {
 	return found, nil
 }
 
-// DropForeignMapIfDone removes their map once no folder of theirs is left, and
-// reports whether it did.
-//
-// Separate from a folder's conversion on purpose. The map is one for the whole
-// store, and a folder that has not been converted still addresses its mail
-// through their map uids: removing it early makes the rest of the store
-// unreadable by either implementation. So the last folder to convert is what
-// ends the store's conversion, and until then their map stays (#1569).
-//
-// The check and the removal are one section under the map's lock. What that
-// orders is not two deleters -- a second one finds the files gone and is happy
-// -- but a deleter against an importer, which reads exactly the files being
-// removed.
-//
-// A store where some folder is never opened keeps their map indefinitely, and
-// that is the honest outcome rather than a failure: the folder still needs it.
+// DropForeignMapIfDone removes their map once no folder of theirs is left. An
+// unconverted folder still addresses its mail through their uids, so only the
+// last folder may end it (#1569); check and removal are one section under the
+// map's lock, which orders a deleter against an importer.
 func DropForeignMapIfDone(storageDir, mailboxesDir, mailRoot string, ours *mdboxmap.Map) (bool, error) {
 	dropped := false
 	err := ours.WithLock(func() error {
@@ -172,25 +133,9 @@ func DropForeignMapIfDone(storageDir, mailboxesDir, mailRoot string, ours *mdbox
 var ErrReadOnly = errors.New("store is read-only; conversion deletes the foreign index and cannot run -- mount it writable or convert it offline")
 
 // CheckWritable reports whether a conversion could finish, by writing to every
-// directory it would write to rather than by reasoning about permissions.
-//
-// Asked before any work, not after. A conversion ends by unlinking their index
-// files, so a directory that refuses writes fails on the last step -- having
-// read their index, built ours and paid for all of it, on every open, for as
-// long as the store stays read-only. The probe costs two syscalls and turns
-// that into one refusal.
-//
-// It writes: mode bits, mount options and whatever else a filesystem decides by
-// are not one question that can be asked, and a check that reasoned about them
-// would be wrong on the case that matters -- a read-only mount under a
-// directory whose bits say 0700.
-//
-// Every directory the critical section writes to has to be asked, not only the
-// one holding their index. Ours may be written elsewhere entirely when INDEX=
-// moves it, and the map lives under storage/ -- written when their map is
-// imported, and deleted from when the last folder converts. A mixed mount, with
-// the folder writable and storage/ not, would otherwise fail halfway: our folder
-// index written, their map neither imported nor removed.
+// directory it would write to -- before any work, and by writing rather than
+// reasoning, since a read-only mount under 0700 bits defeats a permission check.
+// Every directory: a mixed mount would otherwise fail halfway.
 func CheckWritable(dirs ...string) error {
 	for _, dir := range dirs {
 		if err := checkWritable(dir); err != nil {
@@ -220,10 +165,8 @@ func HasForeignSubscriptions(mailRoot string) bool {
 	return err == nil
 }
 
-// ReadForeignMap reads their map: the base when there is one, then its log, and
-// the log alone when there is not. The second is not an edge case -- their map
-// base is written only once a rewrite threshold is passed, so a store that has
-// not reached it has no base at all.
+// ReadForeignMap reads their map: base then log, or the log alone -- their base
+// is written only past a rewrite threshold, so a young store has none.
 func ReadForeignMap(storageDir string) ([]dboxindex.MapEntry, error) {
 	var (
 		seed     []dboxindex.MapEntry
@@ -241,10 +184,8 @@ func ReadForeignMap(storageDir string) ([]dboxindex.MapEntry, error) {
 		if herr != nil {
 			return nil, fmt.Errorf("dboxconv: map extensions: %w", herr)
 		}
-		// The base's own records, and the log read from where the base stopped.
-		// Skipping either loses messages: the base holds everything folded into
-		// it, and the log everything since -- and after the log rotates, the
-		// base is the only place the older half exists (#1583).
+		// Base plus log-from-tail: after a rotation the base is the only place
+		// the older half exists (#1583).
 		seed, herr = dboxindex.ParseMapRecords(raw, h, exts)
 		if herr != nil {
 			return nil, fmt.Errorf("dboxconv: map records: %w", herr)
@@ -261,16 +202,8 @@ func ReadForeignMap(storageDir string) ([]dboxindex.MapEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dboxconv: map log header: %w", err)
 	}
-	// The base's tail offset addresses the log the base was written against,
-	// named by its sequence number -- not whichever log is on disk now. After a
-	// rotation the current file is a different sequence, and an offset from the
-	// old one lands wherever it happens to land in the new: a reader that used
-	// it either fails on a torn record or, worse, skips whatever came before it
-	// and says nothing.
-	//
-	// So the offset is used only when the two agree. When they do not, the
-	// current log is read from its start, which is where it begins after a
-	// rotation anyway.
+	// The tail offset addresses the log named by its sequence, not whichever is
+	// on disk now: after a rotation it lands anywhere. Used only when they agree.
 	if baseSeq != 0 && baseSeq != lh.FileSeq {
 		offset = int(lh.HeaderSize)
 	}
@@ -279,9 +212,8 @@ func ReadForeignMap(storageDir string) ([]dboxindex.MapEntry, error) {
 		offset = int(lh.HeaderSize)
 	}
 
-	// What the rotation moved out of the current log lives in the rotated one,
-	// and only the part after the base's tail is still needed. Read first, so
-	// the current log's records land on top of it.
+	// What the rotation moved out lives in the rotated log, from the base's
+	// tail on. Read first, so the current log lands on top.
 	if baseSeq != 0 && baseSeq != lh.FileSeq {
 		if prev, perr := os.ReadFile(filepath.Join(storageDir, foreignMapLogPrev)); perr == nil {
 			ph, pherr := dboxindex.ParseLogHeader(prev)
@@ -309,12 +241,9 @@ type Folder struct {
 	Header  dboxindex.HeaderState
 }
 
-// ReadForeignFolder reads one folder's state: their base index plus its log
-// from log_file_tail_offset, or the log from its start when there is no base.
-//
-// A folder with neither is not this function's business and is an error here:
-// an empty return would show as a folder that exists and holds nothing, which
-// is the one answer nobody checks.
+// ReadForeignFolder reads one folder's state: their base plus its log from
+// log_file_tail_offset, or the log alone. Neither is an error, not an empty
+// result that would read as a folder holding nothing.
 func ReadForeignFolder(dir string) (Folder, error) {
 	logPath := filepath.Join(dir, foreignLog)
 	raw, err := os.ReadFile(filepath.Join(dir, foreignIndex))
@@ -364,10 +293,9 @@ func ReadForeignFolder(dir string) (Folder, error) {
 	return Folder{Records: recs, Exts: exts, Header: state}, nil
 }
 
-// folderFromLog builds a folder out of its log alone, for one whose base index
-// has not been written yet. The extensions come from the log's own intro
-// records: an mdbox message is found through the map uid its extension carries,
-// and with no base there is nothing else to name that extension.
+// folderFromLog builds a folder from its log alone, for one with no base yet.
+// Extensions come from the log's intro records: nothing else names the map uid
+// an mdbox message is found through.
 func folderFromLog(dir string, tail []byte) (Folder, error) {
 	h, err := dboxindex.ParseLogHeader(tail)
 	if err != nil {
@@ -377,9 +305,8 @@ func folderFromLog(dir string, tail []byte) (Folder, error) {
 	if err != nil {
 		return Folder{}, fmt.Errorf("dboxconv: log %s: %w", dir, err)
 	}
-	// No keyword table: their base holds one and there is no base. A keyword
-	// set in the log names itself, so those arrive; one carried as a bitmask
-	// alone has nothing to resolve against and does not.
+	// No keyword table without a base: a keyword named in the log arrives, one
+	// carried as a bitmask alone has nothing to resolve against.
 	return Folder{
 		Records: dboxindex.Apply(nil, changes, nil),
 		Exts:    exts,
