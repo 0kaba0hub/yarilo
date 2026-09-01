@@ -605,3 +605,40 @@ func (u *userIndex) newFolderUIDValidity(folder string, requested uint32) uint32
 	u.rememberIdentity(folder, v)
 	return v
 }
+
+// refuseIfIndexLost stops an mdbox folder that the identity record knows from
+// being served as a new empty one when our index is gone.
+//
+// Until the record existed this could not be detected at all: an mdbox folder
+// directory holds no message files -- the mail is in the shared storage -- so a
+// directory without an index is byte-for-byte a folder that was just created.
+// The record is the witness the filesystem cannot be (#1608, #1611).
+//
+// Refused rather than repaired, because mdbox has no repair that can run here.
+// Its scan is storage-wide, and a message names the folder it was FIRST saved
+// to, so a moved message cannot be filed back by it. The repair that does it
+// correctly is the storage-wide rebuild, and that one requires the user's
+// mailboxes to be quiesced: it recomputes every map record's refcount from the
+// folder references it finds, so a delivery that reached storage but has not
+// yet appended to its folder counts as referenced by nobody, its refcount goes
+// to zero, and the next purge reclaims live mail. Firing it from a folder open
+// is exactly that race.
+//
+// A folder older than the record has no entry, and for it the ambiguity
+// remains: it opens as before. That is the honest edge of what the record can
+// prove, and widening it -- refusing on a weaker signal -- would refuse folders
+// that really are new.
+func (u *userIndex) refuseIfIndexLost(fs *folderState) error {
+	if u.driver != "mdbox" || u.folders == nil {
+		return nil
+	}
+	v, known, err := u.folders.UIDValidity(fs.folder)
+	if err != nil || !known {
+		return nil
+	}
+	return fmt.Errorf(
+		"fileindex/openfolder: folder %q exists at %s with uidvalidity %d and its index is gone; "+
+			"its messages are in the shared storage and only a storage-wide rebuild can file them back -- "+
+			"run it with this user's mailboxes stopped, since a rebuild under live delivery can drop live mail: %w",
+		fs.folder, fs.indexDir, v, mailbox.ErrIndexLost)
+}
