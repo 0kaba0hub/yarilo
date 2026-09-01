@@ -24,7 +24,29 @@ var errLogIndexIDMismatch = errors.New("fileindex: log IndexID does not match ba
 // is authoritative. The returned Folder.ID keys all per-folder calls.
 // A legacy-format .index is migrated atomically on first open, leaving
 // a .legacy backup.
+// openIntent says why a folder is being opened. The two answers differ in what
+// a missing index means: for a folder being created it means "make one", and
+// for a folder being opened it means "something that existed is not here".
+// One call site was answering both, and it answered as if every folder were
+// new (#1608).
+type openIntent int
+
+const (
+	intentOpen openIntent = iota
+	intentCreate
+)
+
 func (u *userIndex) OpenFolder(folder string, uidValidity uint32, traceID string) (*mailbox.Folder, error) {
+	return u.openFolder(folder, uidValidity, traceID, intentOpen)
+}
+
+// CreateFolder makes a folder's index, and says so. It never looks for another
+// implementation's index: a folder being created has no past to adopt.
+func (u *userIndex) CreateFolder(folder string, uidValidity uint32, traceID string) (*mailbox.Folder, error) {
+	return u.openFolder(folder, uidValidity, traceID, intentCreate)
+}
+
+func (u *userIndex) openFolder(folder string, uidValidity uint32, traceID string, intent openIntent) (*mailbox.Folder, error) {
 	indexDir := u.indexDir(folder)
 	indexPath := indexPathFor(indexDir)
 
@@ -97,6 +119,7 @@ func (u *userIndex) OpenFolder(folder string, uidValidity uint32, traceID string
 		filenames:   names,
 		sizes:       sizes,
 		traceID:     traceID,
+		intent:      intent,
 	}
 	if err := u.loadOrInit(fs, uidValidity); err != nil {
 		return nil, err
@@ -224,6 +247,11 @@ func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error
 			// Before deciding this folder is new: another implementation may
 			// have written it, in which case its state is on disk in their
 			// format and a fresh empty index would hide it (#1524).
+			if fs.intent == intentCreate {
+				// A folder being created has no past: nothing of theirs to
+				// adopt into a name somebody just asked for.
+				return fs.createFresh(uidValidity)
+			}
 			switch converted, cerr := u.convertForeignFolder(fs); {
 			case cerr != nil:
 				return cerr

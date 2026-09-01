@@ -283,6 +283,12 @@ func (h *userHandle) stampTrace(folderID uint64) {
 func (h *userHandle) OpenFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
 	return h.ui.OpenFolder(folder, uidValidity, h.traceID)
 }
+
+// CreateFolder satisfies mailbox.FolderCreator. On the handle as well as on the
+// index, because callers hold the handle.
+func (h *userHandle) CreateFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
+	return h.ui.CreateFolder(folder, uidValidity, h.traceID)
+}
 func (h *userHandle) SaveFolder(f *mailbox.Folder) error { return h.ui.SaveFolder(f) }
 
 // AdoptUIDSpace satisfies mailbox.UIDSpaceAdopter. On the handle as well as on
@@ -472,6 +478,10 @@ type folderState struct {
 	indexDir    string // <home>/<folder-relative>/
 	indexPath   string // <indexDir>/yarilo.index
 	volatileDir string // local dir for tmp files (empty = same as indexDir)
+
+	// intent is why this folder is being opened. A missing index means
+	// different things to the two answers.
+	intent openIntent
 
 	// fsyncOnFlush makes the next base rewrite durable before its rename.
 	// Set only where the flush is followed by removing the only other copy of
