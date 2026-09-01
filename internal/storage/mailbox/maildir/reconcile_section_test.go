@@ -427,3 +427,93 @@ func TestAnUnreadableNewDirectoryFailsRatherThanBeingSkipped(t *testing.T) {
 		t.Error("the move phase was skipped, so the fault was never reported")
 	}
 }
+
+// A poll of a folder nobody changed takes the lock zero times.
+//
+// Fifty sessions polling one folder each took it to discover the first of them
+// had already done the work (#1630). The probe is what makes this an assertion
+// rather than a coincidence: it reports how many records were compared, so a
+// folder that skipped the section by being empty cannot pass for a folder that
+// skipped it by being clean.
+func TestAPollOfAnUnchangedFolderTakesNoLock(t *testing.T) {
+	box, idx, folder := recSetupLocked(t)
+	deliverToNew(t, box, "1700000001.M1Pa.host", "From: a@b\r\n\r\nx\r\n")
+	if _, err := box.ReconcileIndex(idx, folder); err != nil {
+		t.Fatal(err)
+	}
+	folder, err := idx.OpenFolder("INBOX", folder.UIDValidity)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compared := 0
+	cleanProbe = func(n int) { compared = n }
+	defer func() { cleanProbe = nil }()
+
+	l := box.b.locker.(*countingLocker)
+	before := l.acquires.Load()
+	st, err := box.ReconcileIndex(idx, folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := l.acquires.Load() - before; got != 0 {
+		t.Errorf("a poll of an unchanged folder took the lock %d times, want 0", got)
+	}
+	if compared == 0 {
+		t.Error("the comparison never ran over a record, so this proves nothing")
+	}
+	if st.Changed {
+		t.Errorf("the pass reported changes on an unchanged folder: %+v", st)
+	}
+}
+
+// The mirror: each of the three differences takes the lock.
+func TestEachDifferenceStillTakesTheLock(t *testing.T) {
+	cases := []struct {
+		name  string
+		apply func(t *testing.T, box *userMailbox, cur, name string)
+	}{
+		{"a file appeared", func(t *testing.T, box *userMailbox, cur, name string) {
+			deliverToCur(t, box, "1700000009.M1Pz.host:2,", "From: a@b\r\n\r\nx\r\n")
+		}},
+		{"a file vanished", func(t *testing.T, box *userMailbox, cur, name string) {
+			if err := os.Remove(filepath.Join(cur, name)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a file was renamed", func(t *testing.T, box *userMailbox, cur, name string) {
+			if err := os.Rename(filepath.Join(cur, name),
+				filepath.Join(cur, renameWithFlags(name, "S"))); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			box, idx, folder := recSetupLocked(t)
+			deliverToNew(t, box, "1700000001.M1Pa.host", "From: a@b\r\n\r\nx\r\n")
+			if _, err := box.ReconcileIndex(idx, folder); err != nil {
+				t.Fatal(err)
+			}
+			folder, err := idx.OpenFolder("INBOX", folder.UIDValidity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			msgs, err := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+			if err != nil || len(msgs) != 1 {
+				t.Fatalf("index = %v, err = %v", msgs, err)
+			}
+			cur := filepath.Join(box.folderPath("INBOX"), "cur")
+			tc.apply(t, box, cur, msgs[0].Filename)
+
+			l := box.b.locker.(*countingLocker)
+			before := l.acquires.Load()
+			if _, err := box.ReconcileIndex(idx, folder); err != nil {
+				t.Fatal(err)
+			}
+			if got := l.acquires.Load() - before; got == 0 {
+				t.Error("the difference was skipped: the lock was never taken")
+			}
+		})
+	}
+}
