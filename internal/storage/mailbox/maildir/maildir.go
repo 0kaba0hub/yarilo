@@ -797,10 +797,8 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 				VSize:        virt,
 				InternalDate: mtime,
 				Flags:        append([]string(nil), flags...),
+				Keywords:     append([]string(nil), keywords...),
 				GUID:         u.guidFor(folder, name),
-			}
-			if len(keywords) > 0 {
-				rec.Flags = append(rec.Flags, keywords...)
 			}
 			out = append(out, rec)
 		}
@@ -977,8 +975,8 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 			if rec.Filename != m.Filename {
 				// Renamed out of band (a flag change moves the ":2," trailer):
 				// adopt the on-disk flags and repoint the filename.
-				if !sameFlags(rec.Flags, m.Flags) {
-					if err := idx.UpdateFlags(folder.ID, m.UID, rec.Flags, nil); err != nil {
+				if !sameFlags(rec.Flags, m.Flags) || !sameFlags(rec.Keywords, m.Keywords) {
+					if err := idx.UpdateFlags(folder.ID, m.UID, rec.Flags, rec.Keywords); err != nil {
 						return fmt.Errorf("maildir/sync: update flags %d: %w", m.UID, err)
 					}
 				}
@@ -1008,6 +1006,7 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 				VSize:        rec.VSize,
 				InternalDate: rec.InternalDate,
 				Flags:        rec.Flags,
+				Keywords:     rec.Keywords,
 				GUID:         rec.GUID,
 			}
 			// The uidlist already says which UID this file has -- it is the

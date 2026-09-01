@@ -123,12 +123,12 @@ func RebuildFolder(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailb
 			// every surviving message (a QRESYNC modseq storm); a newly assigned
 			// UID keeps modseq 0 and ResetFolder stamps it fresh.
 			newMeta.ModSeq = old.ModSeq
-			// Driver-provided flags (maildir) win since the filename trailer is
-			// the source of truth there; dbox returns empty so the index keeps
-			// its prior flag set unchanged.
-			if len(rec.Flags) > 0 {
+			// Driver-provided flags and keywords (maildir) win since the
+			// filename trailer is the source of truth there; dbox returns
+			// neither, so the index keeps its prior set unchanged.
+			if len(rec.Flags) > 0 || len(rec.Keywords) > 0 {
 				newMeta.Flags = rec.Flags
-				newMeta.Keywords = nil
+				newMeta.Keywords = rec.Keywords
 			} else {
 				newMeta.Flags = old.Flags
 				newMeta.Keywords = old.Keywords
@@ -146,6 +146,7 @@ func RebuildFolder(box mailbox.UserMailbox, idx mailbox.UserIndex, folder *mailb
 			newMeta.UID = nextUID
 			nextUID++
 			newMeta.Flags = rec.Flags
+			newMeta.Keywords = rec.Keywords
 			stats.UIDsAssigned++
 		}
 		rebuilt = append(rebuilt, newMeta)
