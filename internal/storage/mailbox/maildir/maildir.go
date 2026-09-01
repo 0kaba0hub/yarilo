@@ -132,10 +132,15 @@ type userMailbox struct {
 	separator        string // IMAP hierarchy separator; converted to "." on disk (maildir++)
 	escapeChar       string // storage-name escape char; "" disables escaping
 	username         string
-	owner            string                  // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
-	listUTF8         bool                    // mirrors Backend.listUTF8
-	mu               sync.Mutex              // in-process fast-path; cross-process barrier is b.locker
-	cache            map[string]*folderCache // keyed by folder name; lazy-initialised
+	owner            string     // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
+	listUTF8         bool       // mirrors Backend.listUTF8
+	mu               sync.Mutex // in-process fast-path; cross-process barrier is b.locker
+	// inSection is non-zero while a reconcile's apply phase holds the folder
+	// lock; the filesystem calls made there are counted (#1626).
+	inSection  atomic.Int32
+	sectionFS  atomic.Int32            // stats made inside the section
+	sectionDir atomic.Int32            // directory reads made inside the section
+	cache      map[string]*folderCache // keyed by folder name; lazy-initialised
 }
 
 // makeOwner builds the yarilo-locks owner string
@@ -758,6 +763,9 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 // carry no stable GUID, so the rebuild flow must preserve the index's GUID
 // for matched filenames.
 func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
+	if u.inSection.Load() > 0 {
+		u.sectionDir.Add(1) // a walk under the lock is what #1626 took apart
+	}
 	// Warm the uidlist cache so explicit GUID overrides win over the derived
 	// value; a missing uidlist just leaves every GUID name-derived.
 	_, _ = u.readUIDList(folder)
@@ -879,24 +887,20 @@ func (u *userMailbox) moveNewToCurLocked(folder string) error {
 	return nil
 }
 
-// ReconcileIndex brings idx into agreement with the physical maildir under the
-// mailbox lock:
-//
-//   - new/ is migrated into cur/ first, so an MDA delivery becomes readable.
-//   - Messages match by base name, so a second MUA flipping ":2," → ":2,S"
-//     keeps the UID.
-//   - New files get a UID via the index's atomic allocator (no manual seed, so
-//     a concurrent delivery cannot collide).
-//   - A vanished tracked file is expunged incrementally (QRESYNC tombstone); a
-//     tracked file renamed out of band has its stored filename and flags
-//     updated in place.
-//
-// Tracked messages with an unchanged on-disk name are left untouched — the
-// index stays authoritative for flags yarilo set, which never rename the file.
+// ReconcileIndex brings idx into agreement with the physical maildir: new/ is
+// migrated into cur/, messages match by base name so a flag rename keeps its
+// UID, new files take a UID from the index's allocator, a vanished one is
+// expunged with a tombstone. A message whose name has not changed is left
+// alone -- the index is authoritative for flags this server set, which do not
+// rename the file.
 func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Folder) (mailbox.SyncStats, error) {
 	var st mailbox.SyncStats
 	adopted := false
-	err := u.withMailboxLock(folder.Name, func() error {
+	// Two short holds with the walk between them: held across the scan, the
+	// lock was held for a stat of every file in the folder (#1626). The moves
+	// come first because moving a file out of new/ renames it, and a scan taken
+	// earlier would describe names that no longer exist.
+	if err := u.withMailboxLock(folder.Name, func() error {
 		if err := u.moveNewToCurLocked(folder.Name); err != nil {
 			return err
 		}
@@ -920,10 +924,30 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 				}
 			}
 		}
-		scanned, err := u.Scan(folder.Name)
-		if err != nil {
-			return fmt.Errorf("maildir/sync: scan: %w", err)
-		}
+		return nil
+	}); err != nil {
+		return st, err
+	}
+
+	// The walk, holding nothing. A flag change renames only the part after
+	// ":2,", and everything here is keyed by the base name -- so the scan is
+	// sound about which messages exist and unsound about the flags they carry.
+	scanned, err := u.Scan(folder.Name)
+	if err != nil {
+		return st, fmt.Errorf("maildir/sync: scan: %w", err)
+	}
+	if afterScan != nil {
+		afterScan()
+	}
+
+	err = u.withMailboxLock(folder.Name, func() error {
+		u.inSection.Add(1)
+		defer u.inSection.Add(-1)
+		defer func() {
+			if sectionProbe != nil {
+				sectionProbe(int(u.sectionDir.Load()), int(u.sectionFS.Load()))
+			}
+		}()
 		onDisk := make(map[string]*mailbox.ScanRecord, len(scanned))
 		for i := range scanned {
 			if scanned[i].Filename != "" {
@@ -945,6 +969,11 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 			base := maildirBase(m.Filename)
 			rec, ok := onDisk[base]
 			if !ok {
+				// Absent from an unlocked scan, so confirmed before the record
+				// is dropped.
+				if u.stillOnDisk(folder.Name, m.Filename) {
+					continue
+				}
 				// Vanished out of band → expunge (QRESYNC tombstone).
 				if err := idx.ExpungeMessage(folder.ID, m.UID); err != nil {
 					return fmt.Errorf("maildir/sync: expunge %d: %w", m.UID, err)
@@ -975,6 +1004,14 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 			if rec.Filename != m.Filename {
 				// Renamed out of band (a flag change moves the ":2," trailer):
 				// adopt the on-disk flags and repoint the filename.
+				//
+				// Only if the scanned name is still on disk: writing flags from
+				// a name somebody has renamed past would put a state nobody set
+				// into the index. If it moved on, the index keeps what it has
+				// and the next pass settles it (#1626).
+				if !u.stillOnDisk(folder.Name, rec.Filename) {
+					continue
+				}
 				if !sameFlags(rec.Flags, m.Flags) || !sameFlags(rec.Keywords, m.Keywords) {
 					if err := idx.UpdateFlags(folder.ID, m.UID, rec.Flags, rec.Keywords); err != nil {
 						return fmt.Errorf("maildir/sync: update flags %d: %w", m.UID, err)
@@ -994,6 +1031,11 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 			}
 			base := maildirBase(rec.Filename)
 			if _, ok := tracked[base]; ok {
+				continue
+			}
+			// The scan was unlocked: a record appended for a message somebody
+			// expunged meanwhile serves a uid that reads as corruption.
+			if !u.stillOnDisk(folder.Name, rec.Filename) {
 				continue
 			}
 			// Claim the base before appending: a scan that reports one message
@@ -1461,6 +1503,16 @@ func (u *userMailbox) keywordLettersLocked(folder string, keywords []string) (st
 	return t.letters(keywords), nil
 }
 
+// sectionProbe reports what the reconcile's critical section did to the
+// filesystem, so "no directory walk under the lock" is counted rather than
+// described (#1626).
+var sectionProbe func(dirReads, stats int)
+
+// afterScan runs between the unlocked scan and the apply, so a test can make
+// the scan stale on purpose -- which is the only way to exercise the rule that
+// a name the scan saw may already have moved on (#1626).
+var afterScan func()
+
 // keywordFileRead is called with the keyword file's path on every read of it.
 // Nil in a running server; a test sets it to count reads, which is how "once
 // per batch" is asserted rather than described (#1623).
@@ -1755,4 +1807,20 @@ func splitFlagsAndKeywords(all []string) (flags, keywords []string) {
 		}
 	}
 	return flags, keywords
+}
+
+// stillOnDisk reports whether a name the unlocked scan produced is still on
+// disk. One stat, and only for a record the pass changes, so the section's cost
+// follows the changes and not the size of the folder (#1626).
+func (u *userMailbox) stillOnDisk(folder, filename string) bool {
+	if u.inSection.Load() > 0 {
+		u.sectionFS.Add(1)
+	}
+	dir := u.folderPath(folder)
+	for _, sub := range []string{"cur", "new"} {
+		if _, err := os.Lstat(filepath.Join(dir, sub, filename)); err == nil {
+			return true
+		}
+	}
+	return false
 }
