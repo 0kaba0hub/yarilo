@@ -1350,16 +1350,10 @@ func (u *userMailbox) WriteFlags(folder, filename string, flags, keywords []stri
 	return newName, nil
 }
 
-// WriteFlagsMulti records a whole command's flag writes under one acquisition
-// of the folder lock, satisfying mailbox.FlagWriterMulti.
-//
-// One lock and one pass over the keyword file for the batch. Per message it did
-// both, so a STORE over 200 messages took the cross-process lock 200 times and
-// read and rewrote the keyword file as often -- with a second path (a SELECT's
-// reconcile) holding the same lock, that is where the stalls came from (#1623).
-//
-// Best effort stays per message: one that cannot be written is reported against
-// its own uid and the rest of the batch is written.
+// WriteFlagsMulti records a whole command's flag writes under one acquisition of
+// the folder lock and one pass over the keyword file; per message it took both
+// per message, which is where the stalls came from (#1623). Best effort stays
+// per message: one failure is reported against its uid, the rest are written.
 func (u *userMailbox) WriteFlagsMulti(folder string, writes []mailbox.FlagWrite) []mailbox.FlagWriteResult {
 	out := make([]mailbox.FlagWriteResult, len(writes))
 	for i := range writes {
@@ -1377,7 +1371,7 @@ func (u *userMailbox) WriteFlagsMulti(folder string, writes []mailbox.FlagWrite)
 		return nil
 	})
 	if err != nil {
-		// The lock itself, so nothing in the batch was written.
+		// The lock itself: nothing in the batch was written.
 		for i := range out {
 			out[i].Err = err
 		}

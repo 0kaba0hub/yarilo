@@ -646,8 +646,7 @@ type pendingStore struct {
 }
 
 // writeFlagsBatch is writeFlagsToStorage against a driver that writes a whole
-// command at once. Same best-effort rule, per message: one that could not be
-// written is warned about and the rest of the batch stands.
+// command at once, with the same per-message best-effort rule.
 func (s *session) writeFlagsBatch(multi mailbox.FlagWriterMulti, folder string, idx mailbox.UserIndex, pending []pendingStore) {
 	writes := make([]mailbox.FlagWrite, 0, len(pending))
 	for i := range pending {
@@ -689,8 +688,7 @@ func (s *session) writeFlagsToStorage(pending []pendingStore) {
 	driver := mailbox.Driver(s.folderBox())
 	folder := s.folder.Name
 	idx := s.folderIdx()
-	// The batch form first: writing a whole command's flags takes the folder's
-	// cross-process lock once rather than once per message (#1623).
+	// The batch form takes the folder lock once, not once per message (#1623).
 	if multi, ok := driver.(mailbox.FlagWriterMulti); ok {
 		s.writeFlagsBatch(multi, folder, idx, pending)
 		return
