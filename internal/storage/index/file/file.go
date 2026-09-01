@@ -29,6 +29,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/logrotate"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/mboxenc"
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
+	"github.com/yarilomail/yarilo/internal/userstate/uidvalidity"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
@@ -238,6 +239,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 			owner:       makeOwner(u),
 			open:        make(map[uint64]*folderState),
 		}
+		ui.uidValidity = uidvalidity.New(ui.controlRoot, ui.username, ui.owner, b.locker)
 		ref = &refUserIndex{ui: ui}
 		b.users[key] = ref
 	}
@@ -451,6 +453,9 @@ type userIndex struct {
 	volatileDir string // base volatile dir (empty = disabled)
 	indexRoot   string // INDEX= override root (empty = co-located with mail root)
 	controlRoot string // where per-user control state lives (subscriptions)
+	// uidValidity hands out a value for a folder that has no past, and never
+	// hands one out twice.
+	uidValidity *uidvalidity.Allocator
 	username    string
 	owner       string
 

@@ -250,7 +250,7 @@ func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error
 			if fs.intent == intentCreate {
 				// A folder being created has no past: nothing of theirs to
 				// adopt into a name somebody just asked for.
-				return fs.createFresh(uidValidity)
+				return fs.createFresh(u.freshUIDValidity(uidValidity))
 			}
 			switch converted, cerr := u.convertForeignFolder(fs); {
 			case cerr != nil:
@@ -258,7 +258,7 @@ func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error
 			case converted:
 				return nil
 			}
-			return fs.createFresh(uidValidity)
+			return fs.createFresh(u.freshUIDValidity(uidValidity))
 		case err != nil:
 			return fmt.Errorf("fileindex/openfolder: stat (locked recheck): %w", err)
 		}

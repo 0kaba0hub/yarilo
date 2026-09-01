@@ -530,3 +530,27 @@ func (u *userIndex) AdoptForeignNames() error {
 	defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
 	return run()
 }
+
+// freshUIDValidity is the value a folder that has no past is created with.
+//
+// The caller's number is a wall-clock stamp, and a stamp repeats: two folders
+// created in one second share it, and so does a folder recreated in the same
+// second as its own delete -- which RFC 3501 §6.3.4 forbids because a client's
+// cached UIDs would still look valid for different mail (#1614). The allocator
+// takes the stamp as a floor and never returns a number twice.
+//
+// A failure here falls back to the caller's stamp. The allocator is a
+// correctness improvement over that, not a precondition for opening a mailbox,
+// and refusing the folder would be the larger harm.
+func (u *userIndex) freshUIDValidity(requested uint32) uint32 {
+	if u.uidValidity == nil {
+		return requested
+	}
+	v, err := u.uidValidity.Next(requested)
+	if err != nil {
+		slog.Warn("fileindex: uidvalidity allocator failed; falling back to the caller's stamp",
+			"user", u.username, "requested", requested, "err", err)
+		return requested
+	}
+	return v
+}
