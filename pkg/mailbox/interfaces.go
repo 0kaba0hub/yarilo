@@ -518,10 +518,10 @@ func (e *CorruptIndexError) Error() string {
 
 func (e *CorruptIndexError) Unwrap() error { return e.Err }
 
-// ErrIndexLost says a folder that exists on disk has no index of ours and
-// cannot be rebuilt where it was found. It is deliberately not an empty
-// mailbox: a folder answering 0 EXISTS over a directory of mail is the answer
-// nobody checks (#1608).
+// ErrIndexLost says a folder this server recorded as existing has no index of
+// ours any more, and cannot be rebuilt where it was found. It is deliberately
+// not an empty mailbox: a folder answering 0 EXISTS over mail that is still in
+// storage is the answer nobody checks (#1608).
 var ErrIndexLost = errors.New("folder index lost")
 
 // FolderCreator is an index that can be told a folder is being created rather

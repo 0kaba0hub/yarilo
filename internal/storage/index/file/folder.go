@@ -258,6 +258,9 @@ func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error
 			case converted:
 				return nil
 			}
+			if err := u.refuseIfIndexLost(fs); err != nil {
+				return err
+			}
 			return fs.createFresh(u.identityFor(fs.folder, uidValidity))
 		case err != nil:
 			return fmt.Errorf("fileindex/openfolder: stat (locked recheck): %w", err)
