@@ -115,7 +115,19 @@ func flagKey(s string) string {
 func parseAnyTime(s string) (time.Time, bool) {
 	s = strings.Trim(strings.TrimSpace(s), `"`)
 	for _, layout := range []string{
-		"02-Jan-2006 15:04:05 -0700", // IMAP INTERNALDATE
+		"02-Jan-2006 15:04:05 -0700", // IMAP INTERNALDATE, days 10-31
+		// The same field on days 1-9. RFC 3501 pads the day to two characters
+		// with a space, and TrimSpace above removes that pad, leaving one
+		// digit where "02" demands two -- so every INTERNALDATE from the first
+		// nine days of a month failed to parse and the row could not compare
+		// the two instants at all (#1618). Kept alongside rather than instead:
+		// both spellings are legal on the wire.
+		//
+		// "_2" and not "2": measured, not assumed. "_2" parses the padded
+		// " 1-Sep", the bare "1-Sep" and "11-Sep" alike, while "2" rejects the
+		// padded form -- so a caller that stops trimming does not silently
+		// reintroduce this.
+		"_2-Jan-2006 15:04:05 -0700",
 		time.RFC3339,
 		time.RFC1123Z,
 	} {
