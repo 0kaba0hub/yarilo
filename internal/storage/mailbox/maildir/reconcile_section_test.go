@@ -3,6 +3,7 @@ package maildir
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -113,4 +114,69 @@ func hasFlagIn(all []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// The legacy uidlist migration is a rename, and it is reached from paths that
+// hold no lock -- the reconcile's scan among them since #1626. Two of them at
+// once means one renames and the other finds the source gone: that is the
+// migration having happened, not a folder that cannot be read.
+func TestTheLegacyUIDListMigrationToleratesLosingTheRace(t *testing.T) {
+	box, _ := batchBox(t)
+	legacy := filepath.Join(box.folderPath("INBOX"), LegacyUIDListFileName)
+	if err := os.WriteFile(legacy, []byte("3 V1 N1 G0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The loser's picture exactly: the source is gone and the destination is
+	// there, because somebody else just did the rename.
+	if err := os.Rename(legacy, box.uidListPath("INBOX")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("3 V1 N1 G0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(box.uidListPath("INBOX")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now race it for real: several goroutines migrating the same folder.
+	var wg sync.WaitGroup
+	errs := make([]error, 8)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = box.migrateLegacyUIDList("INBOX")
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("migration %d failed while another one succeeded: %v", i, err)
+		}
+	}
+	if _, err := os.Stat(box.uidListPath("INBOX")); err != nil {
+		t.Errorf("the uidlist is not there after the race: %v", err)
+	}
+}
+
+// The folder cache is reached from the scan, which holds no mailbox lock since
+// #1626. Two goroutines on one handle must not race it.
+func TestTheFolderCacheIsSafeWithoutTheMailboxLock(t *testing.T) {
+	box, _ := batchBox(t)
+	deliverToCur(t, box, "1700000001.M1Pa.host:2,", "From: a@b\r\n\r\nx\r\n")
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				if _, err := box.Scan("INBOX"); err != nil {
+					t.Errorf("scan: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

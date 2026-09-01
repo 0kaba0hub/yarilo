@@ -135,6 +135,7 @@ type userMailbox struct {
 	owner            string     // <process>/<pid>/<user> — passed to yarilo-locks for BUSY diagnostics
 	listUTF8         bool       // mirrors Backend.listUTF8
 	mu               sync.Mutex // in-process fast-path; cross-process barrier is b.locker
+	cacheMu          sync.Mutex // guards cache; the scan reaches it holding no mailbox lock
 	// inSection is non-zero while a reconcile's apply phase holds the folder
 	// lock; the filesystem calls made there are counted (#1626).
 	inSection  atomic.Int32
@@ -563,12 +564,10 @@ func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename st
 	if info != nil && info.Size() == 0 {
 		fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
 	}
-	// v3 record: "<uid> [G<guid>] :<base filename>". The name is cut at the
-	// info separator, as the other implementation cuts it: a record keyed by the
-	// whole name stops matching its own message the moment a flag changes it.
-	// The GUID field is written only
-	// when it must differ from the name-derived one; readers that predate it
-	// skip unknown fields.
+	// v3 record: "<uid> [G<guid>] :<base filename>". The name is cut at the info
+	// separator, as they cut it: keyed by the whole name a record stops matching
+	// its own message the moment a flag changes it. The GUID field appears only
+	// when it must differ from the name-derived one.
 	if guidOverride {
 		_, err = fmt.Fprintf(f, "%d G%s :%s\n", uid, hex.EncodeToString(guid[:]), maildirBase(filename))
 	} else {
@@ -1172,6 +1171,11 @@ func (u *userMailbox) migrateLegacyUIDList(folder string) error {
 		return fmt.Errorf("maildir: legacy uidlist stat: %w", err)
 	}
 	if err := os.Rename(src, dst); err != nil {
+		// Called from paths holding no lock, so the loser of a race sees the
+		// source already gone -- that is the migration having happened (#1626).
+		if _, serr := os.Stat(dst); serr == nil {
+			return nil
+		}
 		return fmt.Errorf("maildir: legacy uidlist rename: %w", err)
 	}
 	return nil
@@ -1262,7 +1266,12 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 
 // folderCacheFor returns the folderCache for folder, creating it if needed.
 // Caller must hold u.mu or ensure single-goroutine access.
+// folderCacheFor returns this folder's cache entry, creating it if needed.
+// Under the in-process mutex, because the reconcile's scan reaches it holding
+// no mailbox lock (#1626); that mutex is not the cross-process one.
 func (u *userMailbox) folderCacheFor(folder string) *folderCache {
+	u.cacheMu.Lock()
+	defer u.cacheMu.Unlock()
 	if u.cache == nil {
 		u.cache = make(map[string]*folderCache)
 	}
