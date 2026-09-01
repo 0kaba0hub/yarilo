@@ -118,8 +118,7 @@ Key rules derived from ARCHITECTURE.md:
 
 ## Go code style
 
-- **No comments** unless the WHY is non-obvious (hidden constraint, subtle invariant,
-  Dovecot-compatibility quirk). Never explain WHAT the code does.
+- **Comments**: see "Code comments" below.
 - **No half-finished implementations.** Stub with `return errors.New("not yet implemented")`
   — never leave a function body empty or silently broken.
 - **Error wrapping**: always `fmt.Errorf("package/op: %w", err)` — never bare `err`.
@@ -127,6 +126,31 @@ Key rules derived from ARCHITECTURE.md:
 - **No `init()` functions.** Wire everything explicitly in `backend.New()` or `main()`.
 - **Context propagation**: every long-running operation accepts `context.Context` as first arg.
 - **`t.TempDir()`** for all test filesystem work — never hardcoded `/tmp` paths.
+
+---
+
+## Code comments
+
+A comment exists only when the WHY is non-obvious: a hidden constraint, a subtle
+invariant, a compatibility quirk, or a "do not X" backed by a test row that fails
+when X is done. Everything else — the code and the documentation repos already
+say it.
+
+- **Never explain WHAT the code does.** The code says that.
+- **Size**: 1–2 lines is the norm. A block of 3 or more lines is a red flag —
+  move the explanation to the documentation repo (public behaviour) or to
+  `INTERNALS.md` in docs-internal (wire formats, on-disk layouts) and keep a
+  one-line pointer at most.
+- **Facts, not stories**: no history ("previously…", "used to be…"), no
+  meta-narrative about how the code got here. History belongs in issues —
+  reference it as `(#NNNN)` if it matters.
+- **Exported identifiers** keep a godoc comment; its first sentence is the
+  contract. That is API documentation, not commentary — keep it, keep it short.
+- **Untouchable**: `//go:*` directives, `//nolint`, cgo preambles, license
+  headers, generated files.
+- **English only.**
+- **Ceiling**: comment lines stay ≤10% of Go lines per package, measured by the
+  comment-count tool and enforced by the CI gate (#1620).
 
 ---
 
@@ -192,6 +216,31 @@ Never push directly to `main`. Feature branch → PR → user merges.
   See §7 (FileIndex), §8 (Maildir), §2 (director protocol), §3 (auth protocol).
 - Maildir filenames: `{secs}.M{usecs}P{pid}_{seq}.{hostname}:2,{flags}` — flags sorted uppercase.
 - yarilo-uidlist version 3: header `3 V<uidvalidity> N<nextuid> G<guid128hex>`.
+
+---
+
+## Issue labels
+
+Every issue carries **exactly one type label** at creation — this is what keeps
+the bug statistics honest (defects are not drowned in backlog):
+
+- `bug` — behaviour diverges from what is documented or intended. A defect
+  found in review is always `bug`.
+- `enhancement` — new feature or parity work someone asked for.
+- `phase` — a large roadmap stage (JMAP-N, AUTH-N, REPL, OBOX): backlog, not a
+  request. Never also `enhancement`.
+- `decision` — needs a decision before code; the issue records the choice.
+- `documentation`, `question` — as usual.
+
+Severity, only on `bug` and only when it applies: `data-loss` (user data lost
+or corrupted), `security` (disclosure, oracle, rights bypass).
+
+Subsystem labels are optional but encouraged: `imap`, `pop3`, `lmtp`,
+`submission`, `sieve`, `jmap`, `fts`, `acl`, `auth`, `director`, `storage`,
+`backend-api`, `config`, `testing`.
+
+Label management (create/edit) requires the `0kaba0hub` account
+(`gh auth switch`); `0kaba0` can label issues it opens via `--label`.
 
 ---
 
