@@ -1340,8 +1340,12 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 func (u *userMailbox) WriteFlags(folder, filename string, flags, keywords []string) (string, error) {
 	var newName string
 	err := u.withMailboxLock(folder, func() error {
+		letters, lerr := u.keywordLettersLocked(folder, keywords)
+		if lerr != nil {
+			return lerr
+		}
 		var werr error
-		newName, werr = u.writeFlagsLocked(folder, filename, flags, keywords)
+		newName, werr = u.writeFlagsLocked(folder, filename, flags, letters)
 		return werr
 	})
 	if err != nil {
@@ -1351,8 +1355,8 @@ func (u *userMailbox) WriteFlags(folder, filename string, flags, keywords []stri
 }
 
 // WriteFlagsMulti records a whole command's flag writes under one acquisition of
-// the folder lock and one pass over the keyword file; per message it took both
-// per message, which is where the stalls came from (#1623). Best effort stays
+// the folder lock, reading the keyword file once and rewriting it at most once
+// for the batch; per message it did both per message (#1623). Best effort stays
 // per message: one failure is reported against its uid, the rest are written.
 func (u *userMailbox) WriteFlagsMulti(folder string, writes []mailbox.FlagWrite) []mailbox.FlagWriteResult {
 	out := make([]mailbox.FlagWriteResult, len(writes))
@@ -1360,8 +1364,21 @@ func (u *userMailbox) WriteFlagsMulti(folder string, writes []mailbox.FlagWrite)
 		out[i] = mailbox.FlagWriteResult{UID: writes[i].UID, Filename: writes[i].Filename}
 	}
 	err := u.withMailboxLock(folder, func() error {
+		t := u.loadKeywordTableLocked(folder)
+		added := false
 		for i := range writes {
-			name, werr := u.writeFlagsLocked(folder, writes[i].Filename, writes[i].Flags, writes[i].Keywords)
+			if t.allocate(u, folder, writes[i].Keywords) {
+				added = true
+			}
+		}
+		if added {
+			if werr := u.writeKeywordFileLocked(folder, t.names); werr != nil {
+				return werr
+			}
+		}
+		for i := range writes {
+			name, werr := u.writeFlagsLocked(folder, writes[i].Filename,
+				writes[i].Flags, t.letters(writes[i].Keywords))
 			if werr != nil {
 				out[i].Err = werr
 				continue
@@ -1379,12 +1396,9 @@ func (u *userMailbox) WriteFlagsMulti(folder string, writes []mailbox.FlagWrite)
 	return out
 }
 
-// writeFlagsLocked is the body of both, and the caller holds the folder lock.
-func (u *userMailbox) writeFlagsLocked(folder, filename string, flags, keywords []string) (string, error) {
-	letters, err := u.keywordLettersLocked(folder, keywords)
-	if err != nil {
-		return filename, err
-	}
+// writeFlagsLocked renames one file, with its keyword letters already resolved.
+// The caller holds the folder lock.
+func (u *userMailbox) writeFlagsLocked(folder, filename string, flags []string, letters string) (string, error) {
 	want := renameWithFlags(filename, encodeFlags(flags)+letters)
 	if want == filename {
 		return filename, nil
@@ -1438,49 +1452,72 @@ func (u *userMailbox) keywordLettersLocked(folder string, keywords []string) (st
 	if len(keywords) == 0 {
 		return "", nil
 	}
+	t := u.loadKeywordTableLocked(folder)
+	if t.allocate(u, folder, keywords) {
+		if err := u.writeKeywordFileLocked(folder, t.names); err != nil {
+			return "", err
+		}
+	}
+	return t.letters(keywords), nil
+}
+
+// keywordFileRead is called with the keyword file's path on every read of it.
+// Nil in a running server; a test sets it to count reads, which is how "once
+// per batch" is asserted rather than described (#1623).
+var keywordFileRead func(path string)
+
+// keywordTable is a folder's keyword file held in memory, so a batch reads and
+// rewrites it once rather than per message (#1623).
+type keywordTable struct {
+	names  map[byte]string
+	byName map[string]byte
+}
+
+func (u *userMailbox) loadKeywordTableLocked(folder string) *keywordTable {
 	names := u.keywordNames(folder)
 	if names == nil {
-		// No keyword file yet: this folder is about to have its first keyword,
-		// and the map is what the letters are allocated in.
+		// No keyword file yet: this folder is about to have its first keyword.
 		names = make(map[byte]string)
 	}
 	byName := make(map[string]byte, len(names))
 	for letter, name := range names {
 		byName[name] = letter
 	}
+	return &keywordTable{names: names, byName: byName}
+}
 
-	var added bool
+// allocate gives every keyword a letter it does not already have, and reports
+// whether the table changed.
+func (t *keywordTable) allocate(u *userMailbox, folder string, keywords []string) bool {
+	added := false
 	for _, kw := range keywords {
-		if _, ok := byName[kw]; ok {
+		if _, ok := t.byName[kw]; ok {
 			continue
 		}
-		letter, ok := firstFreeKeywordLetter(names)
+		letter, ok := firstFreeKeywordLetter(t.names)
 		if !ok {
-			// Twenty-six is all a maildir name can carry. The keyword is kept
-			// in the index and simply has no letter; dropping it there instead
-			// would lose it.
+			// Twenty-six is all a maildir name can carry. The keyword stays in
+			// the index with no letter; dropping it there would lose it.
 			slog.Warn("maildir: no free keyword letter left in this folder",
 				"user", u.username, "folder", folder, "keyword", kw)
 			continue
 		}
-		names[letter] = kw
-		byName[kw] = letter
+		t.names[letter] = kw
+		t.byName[kw] = letter
 		added = true
 	}
-	if added {
-		if err := u.writeKeywordFileLocked(folder, names); err != nil {
-			return "", err
-		}
-	}
+	return added
+}
 
+func (t *keywordTable) letters(keywords []string) string {
 	letters := make([]byte, 0, len(keywords))
 	for _, kw := range keywords {
-		if letter, ok := byName[kw]; ok {
+		if letter, ok := t.byName[kw]; ok {
 			letters = append(letters, letter)
 		}
 	}
 	sort.Slice(letters, func(i, j int) bool { return letters[i] < letters[j] })
-	return string(letters), nil
+	return string(letters)
 }
 
 // firstFreeKeywordLetter returns the lowest letter no keyword holds.
@@ -1583,6 +1620,9 @@ func parseSizeInfo(name string) (phys, virt uint32, hasPhys, hasVirt bool) {
 // making.
 func (u *userMailbox) keywordNames(folder string) map[byte]string {
 	path := filepath.Join(u.folderPath(folder), keywordsFileName)
+	if keywordFileRead != nil {
+		keywordFileRead(path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil

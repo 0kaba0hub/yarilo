@@ -2,6 +2,7 @@ package maildir
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -87,6 +88,50 @@ func TestABatchTakesTheFolderLockOnce(t *testing.T) {
 	}
 }
 
+// The keyword file is read once for the batch, not once per message.
+//
+// The lock was the expensive half and is fixed by the batch; this is the other
+// half, and it is the one a comment can claim without the code doing it. Counted
+// by watching the file itself: every open of it is a read (#1623).
+func TestABatchReadsTheKeywordFileOnce(t *testing.T) {
+	box, _ := batchBox(t)
+	const n = 12
+	writes := make([]mailbox.FlagWrite, 0, n)
+	for i := 0; i < n; i++ {
+		name := "1700000" + string(rune('0'+i%10)) + "0.M1P" + string(rune('a'+i)) + ".host:2,"
+		deliverToCur(t, box, name, "From: a@b\r\n\r\nx\r\n")
+		// A keyword of its own per message, so every one of them would have to
+		// allocate a letter and rewrite the file if this were done per message.
+		writes = append(writes, mailbox.FlagWrite{
+			UID: uint32(i + 1), Filename: name, Keywords: []string{"$kw" + string(rune('a'+i))},
+		})
+	}
+	path := filepath.Join(box.folderPath("INBOX"), keywordsFileName)
+
+	reads := 0
+	restore := onKeywordFileRead(func(p string) {
+		if p == path {
+			reads++
+		}
+	})
+	defer restore()
+
+	for _, r := range box.WriteFlagsMulti("INBOX", writes) {
+		if r.Err != nil {
+			t.Fatalf("uid %d: %v", r.UID, r.Err)
+		}
+	}
+	if reads != 1 {
+		t.Errorf("the batch read the keyword file %d times, want 1", reads)
+	}
+
+	// And every keyword still got its own letter, in one file.
+	names := box.keywordNames("INBOX")
+	if len(names) != n {
+		t.Errorf("the keyword file names %d keywords, want %d", len(names), n)
+	}
+}
+
 // A message whose file is gone does not take the rest of the batch with it.
 func TestABatchWithOneMissingFileWritesTheRest(t *testing.T) {
 	box, _ := batchBox(t)
@@ -119,4 +164,11 @@ func TestABatchWithOneMissingFileWritesTheRest(t *testing.T) {
 	if results[1].Filename != writes[1].Filename {
 		t.Errorf("the missing message came back as %q", results[1].Filename)
 	}
+}
+
+// onKeywordFileRead installs a counter for reads of a folder's keyword file and
+// returns the call that removes it.
+func onKeywordFileRead(fn func(path string)) func() {
+	keywordFileRead = fn
+	return func() { keywordFileRead = nil }
 }
