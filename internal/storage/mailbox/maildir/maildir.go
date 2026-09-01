@@ -1340,37 +1340,76 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 func (u *userMailbox) WriteFlags(folder, filename string, flags, keywords []string) (string, error) {
 	var newName string
 	err := u.withMailboxLock(folder, func() error {
-		letters, err := u.keywordLettersLocked(folder, keywords)
-		if err != nil {
-			return err
-		}
-		want := renameWithFlags(filename, encodeFlags(flags)+letters)
-		if want == filename {
-			newName = filename
-			return nil
-		}
-		dir := u.folderPath(folder)
-		for _, sub := range []string{"cur", "new"} {
-			from := filepath.Join(dir, sub, filename)
-			if _, serr := os.Stat(from); serr != nil {
-				continue
-			}
-			if rerr := os.Rename(from, filepath.Join(dir, sub, want)); rerr != nil {
-				return fmt.Errorf("maildir/flags: rename %s: %w", filename, rerr)
-			}
-			newName = want
-			return nil
-		}
-		// The file is not where the index says it is. Left to the reconcile
-		// pass, which is what notices a message that moved or went; failing
-		// here would turn a flag change into an error a client cannot act on.
-		newName = filename
-		return nil
+		var werr error
+		newName, werr = u.writeFlagsLocked(folder, filename, flags, keywords)
+		return werr
 	})
 	if err != nil {
 		return filename, err
 	}
 	return newName, nil
+}
+
+// WriteFlagsMulti records a whole command's flag writes under one acquisition
+// of the folder lock, satisfying mailbox.FlagWriterMulti.
+//
+// One lock and one pass over the keyword file for the batch. Per message it did
+// both, so a STORE over 200 messages took the cross-process lock 200 times and
+// read and rewrote the keyword file as often -- with a second path (a SELECT's
+// reconcile) holding the same lock, that is where the stalls came from (#1623).
+//
+// Best effort stays per message: one that cannot be written is reported against
+// its own uid and the rest of the batch is written.
+func (u *userMailbox) WriteFlagsMulti(folder string, writes []mailbox.FlagWrite) []mailbox.FlagWriteResult {
+	out := make([]mailbox.FlagWriteResult, len(writes))
+	for i := range writes {
+		out[i] = mailbox.FlagWriteResult{UID: writes[i].UID, Filename: writes[i].Filename}
+	}
+	err := u.withMailboxLock(folder, func() error {
+		for i := range writes {
+			name, werr := u.writeFlagsLocked(folder, writes[i].Filename, writes[i].Flags, writes[i].Keywords)
+			if werr != nil {
+				out[i].Err = werr
+				continue
+			}
+			out[i].Filename = name
+		}
+		return nil
+	})
+	if err != nil {
+		// The lock itself, so nothing in the batch was written.
+		for i := range out {
+			out[i].Err = err
+		}
+	}
+	return out
+}
+
+// writeFlagsLocked is the body of both, and the caller holds the folder lock.
+func (u *userMailbox) writeFlagsLocked(folder, filename string, flags, keywords []string) (string, error) {
+	letters, err := u.keywordLettersLocked(folder, keywords)
+	if err != nil {
+		return filename, err
+	}
+	want := renameWithFlags(filename, encodeFlags(flags)+letters)
+	if want == filename {
+		return filename, nil
+	}
+	dir := u.folderPath(folder)
+	for _, sub := range []string{"cur", "new"} {
+		from := filepath.Join(dir, sub, filename)
+		if _, serr := os.Stat(from); serr != nil {
+			continue
+		}
+		if rerr := os.Rename(from, filepath.Join(dir, sub, want)); rerr != nil {
+			return filename, fmt.Errorf("maildir/flags: rename %s: %w", filename, rerr)
+		}
+		return want, nil
+	}
+	// The file is not where the index says it is. Left to the reconcile pass,
+	// which is what notices a message that moved or went; failing here would
+	// turn a flag change into an error a client cannot act on.
+	return filename, nil
 }
 
 // renameWithFlags returns the filename with its ":2," info part replaced.

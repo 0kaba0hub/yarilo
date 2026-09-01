@@ -2037,6 +2037,62 @@ func TestFetchBodyNonPeekSetsSeen(t *testing.T) {
 	}
 }
 
+// A STORE over several messages reaches every filename, through the batch path.
+//
+// The batch exists to take the folder lock once instead of once per message
+// (#1623); what a wrong wiring of it breaks is not the lock count but the
+// pairing -- a result read against the wrong write renames the wrong file, or
+// none. Three messages, three names, each carrying what the client set.
+func TestAMultiMessageStoreReachesEveryFilename(t *testing.T) {
+	c, root := startTestServerAt(t)
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+	if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	body := []byte(testMsg)
+	for i := 0; i < 3; i++ {
+		ac := c.Append("INBOX", int64(len(body)), nil)
+		if _, err := ac.Write(body); err != nil {
+			t.Fatal(err)
+		}
+		if err := ac.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	store := &imap.StoreFlags{
+		Op:    imap.StoreFlagsAdd,
+		Flags: []imap.Flag{imap.FlagSeen, imap.Flag("$Important")},
+	}
+	if err := c.Store(imap.SeqSetNum(1, 2, 3), store, nil).Close(); err != nil {
+		t.Fatalf("STORE: %v", err)
+	}
+
+	cur := filepath.Join(root, "test.com", "user", "Maildir", "cur")
+	entries, err := os.ReadDir(cur)
+	if err != nil {
+		t.Fatalf("read %s: %v", cur, err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("%d files in cur/, want 3", len(entries))
+	}
+	for _, e := range entries {
+		name := e.Name()
+		info := name
+		if i := strings.Index(name, ":2,"); i >= 0 {
+			info = name[i+3:]
+		}
+		if !strings.Contains(info, "S") {
+			t.Errorf("%q carries no \\Seen", name)
+		}
+		if !strings.ContainsAny(info, "abcdefghijklmnopqrstuvwxyz") {
+			t.Errorf("%q carries no keyword letter", name)
+		}
+	}
+}
+
 // A STORE reaches the filename on disk, not only the index.
 //
 // This is the session's half of #1601: the driver knows how to record flags in

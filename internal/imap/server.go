@@ -645,6 +645,39 @@ type pendingStore struct {
 	altTier  bool
 }
 
+// writeFlagsBatch is writeFlagsToStorage against a driver that writes a whole
+// command at once. Same best-effort rule, per message: one that could not be
+// written is warned about and the rest of the batch stands.
+func (s *session) writeFlagsBatch(multi mailbox.FlagWriterMulti, folder string, idx mailbox.UserIndex, pending []pendingStore) {
+	writes := make([]mailbox.FlagWrite, 0, len(pending))
+	for i := range pending {
+		p := &pending[i]
+		if p.filename == "" {
+			continue
+		}
+		writes = append(writes, mailbox.FlagWrite{
+			UID: p.uid, Filename: p.filename, Flags: p.newFlags, Keywords: p.newKW,
+		})
+	}
+	if len(writes) == 0 {
+		return
+	}
+	for i, res := range multi.WriteFlagsMulti(folder, writes) {
+		if res.Err != nil {
+			slog.Warn("imap: could not record flags in storage", "folder", folder,
+				"uid", res.UID, "err", res.Err)
+			continue
+		}
+		if res.Filename == writes[i].Filename {
+			continue
+		}
+		if err := idx.UpdateFilename(s.folder.ID, res.UID, res.Filename); err != nil {
+			slog.Warn("imap: could not record the new filename", "folder", folder,
+				"uid", res.UID, "name", res.Filename, "err", err)
+		}
+	}
+}
+
 // writeFlagsToStorage hands the settled flag set to a driver that records it
 // outside the index, and records the name it comes back with.
 //
@@ -653,12 +686,19 @@ type pendingStore struct {
 // older state -- worth a warning and a later reconcile, not an error on a
 // command that succeeded.
 func (s *session) writeFlagsToStorage(pending []pendingStore) {
-	writer, ok := mailbox.Driver(s.folderBox()).(mailbox.FlagWriter)
+	driver := mailbox.Driver(s.folderBox())
+	folder := s.folder.Name
+	idx := s.folderIdx()
+	// The batch form first: writing a whole command's flags takes the folder's
+	// cross-process lock once rather than once per message (#1623).
+	if multi, ok := driver.(mailbox.FlagWriterMulti); ok {
+		s.writeFlagsBatch(multi, folder, idx, pending)
+		return
+	}
+	writer, ok := driver.(mailbox.FlagWriter)
 	if !ok {
 		return
 	}
-	folder := s.folder.Name
-	idx := s.folderIdx()
 	for i := range pending {
 		p := &pending[i]
 		if p.filename == "" {
