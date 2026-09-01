@@ -206,3 +206,46 @@ func TestTheFolderCacheIsSafeWithoutTheMailboxLock(t *testing.T) {
 	close(done)
 	writer.Wait()
 }
+
+// The map the cache hands out must not be written into afterwards.
+//
+// snapshotUIDs returns the cached map itself, and a scan holds it while it
+// works -- holding no folder lock since #1626. A delivery writing into that
+// same map under the lock is still a concurrent write to a map somebody is
+// reading, which the detector reports and a plain run cannot see at all.
+//
+// The uidlist has to exist first: with no file, readUIDList builds a map it
+// never caches, nothing is shared, and the test passes without proving
+// anything -- which is how the first version of it read.
+func TestTheCachedUIDMapIsNotWrittenIntoAfterItEscapes(t *testing.T) {
+	box, _ := batchBox(t)
+	body := "From: a@b\r\n\r\nx\r\n"
+	if _, _, _, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := box.readUIDList("INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) == 0 {
+		t.Fatal("the uidlist is empty, so the map is not the cached one and this proves nothing")
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 300; i++ {
+			_, _, _, _ = box.Save("INBOX", strings.NewReader(body), uint32(i+2), int64(len(body)), nil, [16]byte{})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 300; i++ {
+			for k := range m {
+				_ = m[k]
+			}
+		}
+	}()
+	wg.Wait()
+}

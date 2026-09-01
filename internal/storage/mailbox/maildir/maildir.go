@@ -127,7 +127,8 @@ type folderCache struct {
 	dirMtime time.Time
 }
 
-// snapshotUIDs returns the cached maps when the uidlist has not moved.
+// snapshotUIDs returns the cached map when the uidlist has not moved. The map
+// escapes the lock, so nothing may write into it afterwards -- see addUID.
 func (c *folderCache) snapshotUIDs(mtime time.Time, size int64) (map[string]uint32, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -153,18 +154,26 @@ func (c *folderCache) guidOf(base string) ([16]byte, bool) {
 	return g, ok
 }
 
+// addUID records one message, replacing the maps rather than writing into them:
+// snapshotUIDs hands its map out, and a scan holds it while it works, holding
+// no folder lock since #1626. One copy per delivery leaves every reader with a
+// map nobody can touch.
 func (c *folderCache) addUID(base string, uid uint32, guid [16]byte, hasGUID bool, mtime time.Time, size int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.uidMap == nil {
-		c.uidMap = make(map[string]uint32)
+	uids := make(map[string]uint32, len(c.uidMap)+1)
+	for k, v := range c.uidMap {
+		uids[k] = v
 	}
-	c.uidMap[base] = uid
+	uids[base] = uid
+	c.uidMap = uids
 	if hasGUID {
-		if c.guidMap == nil {
-			c.guidMap = make(map[string][16]byte)
+		guids := make(map[string][16]byte, len(c.guidMap)+1)
+		for k, v := range c.guidMap {
+			guids[k] = v
 		}
-		c.guidMap[base] = guid
+		guids[base] = guid
+		c.guidMap = guids
 	}
 	c.uidMtime, c.uidSize = mtime, size
 }
