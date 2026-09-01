@@ -185,6 +185,15 @@ jobs:
           set -o pipefail
           go test -v ./... 2>&1 | tee /tmp/test-output.log | go-junit-report -set-exit-code > /tmp/test-results.xml
 
+      ## Storage and IMAP under the race detector. Not the whole tree: these are
+      ## the packages where a handle is shared between goroutines, and the plain
+      ## run above cannot see a data race at all -- a test asserting that a
+      ## cache is safe passed for a day while the fields inside it were
+      ## unguarded (#1626). Half a minute of runner time buys the only check
+      ## that can fail on it.
+      - name: Run storage and IMAP tests under the race detector
+        run: go test -race -count=1 ./internal/storage/... ./internal/imap/...
+
       ## The flatcurve FTS engine is cgo + libxapian and only builds with the
       ## "flatcurve" tag; the runner installs libxapian-dev / g++ on demand.
       ## CGO_ENABLED=1 is explicit: without a C toolchain Go silently drops
