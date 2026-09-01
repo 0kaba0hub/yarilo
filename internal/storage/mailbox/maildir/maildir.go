@@ -112,13 +112,84 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 }
 
 // folderCache holds mtime-validated in-memory state for one maildir folder.
+// folderCache is one folder's cached view of its uidlist and directory. Its own
+// mutex, not the handle's: the reconcile's scan reaches it holding no mailbox
+// lock since #1626, and guarding only the lookup in the map left every field
+// inside it unguarded -- which the race detector finds as soon as a delivery
+// moves the uidlist while a scan reads it.
 type folderCache struct {
+	mu       sync.Mutex
 	uidMap   map[string]uint32
 	guidMap  map[string][16]byte // explicit GUID overrides; empty for name-derived GUIDs
 	uidMtime time.Time
 	uidSize  int64
 	entries  []os.DirEntry
 	dirMtime time.Time
+}
+
+// snapshotUIDs returns the cached maps when the uidlist has not moved.
+func (c *folderCache) snapshotUIDs(mtime time.Time, size int64) (map[string]uint32, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.uidMap != nil && mtime.Equal(c.uidMtime) && size == c.uidSize {
+		return c.uidMap, true
+	}
+	return nil, false
+}
+
+func (c *folderCache) storeUIDs(m map[string]uint32, guids map[string][16]byte, mtime time.Time, size int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.uidMap, c.guidMap, c.uidMtime, c.uidSize = m, guids, mtime, size
+}
+
+func (c *folderCache) guidOf(base string) ([16]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.guidMap == nil {
+		return [16]byte{}, false
+	}
+	g, ok := c.guidMap[base]
+	return g, ok
+}
+
+func (c *folderCache) addUID(base string, uid uint32, guid [16]byte, hasGUID bool, mtime time.Time, size int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.uidMap == nil {
+		c.uidMap = make(map[string]uint32)
+	}
+	c.uidMap[base] = uid
+	if hasGUID {
+		if c.guidMap == nil {
+			c.guidMap = make(map[string][16]byte)
+		}
+		c.guidMap[base] = guid
+	}
+	c.uidMtime, c.uidSize = mtime, size
+}
+
+// dirEntries returns the cached directory listing when the directory has not
+// moved, and otherwise records the one the caller read.
+func (c *folderCache) dirEntries(mtime time.Time) ([]os.DirEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries != nil && mtime.Equal(c.dirMtime) {
+		return c.entries, true
+	}
+	return nil, false
+}
+
+func (c *folderCache) storeDirEntries(entries []os.DirEntry, mtime time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries, c.dirMtime = entries, mtime
+}
+
+func (c *folderCache) invalidateDir() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = nil
 }
 
 // userMailbox is a per-session, per-user Maildir storage handle.
@@ -482,7 +553,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 			os.Remove(tmpPath)
 			return fmt.Errorf("maildir: rename to cur: %w", err)
 		}
-		u.folderCacheFor(folder).entries = nil
+		u.folderCacheFor(folder).invalidateDir()
 		if uid != 0 || override {
 			if err := u.appendUIDListLocked(folder, uid, finalName, override, effGUID); err != nil {
 				_ = os.Remove(dstPath)
@@ -533,8 +604,8 @@ func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte)
 		if err := os.Rename(srcPath, dstPath); err != nil {
 			return fmt.Errorf("maildir: move rename: %w", err)
 		}
-		u.folderCacheFor(srcFolder).entries = nil
-		u.folderCacheFor(dstFolder).entries = nil
+		u.folderCacheFor(srcFolder).invalidateDir()
+		u.folderCacheFor(dstFolder).invalidateDir()
 		if override {
 			if err := u.appendUIDListLocked(dstFolder, 0, newName, true, outGUID); err != nil {
 				return fmt.Errorf("maildir: move uidlist: %w", err)
@@ -579,19 +650,7 @@ func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename st
 
 	// Update the cache inline so the next readUIDList skips the file.
 	if fi, statErr := f.Stat(); statErr == nil {
-		c := u.folderCacheFor(folder)
-		if c.uidMap == nil {
-			c.uidMap = make(map[string]uint32)
-		}
-		c.uidMap[maildirBase(filename)] = uid
-		if guidOverride {
-			if c.guidMap == nil {
-				c.guidMap = make(map[string][16]byte)
-			}
-			c.guidMap[maildirBase(filename)] = guid
-		}
-		c.uidMtime = fi.ModTime()
-		c.uidSize = fi.Size()
+		u.folderCacheFor(folder).addUID(maildirBase(filename), uid, guid, guidOverride, fi.ModTime(), fi.Size())
 	}
 	return nil
 }
@@ -633,7 +692,7 @@ func (u *userMailbox) Remove(folder, filename string) error {
 	if err != nil {
 		return err
 	}
-	u.folderCacheFor(folder).entries = nil
+	u.folderCacheFor(folder).invalidateDir()
 	return nil
 }
 
@@ -649,17 +708,14 @@ func (u *userMailbox) List(folder string) ([]*mailbox.MessageMeta, error) {
 	}
 
 	c := u.folderCacheFor(folder)
-	var entries []os.DirEntry
-	if c.entries != nil && dirFi.ModTime().Equal(c.dirMtime) {
-		entries = c.entries
-	} else {
+	entries, cached := c.dirEntries(dirFi.ModTime())
+	if !cached {
 		var err error
 		entries, err = os.ReadDir(dir)
 		if err != nil {
 			return nil, err
 		}
-		c.entries = entries
-		c.dirMtime = dirFi.ModTime()
+		c.storeDirEntries(entries, dirFi.ModTime())
 	}
 
 	uidMap, err := u.readUIDList(folder)
@@ -824,10 +880,8 @@ func (u *userMailbox) ProactiveScan() bool { return true }
 // guidFor returns the message GUID for a stored file: the explicit uidlist
 // override when one exists, else the name-derived value. Never zero.
 func (u *userMailbox) guidFor(folder, filename string) [16]byte {
-	if c := u.folderCacheFor(folder); c != nil && c.guidMap != nil {
-		if g, ok := c.guidMap[maildirBase(filename)]; ok {
-			return g
-		}
+	if g, ok := u.folderCacheFor(folder).guidOf(maildirBase(filename)); ok {
+		return g
 	}
 	return guidFromBase(filename)
 }
@@ -1195,9 +1249,8 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 		return nil, statErr
 	}
 
-	if c := u.folderCacheFor(folder); c.uidMap != nil &&
-		fi.ModTime().Equal(c.uidMtime) && fi.Size() == c.uidSize {
-		return c.uidMap, nil
+	if m, ok := u.folderCacheFor(folder).snapshotUIDs(fi.ModTime(), fi.Size()); ok {
+		return m, nil
 	}
 
 	f, err := os.Open(path)
@@ -1256,16 +1309,10 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 		return nil, err
 	}
 
-	c := u.folderCacheFor(folder)
-	c.uidMap = m
-	c.guidMap = guids
-	c.uidMtime = fi.ModTime()
-	c.uidSize = fi.Size()
+	u.folderCacheFor(folder).storeUIDs(m, guids, fi.ModTime(), fi.Size())
 	return m, nil
 }
 
-// folderCacheFor returns the folderCache for folder, creating it if needed.
-// Caller must hold u.mu or ensure single-goroutine access.
 // folderCacheFor returns this folder's cache entry, creating it if needed.
 // Under the in-process mutex, because the reconcile's scan reaches it holding
 // no mailbox lock (#1626); that mutex is not the cross-process one.

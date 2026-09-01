@@ -3,6 +3,7 @@ package maildir
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -161,16 +162,39 @@ func TestTheLegacyUIDListMigrationToleratesLosingTheRace(t *testing.T) {
 
 // The folder cache is reached from the scan, which holds no mailbox lock since
 // #1626. Two goroutines on one handle must not race it.
+//
+// Scanning alone is not enough to show it: with the directory unchanged every
+// scan takes the cached slice and only reads. The writes happen when the
+// directory moves under them, so the test keeps delivering while it scans --
+// otherwise it asserts a property nobody exercised.
 func TestTheFolderCacheIsSafeWithoutTheMailboxLock(t *testing.T) {
 	box, _ := batchBox(t)
 	deliverToCur(t, box, "1700000001.M1Pa.host:2,", "From: a@b\r\n\r\nx\r\n")
 
-	var wg sync.WaitGroup
+	done := make(chan struct{})
+	var writer, scanners sync.WaitGroup
+	writer.Add(1)
+	go func() {
+		defer writer.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			// A real save, so the uidlist moves as well as the directory --
+			// that file is what the cache holds, and a writer that only drops
+			// message files never makes the cache write anything.
+			body := "From: a@b\r\n\r\nx\r\n"
+			_, _, _, _ = box.Save("INBOX", strings.NewReader(body), uint32(i+2), int64(len(body)), nil, [16]byte{})
+		}
+	}()
+
 	for i := 0; i < 8; i++ {
-		wg.Add(1)
+		scanners.Add(1)
 		go func() {
-			defer wg.Done()
-			for j := 0; j < 20; j++ {
+			defer scanners.Done()
+			for j := 0; j < 50; j++ {
 				if _, err := box.Scan("INBOX"); err != nil {
 					t.Errorf("scan: %v", err)
 					return
@@ -178,5 +202,7 @@ func TestTheFolderCacheIsSafeWithoutTheMailboxLock(t *testing.T) {
 			}
 		}()
 	}
-	wg.Wait()
+	scanners.Wait()
+	close(done)
+	writer.Wait()
 }
