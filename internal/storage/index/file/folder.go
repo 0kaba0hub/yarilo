@@ -62,10 +62,8 @@ func (u *userIndex) openFolder(folder string, uidValidity uint32, traceID string
 				fsDedup.traceID = traceID
 				fsDedup.mu.Unlock()
 			}
-			// Re-opening what this index already holds: a reload and a
-			// snapshot, which is the same read FolderVSize makes lock-free
-			// since #1635. A folder whose lineage cannot prove freshness falls
-			// back to the locked read inside (#1639).
+			// Re-opening what this index holds: the lock-free read FolderVSize
+			// makes, with the locked one as its own fallback (#1639).
 			var snap *mailbox.Folder
 			err := u.withFolderROUnlocked(id, func(fs *folderState) error {
 				var sErr error
