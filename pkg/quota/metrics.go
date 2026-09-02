@@ -15,5 +15,7 @@ var (
 	MetricUsageCount = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "quota_usage_count_total",
 		Help: "Usage counts asked for, by whether the cached answer was still good. A miss walks every folder.",
+		// reason="post-write" has no hit: the delta answers before that call is
+		// reached, so an empty hit series there is the mechanism working (#1637).
 	}, []string{"result", "reason"}) // hit | miss × the caller that asked
 )
