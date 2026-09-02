@@ -24,6 +24,7 @@ func CountUsage(idx FolderVSizer, folders []string, limits Limits) Usage {
 		if _, ignore := limits.EffectiveLimits(name); ignore {
 			continue
 		}
+		MetricFoldersOpened.Inc()
 		f, err := idx.OpenFolder(name, 0)
 		if err != nil {
 			continue
