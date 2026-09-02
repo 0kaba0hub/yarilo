@@ -63,9 +63,8 @@ func (s *session) usageAfterDelta(dBytes, dMessages int64) (quota.Usage, bool) {
 	return u, true
 }
 
-// countUsageFor is countUsage with the caller recorded. Counting walks every
-// folder of the user and takes a lock on each, so which caller does it is the
-// question the totals could not answer (#1634).
+// countUsageFor is countUsage with the caller recorded: counting walks every
+// folder and locks each one, so a total without the caller answers nothing (#1634).
 func (s *session) countUsageFor(reason string, useCache bool) (quota.Usage, error) {
 	if s.box == nil || s.idx == nil {
 		return quota.Usage{}, nil
@@ -169,9 +168,8 @@ func (s *session) captureQuotaSnap() {
 	if len(s.quotaPolicy().Warnings) == 0 {
 		return
 	}
-	// Cached is enough here. This is the "before" side of a warning crossing,
-	// not an enforcement decision, and a fresh walk for it was a second pass
-	// over every folder on a path that had just made one (#1634).
+	// The "before" side of a crossing, not a decision: cached is enough, and a
+	// fresh walk here was a second pass over every folder (#1634).
 	if u, err := s.countUsageFor("warning-baseline", true); err == nil {
 		s.quotaSnap, s.quotaSnapSet = u, true
 	}

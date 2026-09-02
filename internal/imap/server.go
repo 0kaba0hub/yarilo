@@ -766,10 +766,8 @@ func (s *session) emitMailboxChangeSized(f *mailbox.Folder, eventType locks.Even
 		wantClone := s.srv.opts.QuotaClone != nil
 		if wantWarn || wantClone {
 			if !have {
-				// The count before the save left a fresh value, and the delta
-				// above failed only because the size was unknown. Cached is
-				// what the reference uses here too: one count per transaction,
-				// arithmetic inside it (#1634).
+				// The delta above failed only because the size was unknown,
+				// and the pre-save count left a fresh value (#1634).
 				var err error
 				if after, err = s.countUsageFor("post-write", true); err == nil {
 					have = true

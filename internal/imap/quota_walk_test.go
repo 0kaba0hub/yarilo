@@ -17,9 +17,9 @@ import (
 	"github.com/yarilomail/yarilo/pkg/quota"
 )
 
-// startEnforcingServer is the quota-warning harness with save-time enforcement
-// actually on -- the other one leaves QuotaEngine unset, so checkQuota returns
-// before it counts anything and a test of the counting measures nothing.
+// startEnforcingServer is the quota-warning harness with QuotaEngine on: without
+// it checkQuota returns before counting, and a test of the counting measures
+// nothing.
 func startEnforcingServer(t *testing.T, dir string) *imapclient.Client {
 	t.Helper()
 	opts := imapserver.Options{
@@ -66,15 +66,7 @@ func hits(reason string) float64 {
 }
 
 // One save walks the user's folders once, and the warning baseline reads what
-// that walk left rather than making its own.
-//
-// Both walked, one after the other, on paths that run for the same command --
-// and a walk opens every folder and takes a lock on each (#1634). The reference
-// counts once per transaction and does arithmetic inside it (quota.c:736).
-//
-// The baseline is exercised through SELECT, which is where it is seeded: an
-// APPEND alone never calls it, so a test built only on APPEND asserts nothing
-// about it -- the first version of this one passed with the fix removed.
+// that walk left rather than making its own (#1634).
 func TestOneSaveWalksTheFoldersOnce(t *testing.T) {
 	dir := t.TempDir()
 	c := startEnforcingServer(t, dir)
@@ -90,9 +82,8 @@ func TestOneSaveWalksTheFoldersOnce(t *testing.T) {
 	if err := ac.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Close only ends the literal. Without waiting for the tagged response the
-	// counters are read before the server has run the command at all -- which
-	// is how the first version of this test read zero for everything.
+	// Close only ends the literal: without the tagged response the counters are
+	// read before the server has run the command.
 	if _, err := ac.Wait(); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -101,10 +92,8 @@ func TestOneSaveWalksTheFoldersOnce(t *testing.T) {
 		t.Errorf("enforcement walked the folders %v times for one save, want 1", enforce)
 	}
 
-	// Now the baseline, on the path that actually takes it -- an expunge, which
-	// captures the "before" side unconditionally -- with enforcement's value
-	// still fresh. SELECT will not do: it seeds only when no snapshot exists,
-	// and the append just made one.
+	// An expunge, which takes the "before" side unconditionally. SELECT seeds
+	// it only when no snapshot exists, and the append just made one.
 	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -125,8 +114,7 @@ func TestOneSaveWalksTheFoldersOnce(t *testing.T) {
 	}
 }
 
-// And the decision itself is unchanged: a message over the limit is still
-// refused. The saving must not buy speed with a wrong answer at the boundary.
+// The decision is unchanged: a message over the limit is still refused.
 func TestASaveOverTheLimitIsStillRefused(t *testing.T) {
 	dir := t.TempDir()
 	c := startEnforcingServer(t, dir)
