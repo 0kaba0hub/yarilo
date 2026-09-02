@@ -7,23 +7,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// clientBusyRetries counts the times a blocking acquisition found the resource
-// held and slept before trying again.
-//
-// The lock service already counts refusals, but it counts them for the whole
-// deployment: 5.5% of acquisitions there said nothing about which backend paid
-// for them, or which resource. This counter sits where the sleeping happens, so
-// contention is visible next to the acquisition latency it inflates (#1533).
-//
-// A retry is not the same as a failure: the acquisition that follows usually
-// succeeds. What it measures is time spent waiting for somebody else, which is
-// the only part of an acquisition that contention explains.
-//
-// The resource label is the key's own prefix, which the key already carries --
-// no new plumbing, and it answers the question two placement runs could not:
-// 140 622 retries against 161 610 on the two backends while the mdbox map was
-// held entirely by one of them, so whatever is being refused is not the map
-// (#1535).
+// clientBusyRetries counts blocking acquisitions that found the resource held
+// and slept before trying again. Counted here rather than at the service, which
+// counts refusals for the whole deployment and names neither the backend that
+// paid nor the resource (#1533). A retry is not a failure: what it measures is
+// time spent waiting for somebody else. The label is the key's own prefix, so
+// no new plumbing carries it (#1535).
 var clientBusyRetries = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "yarilo_locks_acquire_busy_retries_total",
 	Help: "Blocking lock acquisitions that found the resource held and backed off before retrying, by resource class.",

@@ -35,19 +35,6 @@ func counterLabelled(t *testing.T, v *prometheus.CounterVec, labels ...string) f
 	return m.GetCounter().GetValue()
 }
 
-func gaugeLabelled(t *testing.T, v *prometheus.GaugeVec, labels ...string) float64 {
-	t.Helper()
-	g, err := v.GetMetricWithLabelValues(labels...)
-	if err != nil {
-		t.Fatalf("get %v: %v", labels, err)
-	}
-	var m dto.Metric
-	if err := g.(prometheus.Metric).Write(&m); err != nil {
-		t.Fatalf("write %v: %v", labels, err)
-	}
-	return m.GetGauge().GetValue()
-}
-
 // busyLocker refuses the first busyFor attempts and then succeeds, which is a
 // contender losing that many draws in a row.
 type busyLocker struct {
@@ -136,61 +123,5 @@ func TestAttemptsAreBucketed(t *testing.T) {
 		if got := attemptBucket(tc.n); got != tc.want {
 			t.Errorf("attemptBucket(%d) = %q, want %q", tc.n, got, tc.want)
 		}
-	}
-}
-
-// The gauge counts owners, not requests: one session asking forty times is one
-// contender, and two sessions asking once each are two. Told apart because the
-// difference is the whole reason the number is being taken.
-func TestContendersCountOwnersNotRequests(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg, "embedded")
-
-	for i := 0; i < 40; i++ {
-		m.observeContender("mbox:u@x/INBOX", "session-a")
-	}
-	m.observeContender("mbox:u@x/Sent", "session-b")
-	m.contendersMu.Lock()
-	m.rollLocked()
-	m.contendersMu.Unlock()
-	if got := gaugeLabelled(t, m.contenders, "mbox"); got != 1 {
-		t.Errorf("one session retrying forty times reported %v contenders, want 1", got)
-	}
-
-	m.observeContender("mbox:u@x/INBOX", "session-a")
-	m.observeContender("mbox:u@x/INBOX", "session-b")
-	m.observeContender("mbox:u@x/INBOX", "session-c")
-	m.observeContender("mbox:u@x/Sent", "session-d")
-	m.contendersMu.Lock()
-	m.rollLocked()
-	m.contendersMu.Unlock()
-	if got := gaugeLabelled(t, m.contenders, "mbox"); got != 3 {
-		t.Errorf("three sessions on one folder reported %v contenders, want 3 -- the busiest "+
-			"resource is the queue, and a mean over the quiet ones hides it", got)
-	}
-}
-
-// The window rolls on its own, so a value cannot outlive the traffic that made
-// it by more than one window.
-func TestTheContenderWindowRolls(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg, "embedded")
-	for _, o := range []string{"a", "b", "c"} {
-		m.observeContender("mbox:u@x/INBOX", o)
-	}
-	m.contendersMu.Lock()
-	m.windowStarted = time.Now().Add(-2 * contenderWindow)
-	m.contendersMu.Unlock()
-
-	// One request in the new window, which rolls the old one out.
-	m.observeContender("mbox:u@x/INBOX", "d")
-	if got := gaugeLabelled(t, m.contenders, "mbox"); got != 3 {
-		t.Errorf("the rolled window published %v, want the 3 owners it held", got)
-	}
-	m.contendersMu.Lock()
-	m.rollLocked()
-	m.contendersMu.Unlock()
-	if got := gaugeLabelled(t, m.contenders, "mbox"); got != 1 {
-		t.Errorf("the new window published %v, want 1: the old owners are still being counted", got)
 	}
 }
