@@ -170,6 +170,7 @@ func (s *Server) handleLock(ctx context.Context, w io.Writer, fields []string, p
 		_ = writeFields(w, respError, "bad_ttl")
 		return
 	}
+	s.metrics.observeContender(resource, owner)
 	start := time.Now()
 	id, current, err := s.backend.Acquire(ctx, resource, owner, ttl)
 	dur := time.Since(start).Seconds()
@@ -201,6 +202,7 @@ func (s *Server) handleLockShared(ctx context.Context, w io.Writer, fields []str
 		_ = writeFields(w, respError, "bad_ttl")
 		return
 	}
+	s.metrics.observeContender(resource, owner)
 	start := time.Now()
 	id, current, err := s.backend.AcquireShared(ctx, resource, owner, ttl)
 	dur := time.Since(start).Seconds()
