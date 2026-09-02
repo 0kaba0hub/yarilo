@@ -63,15 +63,18 @@ func (s *session) usageAfterDelta(dBytes, dMessages int64) (quota.Usage, bool) {
 	return u, true
 }
 
-func (s *session) countUsage(useCache bool) (quota.Usage, error) {
+// countUsageFor is countUsage with the caller recorded. Counting walks every
+// folder of the user and takes a lock on each, so which caller does it is the
+// question the totals could not answer (#1634).
+func (s *session) countUsageFor(reason string, useCache bool) (quota.Usage, error) {
 	if s.box == nil || s.idx == nil {
 		return quota.Usage{}, nil
 	}
 	if useCache && !s.quotaCacheAt.IsZero() && time.Since(s.quotaCacheAt) < quotaCacheTTL {
-		quota.MetricUsageCount.WithLabelValues("hit").Inc()
+		quota.MetricUsageCount.WithLabelValues("hit", reason).Inc()
 		return s.quotaCacheUsage, nil
 	}
-	quota.MetricUsageCount.WithLabelValues("miss").Inc()
+	quota.MetricUsageCount.WithLabelValues("miss", reason).Inc()
 	entries, err := s.box.ListFolders()
 	if err != nil {
 		return quota.Usage{}, err
@@ -166,7 +169,10 @@ func (s *session) captureQuotaSnap() {
 	if len(s.quotaPolicy().Warnings) == 0 {
 		return
 	}
-	if u, err := s.countUsage(false); err == nil {
+	// Cached is enough here. This is the "before" side of a warning crossing,
+	// not an enforcement decision, and a fresh walk for it was a second pass
+	// over every folder on a path that had just made one (#1634).
+	if u, err := s.countUsageFor("warning-baseline", true); err == nil {
 		s.quotaSnap, s.quotaSnapSet = u, true
 	}
 }
@@ -241,7 +247,7 @@ func (s *session) GetQuotaRoot(mailbox string) (*imaplib.QuotaRootData, error) {
 	if !s.quotaExtensionEnabled() {
 		return &imaplib.QuotaRootData{Mailbox: mailbox}, nil
 	}
-	u, err := s.countUsage(true)
+	u, err := s.countUsageFor("getquota", true)
 	if err != nil {
 		slog.Warn("imap: quota get failed", "user", s.userInfo.Username, "err", err)
 		return &imaplib.QuotaRootData{Mailbox: mailbox}, nil
@@ -266,7 +272,7 @@ func (s *session) GetQuota(root string) (*imaplib.QuotaData, error) {
 		qd := imaplib.QuotaData{Name: root}
 		return &qd, nil
 	}
-	u, err := s.countUsage(true)
+	u, err := s.countUsageFor("getquota", true)
 	if err != nil {
 		slog.Warn("imap: quota get failed", "user", s.userInfo.Username, "err", err)
 		qd := imaplib.QuotaData{Name: root}
@@ -335,7 +341,8 @@ func (s *session) quotaCheckAppend(_ context.Context, folder string, bytes int64
 	if ignore || effLim.Unlimited() {
 		return nil
 	}
-	u, err := s.countUsage(false)
+	// Enforcement counts for real: this decides whether a save is refused.
+	u, err := s.countUsageFor("enforce", false)
 	if err != nil {
 		return nil // fail-open: don't block on a transient index read error
 	}
