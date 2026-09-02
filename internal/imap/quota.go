@@ -68,8 +68,10 @@ func (s *session) countUsage(useCache bool) (quota.Usage, error) {
 		return quota.Usage{}, nil
 	}
 	if useCache && !s.quotaCacheAt.IsZero() && time.Since(s.quotaCacheAt) < quotaCacheTTL {
+		quota.MetricUsageCount.WithLabelValues("hit").Inc()
 		return s.quotaCacheUsage, nil
 	}
+	quota.MetricUsageCount.WithLabelValues("miss").Inc()
 	entries, err := s.box.ListFolders()
 	if err != nil {
 		return quota.Usage{}, err

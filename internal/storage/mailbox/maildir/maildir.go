@@ -240,7 +240,10 @@ func makeOwner(u *mailbox.UserInfo) string {
 
 // withMailboxLock runs fn under the in-process mutex, then the cross-process
 // yarilo-locks X lock (only when b.locker is non-nil).
-func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
+// withMailboxLockSite takes the folder's cross-process lock and records which
+// call took it: this driver and the index take the same key, so a total without
+// the caller says nothing about which one to change (#1630).
+func (u *userMailbox) withMailboxLockSite(folder, site string, fn func() error) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.b.locker == nil {
@@ -259,6 +262,7 @@ func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
 	if err != nil {
 		return fmt.Errorf("maildir/lock %s: %w", folder, err)
 	}
+	metricLockAcquired.WithLabelValues(site).Inc()
 	defer func() { _ = u.b.locker.Unlock(ctx, lk.ID) }()
 	return fn()
 }
@@ -382,7 +386,7 @@ func (u *userMailbox) Create(folder string) error {
 	if err := u.checkName(folder); err != nil {
 		return err
 	}
-	return u.withMailboxLock(folder, func() error {
+	return u.withMailboxLockSite(folder, lockSiteCreate, func() error {
 		base := u.folderPath(folder)
 		for _, sub := range []string{"cur", "new", "tmp"} {
 			if err := os.MkdirAll(filepath.Join(base, sub), 0o700); err != nil {
@@ -399,7 +403,7 @@ func (u *userMailbox) Delete(folder string) error {
 	if err := u.checkName(folder); err != nil {
 		return err
 	}
-	return u.withMailboxLock(folder, func() error {
+	return u.withMailboxLockSite(folder, lockSiteDelete, func() error {
 		path := u.folderPath(folder)
 		// Last check before the removal, on the resolved path rather than the
 		// name: whatever was validated above, this must not be the mail root.
@@ -421,7 +425,7 @@ func (u *userMailbox) Rename(oldName, newName string) error {
 	if err := u.checkName(newName); err != nil {
 		return err
 	}
-	return u.withTwoMailboxLocks(oldName, newName, func() error {
+	return u.withTwoMailboxLocks(oldName, newName, lockSiteRename, func() error {
 		from, to := u.folderPath(oldName), u.folderPath(newName)
 		// Either end landing on the root is the same fault: renaming the root
 		// away is as destructive as removing it, and renaming onto it buries
@@ -439,7 +443,7 @@ func (u *userMailbox) Rename(oldName, newName string) error {
 // withTwoMailboxLocks takes both per-folder X locks in lexicographic order.
 // Same ordering as the index side so a Rename rippling through both backends
 // cannot deadlock.
-func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() error) error {
+func (u *userMailbox) withTwoMailboxLocks(folderA, folderB, site string, fn func() error) error {
 	if u.b.locker == nil {
 		return fn()
 	}
@@ -455,6 +459,7 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 		if err != nil {
 			return fmt.Errorf("maildir/lock %s: %w", a, err)
 		}
+		metricLockAcquired.WithLabelValues(site).Inc()
 		defer func() { _ = u.b.locker.Unlock(ctx, lkA.ID) }()
 	}
 	if a == b {
@@ -466,6 +471,7 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB string, fn func() err
 		if err != nil {
 			return fmt.Errorf("maildir/lock %s: %w", b, err)
 		}
+		metricLockAcquired.WithLabelValues(site).Inc()
 		defer func() { _ = u.b.locker.Unlock(ctx, lkB.ID) }()
 	}
 	return fn()
@@ -544,7 +550,7 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 		effGUID = guid
 	}
 
-	if err := u.withMailboxLock(folder, func() error {
+	if err := u.withMailboxLockSite(folder, lockSiteSave, func() error {
 		dstPath := filepath.Join(folderPath, "cur", finalName)
 		if err := os.Rename(tmpPath, dstPath); err != nil {
 			os.Remove(tmpPath)
@@ -578,7 +584,7 @@ func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte)
 	if outGUID == noGUID {
 		outGUID = guidFromBase(filename)
 	}
-	err := u.withTwoMailboxLocks(srcFolder, dstFolder, func() error {
+	err := u.withTwoMailboxLocks(srcFolder, dstFolder, lockSiteMove, func() error {
 		srcPath := filepath.Join(u.folderPath(srcFolder), "cur", filename)
 		dstDir := filepath.Join(u.folderPath(dstFolder), "cur")
 		dstPath := filepath.Join(dstDir, newName)
@@ -955,7 +961,7 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 		movePhaseProbe(movedNew)
 	}
 	if movedNew {
-		if err := u.withMailboxLock(folder.Name, func() error {
+		if err := u.withMailboxLockSite(folder.Name, lockSiteReconcileMove, func() error {
 			return u.moveNewToCurLocked(folder.Name)
 		}); err != nil {
 			return st, err
@@ -982,7 +988,7 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 		return st, nil
 	}
 
-	err = u.withMailboxLock(folder.Name, func() error {
+	err = u.withMailboxLockSite(folder.Name, lockSiteReconcileApply, func() error {
 		u.inSection.Add(1)
 		defer u.inSection.Add(-1)
 		// A store being taken over: its uidlist already names a UID space.
@@ -1428,24 +1434,13 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 // ---- flag helpers ----------------------------------------------------------
 
 // WriteFlags renames a message so its name carries the flags and keywords it
-// now has, and returns the new name.
-//
-// The name is where a maildir keeps this state, which is what makes the store
-// self-describing. Everything else here follows from that:
-//
-//   - the rename is within the same directory, so it is atomic and the message
-//     never has two names or none;
-//   - keyword letters come from the folder's keyword file, and a keyword not
-//     yet in it is added there first -- taking the first free index, never
-//     renumbering one already in use, because a renumber changes what every
-//     existing filename means (maildir-keywords.c takes the first free slot);
-//   - the folder lock is held, as for every write.
-//
-// A name that would not change is left alone and returned as it is: renaming a
-// file to itself is a write nobody asked for.
+// now has, which is where a maildir keeps that state. Within one directory, so
+// the rename is atomic; a new keyword takes the first free letter and never
+// renumbers one in use, since that changes what every existing name means. A
+// name that would not change is returned as it is.
 func (u *userMailbox) WriteFlags(folder, filename string, flags, keywords []string) (string, error) {
 	var newName string
-	err := u.withMailboxLock(folder, func() error {
+	err := u.withMailboxLockSite(folder, lockSiteWriteFlags, func() error {
 		letters, lerr := u.keywordLettersLocked(folder, keywords)
 		if lerr != nil {
 			return lerr
@@ -1469,7 +1464,7 @@ func (u *userMailbox) WriteFlagsMulti(folder string, writes []mailbox.FlagWrite)
 	for i := range writes {
 		out[i] = mailbox.FlagWriteResult{UID: writes[i].UID, Filename: writes[i].Filename}
 	}
-	err := u.withMailboxLock(folder, func() error {
+	err := u.withMailboxLockSite(folder, lockSiteWriteFlagsBulk, func() error {
 		t := u.loadKeywordTableLocked(folder)
 		added := false
 		for i := range writes {
@@ -1543,7 +1538,7 @@ func (u *userMailbox) keywordLetters(folder string, keywords []string) (string, 
 		return "", nil
 	}
 	var letters string
-	err := u.withMailboxLock(folder, func() error {
+	err := u.withMailboxLockSite(folder, lockSiteKeywords, func() error {
 		var lerr error
 		letters, lerr = u.keywordLettersLocked(folder, keywords)
 		return lerr
