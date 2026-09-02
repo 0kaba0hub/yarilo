@@ -15,5 +15,5 @@ var (
 	MetricUsageCount = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "quota_usage_count_total",
 		Help: "Usage counts asked for, by whether the cached answer was still good. A miss walks every folder.",
-	}, []string{"result"}) // hit | miss
+	}, []string{"result", "reason"}) // hit | miss × the caller that asked
 )

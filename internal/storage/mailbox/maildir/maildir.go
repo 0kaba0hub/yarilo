@@ -1728,16 +1728,10 @@ func parseSizeInfo(name string) (phys, virt uint32, hasPhys, hasVirt bool) {
 }
 
 // keywordNames reads the folder's keyword file: the mapping from the letters a
-// maildir filename carries to the names those letters stand for.
-//
-// One line per keyword, "<index> <name>", and the letter is 'a'+index
-// (maildir-keywords.c). Without it a letter means nothing on its own, which is
-// why inventing a name for it -- kw_a -- served a client something the other
-// server never wrote (#1600).
-//
-// A folder with no keyword file has no keywords named anywhere, and a letter
-// found in a filename there stays unresolved rather than becoming a name of our
-// making.
+// maildir filename carries to the names they stand for. One line per keyword,
+// "<index> <name>", the letter being 'a'+index. A letter the file does not name
+// stays unresolved: inventing a name for it served a client something nothing
+// on disk ever said (#1600).
 func (u *userMailbox) keywordNames(folder string) map[byte]string {
 	path := filepath.Join(u.folderPath(folder), keywordsFileName)
 	if keywordFileRead != nil {

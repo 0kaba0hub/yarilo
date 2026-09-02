@@ -766,8 +766,10 @@ func (s *session) emitMailboxChangeSized(f *mailbox.Folder, eventType locks.Even
 		wantClone := s.srv.opts.QuotaClone != nil
 		if wantWarn || wantClone {
 			if !have {
+				// The delta above failed only because the size was unknown,
+				// and the pre-save count left a fresh value (#1634).
 				var err error
-				if after, err = s.countUsage(false); err == nil {
+				if after, err = s.countUsageFor("post-write", true); err == nil {
 					have = true
 				}
 			}
@@ -1145,7 +1147,7 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	// usage at login (unless lazy).
 	s.overStatusLoginAt = time.Now()
 	if os := s.srv.opts.QuotaPolicy.OverStatus; os.Mask != "" && !os.LazyCheck {
-		if u, uerr := s.countUsage(false); uerr == nil {
+		if u, uerr := s.countUsageFor("login-over-status", false); uerr == nil {
 			s.evalOverStatus(u)
 		}
 	}
