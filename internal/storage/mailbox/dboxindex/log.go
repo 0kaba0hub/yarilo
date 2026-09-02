@@ -5,11 +5,8 @@ import (
 	"fmt"
 )
 
-// LogHeader introduces one transaction log file.
-//
-// PrevFileSeq and PrevFileOffset are where the previous file ended, which is
-// how a reader that has to cross a rotation knows what it is looking at. They
-// are zero for the first file.
+// LogHeader introduces one transaction log file; PrevFileSeq/PrevFileOffset are
+// where the previous ended, so a reader can cross a rotation.
 type LogHeader struct {
 	MajorVersion   uint8
 	MinorVersion   uint8
@@ -71,27 +68,22 @@ const (
 	typeKeywordReset  = 0x00000800
 	typeExpungeGUID   = 0x00002000
 
-	// modifyAdd is the modify_type of a keyword update that adds. Zero, from
-	// the reference's own enum -- MODIFY_ADD is the first value and carries no
-	// explicit number, which is exactly how a reader guesses 1 and reads every
-	// addition as a removal.
+	// modifyAdd is the modify_type of a keyword update that adds. Zero, being
+	// first in an enum with no explicit numbers -- guess 1 and every addition
+	// reads as a removal.
 	modifyAdd    = 0
 	modifyRemove = 1
 
 	// typeMask drops the flag bits a type carries.
 	typeMask = 0x0fffffff
-	// expungeProt is ORed into both expunge types. A record without it is a
-	// corrupt log claiming to delete mail, which the reference refuses to
-	// act on and so does this.
+	// expungeProt is ORed into both expunge types: a record without it is a
+	// corrupt log claiming to delete mail, and is not acted on.
 	expungeProt = 0x0000cd90
 )
 
-// decodeSize undoes the packing the reference applies to a record's size.
-//
-// The size is not stored as a number: every byte carries its high bit set, so
-// that no size can be mistaken for the start of a record and a torn write is
-// visible. Returns 0 when the marker bits are absent, which is how the
-// reference detects the end of what was completely written.
+// decodeSize unpacks a record's size, whose every byte carries its high bit set
+// so a torn write is visible. 0 when those bits are absent, which is the end of
+// what was completely written.
 func decodeSize(be uint32) uint32 {
 	if be&0x80808080 != 0x80808080 {
 		return 0
@@ -109,12 +101,8 @@ type Change struct {
 	// Flags is the message's flag byte, for an append.
 	Flags uint8
 
-	// AddFlags and RemoveFlags are the two masks of a flag update. They are
-	// masks and not a value: the reference says so in its own header, and a
-	// reader that treated an update as "set the flags to this" gets the right
-	// answer only for the one case where a caller replaces every flag by
-	// setting RemoveFlags to 0xff -- and the wrong answer for every ordinary
-	// one.
+	// AddFlags and RemoveFlags are masks, not a value: read as "set the flags
+	// to this" only the replace-everything case comes out right.
 	AddFlags, RemoveFlags uint8
 
 	// ExtName and ExtData are the extension and its bytes, for ExtRecordSet.
@@ -125,9 +113,8 @@ type Change struct {
 	// HeaderOffset is where a HeaderField's bytes belong in the base header.
 	HeaderOffset int
 
-	// Keyword is the name a keyword update names. Keywords arrive by name in
-	// the log and as bits in the base, so the two have to be brought together
-	// rather than read separately.
+	// Keyword is the name a keyword update names -- by name in the log, as bits
+	// in the base.
 	Keyword string
 }
 
@@ -142,66 +129,34 @@ const (
 	KeywordAdded
 	KeywordRemoved
 	KeywordsReset
-	// HeaderField carries one span of the index's base header, as a log
-	// record rather than a rewritten base.
-	//
-	// Where next_uid lives after the base was written. A folder whose last
-	// messages were appended and then expunged has a next_uid higher than
-	// anything its records show, and higher than the base knows: the base
-	// predates those appends and the records are gone. Taking max(uid)+1
-	// instead hands the next delivery a uid a client has already seen under
-	// different mail.
+	// HeaderField carries one span of the base header, which is where next_uid
+	// lives after the base was written: appended-then-expunged messages leave
+	// it above anything the records show, and max(uid)+1 reissues a uid.
 	HeaderField
-	//
-	// A message appended in the tail has no record in the base, so everything
-	// about it beyond its uid and flags arrives this way: its keywords, and --
-	// for mdbox -- the map uid that says where its bytes are. A reader that
-	// only understood keyword updates by name would give a freshly delivered
-	// message no keywords, and a reader that looked for the map uid only in
-	// the base would not be able to find its body at all.
+	// ExtRecordSet carries everything about a tail-appended message beyond uid
+	// and flags: its keywords, and for mdbox the map uid its body is at.
 	ExtRecordSet
 )
 
-// appendRecordSize is the width of one record inside an append.
-//
-// Not the index's record size, which is wider: the reference iterates appends
-// as a plain struct mail_index_record, so extensions -- keywords, the map uid,
-// the guid -- arrive as separate records afterwards rather than inside this
-// one. Reading appends at the index's width finds nothing at all, which is what
-// the first version of this reader did.
+// appendRecordSize is the width of one record inside an append -- not the
+// index's wider record size, since extensions follow as their own records.
+// Reading appends at the index's width finds nothing at all.
 const appendRecordSize = 8
 
 // ReadChanges walks a transaction log from offset and returns the changes it
 // carries, in order.
 //
-// base is the extension table of the index this log belongs to. The intros in
-// a log refer to extensions by the id that table holds once they have been
-// introduced by name -- which happens in a file rotation may have removed -- so
-// without it the extension records cannot be attributed and a message appended
-// in the tail comes back with no keywords and no way to find its bytes.
-//
-// Records of other types are skipped by their own size rather than refused.
-// That is not laxness: the log holds keyword updates, extension introductions
-// and modseq bumps that an import does not need, and a reader that stopped at
-// the first one it did not know would read nothing at all.
-//
-// A message may be expunged by more than one record -- the reference writes
-// both a plain and a modseq-carrying expunge for the same uid -- so callers
-// apply these to a set rather than counting them.
+// base names the extensions a log refers to by id, whose intro may sit in a
+// rotated-away file; without it a tail-appended message has no keywords and no
+// way to find its bytes. One uid may be expunged twice: apply to a set.
 func ReadChanges(b []byte, offset int, base []Extension) ([]Change, error) {
 	changes, _, err := ReadChangesAndExtensions(b, offset, base)
 	return changes, err
 }
 
-// ReadChangesAndExtensions is ReadChanges, and also reports the extensions the
-// log itself introduced.
-//
-// Needed when there is no base index to take them from: a folder written but
-// not yet flushed has its whole state in the log, and the extension a message's
-// bytes are found through -- mdbox's map uid -- is named only by the log's own
-// intro records. The extensions come back carrying a name and a width and no
-// position, because a message that exists only in the log has no base record
-// for a position to point into.
+// ReadChangesAndExtensions also reports the extensions the log introduced, for
+// a folder written but not yet flushed whose whole state is in the log. They
+// carry a name and a width and no position: nothing to point into.
 func ReadChangesAndExtensions(b []byte, offset int, base []Extension) ([]Change, []Extension, error) {
 	var out []Change
 	be := binary.BigEndian
@@ -240,11 +195,9 @@ func ReadChangesAndExtensions(b []byte, offset int, base []Extension) ([]Change,
 					Flags: data[i+4],
 				})
 			}
-		// Not exercised by the fixtures, and worth saying so rather than
-		// leaving it to look covered: the reference's own header says to
-		// avoid this type in favour of the guid-carrying one, and a 2.4
-		// store writes only the latter. This branch is here for a log
-		// written by something older, and removing it changes no test.
+		// Not exercised by the fixtures: a current store writes only the
+		// guid-carrying expunge. Here for an older log; removing it changes
+		// no test.
 		case typeExpunge | expungeProt:
 			for i := 0; i+8 <= len(data); i += 8 {
 				first, last := le.Uint32(data[i:]), le.Uint32(data[i+4:])
@@ -256,9 +209,7 @@ func ReadChangesAndExtensions(b []byte, offset int, base []Extension) ([]Change,
 				}
 			}
 		case typeHeaderUpdate:
-			// {offset, size, data}, padded to four bytes. Several updates can
-			// share one record, which is why this walks rather than reading
-			// one and stopping.
+			// {offset, size, data}, padded to four; several share one record.
 			for i := 0; i+4 <= len(data); {
 				off := int(le.Uint16(data[i:]))
 				size := int(le.Uint16(data[i+2:]))
@@ -333,9 +284,8 @@ func ReadChangesAndExtensions(b []byte, offset int, base []Extension) ([]Change,
 				}
 				add, remove := data[i+8], data[i+9]
 				if add == 0 && remove == 0 {
-					// A modseq-only bump carries neither mask. Skipping it is
-					// not an optimisation: recording it as a change would let
-					// a later reader think the flags moved.
+					// A modseq-only bump carries neither mask; recorded as a
+					// change it would read as flags that moved.
 					continue
 				}
 				for uid := first; uid <= last; uid++ {
@@ -360,10 +310,8 @@ func ReadChangesAndExtensions(b []byte, offset int, base []Extension) ([]Change,
 			case modifyRemove:
 				kind = KeywordRemoved
 			default:
-				// MODIFY_REPLACE, which the reference does not write to the
-				// log for keywords. Refused rather than guessed at: taking it
-				// for either of the other two silently sets or clears a
-				// keyword nobody asked about.
+				// Replace, which is never written for keywords. Refused, not
+				// guessed: either guess changes a keyword nobody asked about.
 				return out, nil, fmt.Errorf("dboxindex: keyword update at %d has modify type %d", pos, data[0])
 			}
 			// The uid ranges begin after the name, aligned to four bytes.
@@ -419,25 +367,10 @@ func keywordsFromMask(mask []byte, names []string) []string {
 	return out
 }
 
-// Apply folds a log's changes onto the base's records and returns the mailbox.
-//
-// keywordNames is the table from the keywords extension of the base, needed
-// because a message appended in the tail carries its keywords as a bitmask over
-// that table rather than by name.
-//
-// Idempotent, and that is a requirement of the format rather than a nicety.
-// The base header carries two offsets: it is synced up to head_offset, but the
-// records between tail_offset and head_offset have not necessarily reached the
-// mailbox, so the reference re-reads from tail when it syncs a file
-// (mail-index-sync-update.c). A reader that starts there sees changes the base
-// has already absorbed, and applying them twice would deliver a message twice.
-//
-// So: an append for a uid the base already carries leaves the base's record
-// alone, and an expunge for a uid nobody has is nothing. Neither is an error --
-// the format expects the overlap.
-//
-// The order is the log's order, because a uid may be appended and expunged
-// within one tail.
+// Apply folds a log's changes onto the base's records; keywordNames is the base
+// table a tail-appended message's bitmask indexes. A sync re-reads from
+// tail_offset and repeats what the base absorbed, so a duplicate append and an
+// unknown expunge are expected, and log order is kept.
 func Apply(base []Record, changes []Change, keywordNames []string) []Record {
 	out := make([]Record, len(base))
 	copy(out, base)
@@ -451,9 +384,8 @@ func Apply(base []Record, changes []Change, keywordNames []string) []Record {
 		switch c.Type {
 		case Appended:
 			if _, have := at[c.UID]; have {
-				// Already in the base: this is the overlap, not a second
-				// message. The base's record is the one that carries the
-				// flags the reference has since applied.
+				// The expected overlap, not a second message; the base's
+				// record carries the flags applied since.
 				delete(gone, c.UID)
 				continue
 			}
@@ -466,14 +398,11 @@ func Apply(base []Record, changes []Change, keywordNames []string) []Record {
 		case FlagsChanged:
 			i, have := at[c.UID]
 			if !have {
-				// A message the base does not carry and this tail did not
-				// append: its flags belong to a mailbox this reader is not
-				// looking at.
+				// Neither in the base nor appended here: another mailbox's.
 				continue
 			}
-			// Masks, in the reference's own order: remove, then add. Reversing
-			// them turns "replace everything with \Seen" -- remove 0xff, add
-			// \Seen -- into a message with no flags at all.
+			// Remove, then add. Reversed, "replace everything with \Seen" --
+			// remove 0xff, add \Seen -- leaves no flags at all.
 			out[i].Flags &^= c.RemoveFlags
 			out[i].Flags |= c.AddFlags
 
@@ -502,8 +431,7 @@ func Apply(base []Record, changes []Change, keywordNames []string) []Record {
 			}
 			out[i].ExtData[c.ExtName] = c.ExtData
 			if c.ExtName == "keywords" && len(keywordNames) > 0 {
-				// Without the names the mask says nothing, and guessing at it
-				// would put somebody else's keyword on the message.
+				// Without the names the mask says nothing.
 				out[i].Keywords = keywordsFromMask(c.ExtData, keywordNames)
 			}
 		}
@@ -558,20 +486,10 @@ type HeaderState struct {
 	NextUID     uint32
 }
 
-// ApplyHeader folds the log onto the base's header values.
-//
-// Neither half is the answer on its own. The base is a snapshot from before the
-// log; the log carries updates to the same fields; and a folder with no base
-// has only the log.
-//
-// next_uid comes from three places, and the largest wins. Two are written down
-// -- the base, and a header update in the log -- and the third is implied: the
-// reference moves next_uid past each appended uid as it applies the append
-// (mail-index-sync-update.c: map->hdr.next_uid = rec->uid+1), rather than
-// journalling the counter. So a message appended and then expunged leaves no
-// record and no header update behind, and still moved the counter. Deriving
-// next_uid from the surviving records instead hands the next delivery a uid
-// some client has already seen carrying different mail.
+// ApplyHeader folds the log onto the base's header values. next_uid is the
+// largest of the base, a header update, and each appended uid plus one: the
+// append moves the counter rather than journalling it, so deriving it from the
+// surviving records reissues a uid.
 func ApplyHeader(base HeaderState, changes []Change) HeaderState {
 	out := base
 	for _, c := range changes {

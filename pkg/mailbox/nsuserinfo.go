@@ -26,8 +26,7 @@ import "fmt"
 // because a consumer left to its own default resolves somewhere else, so a
 // constructor that accepted an empty root would reintroduce the class it is
 // meant to close -- and it would do so from the one place that is supposed to
-// make it impossible. The reference asserts at the same point
-// (mailbox-list.c:132).
+// make it impossible. The reference asserts at the same point.
 func NamespaceUserInfo(base *UserInfo, loc Location, separator string) (*UserInfo, error) {
 	if loc.Path == "" {
 		return nil, fmt.Errorf("mailbox: namespace location has no root path")

@@ -1263,9 +1263,9 @@ func (m *Membership) reconcile() {
 		m.rightCancel = nil
 	}
 	if m.dialConn != nil {
-		// QUIT before the deliberate close (#768, reference parity —
-		// director-connection.c sends QUIT\t<reason> on every intentional
-		// disconnect): the peer we're abandoning is usually OUR old right
+		// QUIT before the deliberate close (#768, reference parity — a QUIT
+		// with a reason goes out on every intentional disconnect): the peer
+		// we're abandoning is usually OUR old right
 		// neighbor, i.e. we are ITS left — without this line our close
 		// looks identical to a silent death and forces it through the
 		// verification-probe path for what is just a re-target.
@@ -2086,8 +2086,7 @@ func (m *Membership) ringPingTimeout() time.Duration  { return m.srv.opts.pingTi
 
 // ringPinger writes a PING line on conn every ring ping interval until the
 // connection dies or ctx ends — the reference PINGs BOTH its neighbor
-// connections (director.c: director_connection_ping(dir->left) +
-// (dir->right)), and both our read loops enforce a read deadline of
+// connections, left and right, and both our read loops enforce a read deadline of
 // interval+timeout, so a silently-hung peer (no RST, no FIN) is detected
 // within one interval+timeout on whichever side notices first, instead of
 // waiting for the OS to eventually surface the dead TCP session.

@@ -5,12 +5,8 @@ import (
 	"fmt"
 )
 
-// MapEntry says where one message's bytes are.
-//
-// FileID names the m.<N> the record sits in, Offset where it starts, and Size
-// how far it runs -- pre and post metadata included. Size 0 means the record is
-// the last in its file and may be any length, which is how the reference stores
-// a message larger than four gigabytes.
+// MapEntry says where one message's bytes are, metadata included. Size 0 is the
+// last record in its file and any length: a message over four gigabytes.
 type MapEntry struct {
 	MapUID   uint32
 	FileID   uint32
@@ -31,40 +27,18 @@ const (
 	mapRecordSize = 12 // file_id, offset, size
 )
 
-// ReadMap reconstructs the mdbox map from a transaction log.
-//
-// base is the extension table of the map's own index, or nil when there is
-// none. It matters after a rotation: the intros in the new log refer to
-// extensions by the id the base holds, having been introduced by name in a file
-// that no longer exists. Without the base those ids resolve to nothing, and the
-// records that follow belong to no extension -- a map that comes back empty
-// with no error at all, which is the worst answer this reader could give.
-//
-// From the log alone, and that is not a shortcut: this store has no
-// dovecot.map.index at all, because the base is only written once enough log
-// has been read since the last rewrite. A map with a base is read the same way
-// with the base's records as the starting point -- the same shape as a folder,
-// and not covered by any fixture we hold.
-//
-// The extension the following records belong to is stated by an ext-intro and
-// holds until the next one, so the records are order-dependent in a way the
-// folder log's appends are not. A reader that ignored the intros would apply
-// the refcount extension's bytes as if they were map records.
+// ReadMap reconstructs the mdbox map from a transaction log alone, which is all
+// a store has until a base is written. base is the map index's extension table:
+// after a rotation the intros carry only ids, and without it the map comes back
+// empty with no error. Records belong to the extension last named.
 func ReadMap(b []byte, offset int, base []Extension) ([]MapEntry, error) {
 	return ReadMapOnto(nil, b, offset, base)
 }
 
-// ReadMapOnto applies a map log to a starting set of entries.
-//
-// The starting set is the base index's own records, and it is not optional
-// whenever a base exists: the log holds what happened after it and, once it
-// rotates, nothing before. A store big enough to have rotated its map log is
-// therefore read as an empty map by anyone who takes the log alone -- and the
-// folder that names one of the lost uids cannot be converted at all, which is
-// what a real store of three thousand messages showed (#1583).
-//
-// The doc above described this as "the same shape as a folder, and not covered
-// by any fixture we hold". It is covered now.
+// ReadMapOnto applies a map log onto the base index's own records, not optional
+// wherever a base exists: once rotated the log holds nothing from before it, so
+// the log alone reads as an empty map and the folders naming the lost uids
+// cannot be converted (#1583).
 func ReadMapOnto(seed []MapEntry, b []byte, offset int, base []Extension) ([]MapEntry, error) {
 	be, le := binary.BigEndian, binary.LittleEndian
 
@@ -75,15 +49,9 @@ func ReadMapOnto(seed []MapEntry, b []byte, offset int, base []Extension) ([]Map
 		entries[e.MapUID] = &cp
 		order = append(order, e.MapUID)
 	}
-	// Which extension the records that follow belong to.
-	//
-	// An intro either names a new extension -- and the index gives it the next
-	// id -- or carries an id and an empty name, meaning one it already knows.
-	// Both forms appear in one log: the map and the ref extensions are
-	// introduced by name once, and every transaction after that refers to them
-	// as 0 and 1. A reader that only understood the named form would attribute
-	// the first record of each and lose the rest, which is what the first
-	// version of this did.
+	// Which extension the records that follow belong to. An intro either names
+	// a new one or carries a known id with an empty name; both forms appear in
+	// one log, so the named form alone loses all but the first record.
 	type known struct {
 		name  string
 		width int
@@ -120,12 +88,9 @@ func ReadMapOnto(seed []MapEntry, b []byte, offset int, base []Extension) ([]Map
 			extID := le.Uint32(data)
 			switch {
 			case name != "":
-				// Re-introducing by name is ordinary -- the reference does it
-				// for the map extension twice in this very log -- and it does
-				// not create a second extension. Appending a slot for each
-				// would shift every id that follows, which is how "ref" once
-				// came back as the map and its two bytes were read as a
-				// twelve-byte record.
+				// A name may be introduced twice in one log and is still one
+				// extension: append a slot per intro and every later id
+				// shifts, which once read "ref" as the map.
 				at := -1
 				for i, k := range registry {
 					if k.name == name {
@@ -142,19 +107,17 @@ func ReadMapOnto(seed []MapEntry, b []byte, offset int, base []Extension) ([]Map
 			case int(extID) < len(registry):
 				k := registry[extID]
 				currentExt = k.name
-				// The intro repeats the width; trust what it says now over
-				// what it said when the extension was introduced, since an
-				// extension can be resized.
+				// The intro repeats the width, and an extension can be
+				// resized: trust it over what the introduction said.
 				if width > 0 {
 					k.width = width
 					registry[extID] = k
 				}
 				currentWidth = k.width
 			default:
-				// An id neither this log nor the base introduced. Refused
-				// rather than skipped: skipping attributes nothing and returns
-				// a map that is silently short, and a short map is a mailbox
-				// whose messages point at nothing.
+				// An id neither this log nor the base introduced. Refused, not
+				// skipped: a silently short map is a mailbox whose messages
+				// point at nothing.
 				return nil, fmt.Errorf("dboxindex/map: ext-intro at %d refers to extension %d, which neither this log nor the index header introduced", pos, extID)
 			}
 
@@ -242,12 +205,9 @@ func ReadMapOnto(seed []MapEntry, b []byte, offset int, base []Extension) ([]Map
 	return out, nil
 }
 
-// ParseMapRecords reads the map entries a map index's base holds.
-//
-// Their map keeps the position in a "map" extension -- file id, offset and size
-// as three little-endian uint32 -- and the reference count in a "ref" one, two
-// bytes wide. Both are read out of each record at the offsets the extension
-// table gives, which is the only place those offsets exist.
+// ParseMapRecords reads the map entries a map index's base holds: position in a
+// "map" extension, refcount in a "ref" one, both at the offsets the extension
+// table gives and nowhere else.
 func ParseMapRecords(raw []byte, h Header, exts []Extension) ([]MapEntry, error) {
 	mapExt, ok := Find(exts, "map")
 	if !ok {

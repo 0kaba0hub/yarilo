@@ -6,13 +6,8 @@ import (
 )
 
 // Extension is one named area the index adds to every record, and optionally to
-// the header.
-//
-// Where a field lives is not a constant anywhere: RecordOffset and RecordSize
-// say where this extension sits inside a record, and they move as extensions
-// are added and removed. Reading a map uid or a guid at a hardcoded offset
-// works until the store gains an extension, and then reads somebody else's
-// bytes without complaining.
+// the header. Offsets move as extensions are added, so a hardcoded one reads
+// somebody else's bytes without complaining.
 type Extension struct {
 	Name         string
 	HeaderSize   uint32
@@ -21,8 +16,7 @@ type Extension struct {
 	RecordSize   uint16
 	RecordAlign  uint16
 
-	// HeaderData is the extension's own header, which is where the keyword
-	// names live for the keywords extension.
+	// HeaderData is the extension's own header: for keywords, the name table.
 	HeaderData []byte
 }
 
@@ -33,11 +27,8 @@ const extHeaderSize = 16
 func align8(n uint32) uint32 { return (n + 7) &^ 7 }
 
 // ParseExtensions reads the extension table between the base header and the end
-// of the header area.
-//
-// The entries are walked, not searched: each one carries the size of its own
-// name and header, and the next begins after both, padded. A reader that
-// assumed a fixed stride would find the first extension and garbage after it.
+// of the header area. Walked, not indexed: each entry carries its own name and
+// header size, so there is no fixed stride to assume.
 func ParseExtensions(b []byte, h Header) ([]Extension, error) {
 	if uint32(len(b)) < h.HeaderSize {
 		return nil, fmt.Errorf("dboxindex: header says %d bytes and the file is %d", h.HeaderSize, len(b))
@@ -110,11 +101,8 @@ func FieldIn(rec []byte, e Extension) ([]byte, bool) {
 	return rec[e.RecordOffset:end], true
 }
 
-// KeywordNames reads the keyword table out of the keywords extension's header.
-//
-// The names live once, in the header; a record carries only a bitmask, one bit
-// per name in this order. So a keyword cannot be read from a record alone, and
-// the two have to be read together or not at all.
+// KeywordNames reads the keyword table out of the keywords extension's header,
+// which a record's bitmask indexes and neither can be read without.
 func KeywordNames(e Extension) ([]string, error) {
 	b := e.HeaderData
 	if len(b) < 4 {
@@ -153,11 +141,9 @@ func indexByte(b []byte, c byte) int {
 	return -1
 }
 
-// KeywordsOf returns the keywords set on one record.
-//
-// The mask is little-endian bits over the name list: bit n of byte m is name
-// m*8+n. A record whose extension is absent has none, which is not an error --
-// a mailbox that never had a keyword carries no keyword extension at all.
+// KeywordsOf returns the keywords set on one record: bit n of byte m is name
+// m*8+n. An absent extension is no error -- a mailbox that never had a keyword
+// carries none.
 func KeywordsOf(rec []byte, e Extension, names []string) []string {
 	mask, ok := FieldIn(rec, e)
 	if !ok {
