@@ -3,6 +3,7 @@ package locks
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -110,10 +111,21 @@ func TestMemoryBackendSubscribeDropsSlowReceiver(t *testing.T) {
 	// We expect no deadlock and no panic; assertion is just reaching this line.
 }
 
-// fakeClock provides a deterministic time source for TTL tests.
+// fakeClock provides a deterministic time source for TTL tests. Guarded: the
+// sweep goroutine reads it while the test advances it.
 type fakeClock struct {
-	t time.Time
+	mu sync.Mutex
+	t  time.Time
 }
 
-func (c *fakeClock) Now() time.Time          { return c.t }
-func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}

@@ -559,54 +559,54 @@ func (c *Client) Close() error {
 // backoff (1ms → 100ms cap, small jitter) until ctx is cancelled or the lock is
 // taken. Returns the Lock on success, else the last underlying error.
 func Acquire(ctx context.Context, l Locker, resource, owner string, ttl time.Duration) (Lock, error) {
-	backoff := time.Millisecond
-	const maxBackoff = 100 * time.Millisecond
-	for {
-		lock, err := l.Lock(ctx, resource, owner, ttl)
-		if err == nil {
-			return lock, nil
-		}
-		if !errors.Is(err, ErrBusy) {
-			return Lock{}, err
-		}
-		clientBusyRetries.WithLabelValues(resourceClass(resource)).Inc()
-		// Jitter by ±25% so concurrent retriers do not synchronise.
-		jitter := time.Duration(int64(backoff) / 4)
-		wait := backoff - jitter + time.Duration(time.Now().UnixNano()%int64(2*jitter+1))
-		select {
-		case <-ctx.Done():
-			return Lock{}, waitFailure(ctx.Err())
-		case <-time.After(wait):
-		}
-		if backoff < maxBackoff {
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-	}
+	return acquireBlocking(ctx, resource, waitFailure, func() (Lock, error) {
+		return l.Lock(ctx, resource, owner, ttl)
+	})
 }
 
 // AcquireShared is LockShared with blocking semantics, mirroring Acquire. Use
 // it for read-path callers that must block only against an in-flight exclusive
 // writer, not against other concurrent readers.
+//
+// A cancelled wait comes back unwrapped here and wrapped in Acquire: the two
+// have always differed, and this is not the change that makes them agree.
 func AcquireShared(ctx context.Context, l Locker, resource, owner string, ttl time.Duration) (Lock, error) {
+	return acquireBlocking(ctx, resource, func(err error) error { return err }, func() (Lock, error) {
+		return l.LockShared(ctx, resource, owner, ttl)
+	})
+}
+
+// acquireBlocking is the retry loop both blocking acquisitions run, and the one
+// place a contender's whole wait is visible. The counters beside it measure the
+// wait per acquisition rather than per attempt: a contender that lost eight
+// draws in a row is one slow acquisition, and eight rows of a per-attempt
+// histogram say nothing about it (#1640).
+func acquireBlocking(ctx context.Context, resource string, wrapWaitErr func(error) error, try func() (Lock, error)) (Lock, error) {
+	class := resourceClass(resource)
+	started := time.Now()
+	attempts := 0
 	backoff := time.Millisecond
 	const maxBackoff = 100 * time.Millisecond
 	for {
-		lock, err := l.LockShared(ctx, resource, owner, ttl)
+		attempts++
+		lock, err := try()
 		if err == nil {
+			clientAcquireAttempts.WithLabelValues(class).Observe(float64(attempts))
+			clientAcquireWait.WithLabelValues(class).Observe(time.Since(started).Seconds())
 			return lock, nil
 		}
 		if !errors.Is(err, ErrBusy) {
 			return Lock{}, err
 		}
-		clientBusyRetries.WithLabelValues(resourceClass(resource)).Inc()
+		clientBusyRetries.WithLabelValues(class).Inc()
+		// Jitter by ±25% so concurrent retriers do not synchronise.
 		jitter := time.Duration(int64(backoff) / 4)
 		wait := backoff - jitter + time.Duration(time.Now().UnixNano()%int64(2*jitter+1))
 		select {
 		case <-ctx.Done():
-			return Lock{}, ctx.Err()
+			clientGaveUp.WithLabelValues(class, attemptBucket(attempts)).Inc()
+			clientAcquireWait.WithLabelValues(class).Observe(time.Since(started).Seconds())
+			return Lock{}, wrapWaitErr(ctx.Err())
 		case <-time.After(wait):
 		}
 		if backoff < maxBackoff {

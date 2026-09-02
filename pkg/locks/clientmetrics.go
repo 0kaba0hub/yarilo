@@ -61,3 +61,42 @@ func resourceClass(resource string) string {
 	}
 	return prefix
 }
+
+// What a wait costs, measured once per acquisition: clientBusyRetries counts
+// the draws lost, these say what losing them cost (#1640).
+var (
+	clientAcquireWait = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "yarilo_locks_acquire_wait_seconds",
+		Help:    "Time from the first attempt at a blocking acquisition to the lock being taken or the wait being abandoned, by resource class. One observation per acquisition, not per attempt.",
+		Buckets: prometheus.ExponentialBuckets(0.001, 3, 11), // 1ms … ~59s
+	}, []string{"resource"})
+	clientAcquireAttempts = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "yarilo_locks_acquire_attempts",
+		Help:    "Attempts a blocking acquisition made before the lock was taken, by resource class. 1 means it was free.",
+		Buckets: []float64{1, 2, 4, 8, 16, 32, 64, 128, 256},
+	}, []string{"resource"})
+	clientGaveUp = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "yarilo_locks_acquire_gave_up_total",
+		Help: "Blocking acquisitions abandoned because the caller's deadline passed, by resource class and by how many attempts they had made. These are the stalls, counted where they happen.",
+	}, []string{"resource", "attempts"})
+)
+
+// attemptBucket names a range: an unbounded attempt count on a label would make
+// one series per contender.
+func attemptBucket(n int) string {
+	switch {
+	case n <= 1:
+		return "1"
+	case n <= 3:
+		return "2-3"
+	case n <= 7:
+		return "4-7"
+	case n <= 15:
+		return "8-15"
+	case n <= 31:
+		return "16-31"
+	case n <= 63:
+		return "32-63"
+	}
+	return "64+"
+}
