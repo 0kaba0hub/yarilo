@@ -1019,10 +1019,11 @@ func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error
 }
 
 // FolderVSize returns the folder's aggregate virtual size and message count
-// from the hdr-vsize cache (kept authoritative via recalcVsizeLocked on load
-// and flush). The index-derived source of truth the count quota backend sums.
+// from the hdr-vsize cache, which is what the count quota backend sums. A read,
+// taken as one: through the write path it cost an exclusive lock per folder,
+// for every folder, before every save (#1634).
 func (u *userIndex) FolderVSize(folderID uint64) (bytes uint64, messages uint32, err error) {
-	err = u.withFolder(folderID, func(fs *folderState) error {
+	err = u.withFolderROUnlocked(folderID, func(fs *folderState) error {
 		bytes = fs.vsize.Vsize
 		messages = fs.vsize.MessageCount
 		return nil
