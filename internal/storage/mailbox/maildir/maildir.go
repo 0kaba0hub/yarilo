@@ -240,13 +240,9 @@ func makeOwner(u *mailbox.UserInfo) string {
 
 // withMailboxLock runs fn under the in-process mutex, then the cross-process
 // yarilo-locks X lock (only when b.locker is non-nil).
-func (u *userMailbox) withMailboxLock(folder string, fn func() error) error {
-	return u.withMailboxLockSite(folder, lockSiteSave, fn)
-}
-
-// withMailboxLockSite is withMailboxLock with the reason recorded. The reason is
-// the point: the same key is taken by this driver and by the index, and a total
-// without it says nothing about which one to change (#1630).
+// withMailboxLockSite takes the folder's cross-process lock and records which
+// call took it: this driver and the index take the same key, so a total without
+// the caller says nothing about which one to change (#1630).
 func (u *userMailbox) withMailboxLockSite(folder, site string, fn func() error) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -1438,21 +1434,10 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 // ---- flag helpers ----------------------------------------------------------
 
 // WriteFlags renames a message so its name carries the flags and keywords it
-// now has, and returns the new name.
-//
-// The name is where a maildir keeps this state, which is what makes the store
-// self-describing. Everything else here follows from that:
-//
-//   - the rename is within the same directory, so it is atomic and the message
-//     never has two names or none;
-//   - keyword letters come from the folder's keyword file, and a keyword not
-//     yet in it is added there first -- taking the first free index, never
-//     renumbering one already in use, because a renumber changes what every
-//     existing filename means (maildir-keywords.c takes the first free slot);
-//   - the folder lock is held, as for every write.
-//
-// A name that would not change is left alone and returned as it is: renaming a
-// file to itself is a write nobody asked for.
+// now has, which is where a maildir keeps that state. Within one directory, so
+// the rename is atomic; a new keyword takes the first free letter and never
+// renumbers one in use, since that changes what every existing name means. A
+// name that would not change is returned as it is.
 func (u *userMailbox) WriteFlags(folder, filename string, flags, keywords []string) (string, error) {
 	var newName string
 	err := u.withMailboxLockSite(folder, lockSiteWriteFlags, func() error {

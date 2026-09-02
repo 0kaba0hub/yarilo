@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
