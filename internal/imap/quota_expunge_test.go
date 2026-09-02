@@ -90,20 +90,10 @@ func mirroredMessages(t *testing.T, d dict.Dict) int64 {
 	return n
 }
 
-// The floor: a session that only deletes counts the account once, and every
-// expunge after that is free. Measured, not aspired to -- a field run showed
-// 0.7 counts per session, which is this floor rather than a saving left on the
-// table (#1637).
-//
-// Why one count is irreducible is worth stating, because it is what stops the
-// next reader hunting a saving that does not exist: the delta carries a total
-// forward, and a session that has never counted has no total to carry. The
-// mirror wants an absolute number, and an absolute number without a walk is not
-// a cheaper walk -- there is no such thing.
-//
-// The session doing the deleting is deliberately not the one that wrote: that
-// is the shape with no recent count of its own, and the only one where the
-// first expunge can be seen paying.
+// A session that only deletes counts the account once, and every expunge after
+// that is free. Delete-only on purpose: that is the shape with no recent count
+// of its own to build on. Why the one count is irreducible, and the field
+// measurement behind it: #1638.
 func TestADeleteOnlySessionCountsOnceAndThenNotAtAll(t *testing.T) {
 	dir := t.TempDir()
 	w, _ := startCloningServer(t, dir)
