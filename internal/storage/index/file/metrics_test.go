@@ -380,15 +380,17 @@ func TestEachLockSiteIsReachedFromItsOwnPath(t *testing.T) {
 		t.Error("a write took no exclusive lock")
 	}
 
-	// Opening a folder this handle already has open: the probe that refreshes
-	// the snapshot before handing it back.
+	// Opening a folder this handle already has open takes no lock at all since
+	// #1639: the site is reached by a first open or a repair, which are writes.
+	// Asserted here so the shared series is known to be empty on purpose rather
+	// than by an accident nobody noticed.
 	probeBefore := site("shared", lockSiteOpenProbe)
 	go func() { _, e := ui.OpenFolder("INBOX", 42, ""); done <- e }()
 	if err := <-done; err != nil {
 		t.Fatalf("second open: %v", err)
 	}
-	if site("shared", lockSiteOpenProbe) == probeBefore {
-		t.Error("re-opening a folder took no probe acquisition")
+	if site("shared", lockSiteOpenProbe) != probeBefore {
+		t.Error("re-opening a folder went to the lock service")
 	}
 
 	// A read that is locked on purpose.
