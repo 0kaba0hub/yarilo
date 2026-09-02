@@ -16,7 +16,7 @@ var subsV2Header = []byte("V\t2\n\n")
 
 // Their escape byte, and what follows it. Not a backslash: a level is escaped
 // with 0x01 so that a tab inside a mailbox name cannot be read as the level
-// separator (lib/strescape.c).
+// separator.
 const subsEscape = 0x01
 
 // ReadForeign returns the folder names another implementation's subscription

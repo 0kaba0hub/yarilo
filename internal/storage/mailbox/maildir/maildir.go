@@ -1296,8 +1296,8 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 		}
 		// The key is the base name -- everything before the first ':' -- because
 		// that is what survives a flag change, and because it is what the other
-		// implementation writes: it cuts the name at MAILDIR_INFO_SEP before
-		// recording it (maildir-uidlist.c, the uidlist rewrite). We used to
+		// implementation writes: it cuts the name at the info separator before
+		// recording it. We used to
 		// write the whole name; normalising on read keeps those files working
 		// and leaves one rule over the file instead of two (#1593).
 		m[maildirBase(filename)] = uint32(uid64)

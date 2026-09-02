@@ -59,7 +59,7 @@ func AssignField(info *UserInfo, key, value string) error {
 	case "client_cert_present":
 		info.ClientCertPresent = IsTruthy(value)
 	// The 2.4 names for the same values sit beside ours. Taken from the
-	// reference's own settings table (mail-storage-settings.c), not from the
+	// reference's own settings table, not from the
 	// shape of the other names: mail_index_path, mail_volatile_path,
 	// mail_control_path and mail_alt_path are what it defines. A userdb query
 	// written for 2.4 returns mail_volatile_path / mail_index_path, and the

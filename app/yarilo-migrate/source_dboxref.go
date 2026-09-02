@@ -161,7 +161,7 @@ func (w dboxRefWalker) Walk(home string, visit func(sourceMessage) error) error 
 // folders did not account for.
 //
 // mdbox only. The placement comes from the B trailer key, and only mdbox writes
-// it -- sdbox passes NULL there (sdbox-save.c), because a single-message file
+// it -- sdbox passes nothing there, because a single-message file
 // already sits inside its folder's directory and needs no hint. So a store of
 // that shape has nothing to recover from here, and does not need this branch:
 // its folder is its path.

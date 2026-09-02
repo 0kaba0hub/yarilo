@@ -1,8 +1,6 @@
 // Package dboxindex reads the index files another dbox v2 implementation
-// writes, for the one-shot import in #1524.
-//
-// Read-only and offline: this is for a store whose server has been stopped, not
-// for sharing one with a running instance. Nothing here writes.
+// writes, for the one-shot import in #1524. Read-only and offline: a store
+// whose server has been stopped, never one shared with a running instance.
 package dboxindex
 
 import (
@@ -10,14 +8,8 @@ import (
 	"fmt"
 )
 
-// Header is the part of the base index that says what the file is and how much
-// of the transaction log it already contains.
-//
-// The base is a snapshot, not the state. LogFileSeq and LogFileTailOffset say
-// where the snapshot stops: everything the log holds after that point has still
-// to be applied, and everything before it has been folded in and may since have
-// been rotated away. A reader that takes the base alone is behind; one that
-// takes the log alone has lost whatever rotation removed.
+// Header says what the base index is and how much of the log it holds. Taken
+// alone it is behind; the log alone has lost whatever rotation removed.
 type Header struct {
 	MajorVersion   uint8
 	MinorVersion   uint8
@@ -36,15 +28,12 @@ type Header struct {
 	LogFileHeadOffset uint32
 }
 
-// majorVersion is the format this reader understands. The reference refuses a
-// file whose major version it does not know rather than guessing at it, and so
-// does this: a minor version may add fields, a major one moves them.
+// majorVersion is the format this reader understands: a minor version may add
+// fields, a major one moves them.
 const majorVersion = 7
 
-// minBaseHeader is the smallest header this reader can make sense of. The
-// reference writes 120 bytes today and records the size in the file, so a
-// future version that grows the header is read by taking the fields this one
-// knows and ignoring the rest -- which is what BaseHeaderSize is for.
+// minBaseHeader is the smallest header this reader can make sense of; a longer
+// one is read through BaseHeaderSize and its unknown tail ignored.
 const minBaseHeader = 76
 
 // ParseHeader reads the base index header.
@@ -86,38 +75,27 @@ func ParseHeader(b []byte) (Header, error) {
 	return h, nil
 }
 
-// Record is one message as the base index carries it.
-//
-// Only the two fields every index has. Everything else about a message --
-// keywords, the map uid, the guid, the cached virtual size -- lives in
-// extensions whose position is described by the extension headers, and reading
-// those is a separate piece of work.
+// Record is one message as the base index carries it: the two fields every
+// index has, everything else living in extensions.
 type Record struct {
 	UID   uint32
 	Flags uint8
 
-	// Keywords is filled by the caller from the keywords extension before
-	// changes are applied: the base carries them as a bitmask and the log
-	// names them, so they only become one thing when both have been read.
+	// Keywords is filled by the caller from the keywords extension: the base
+	// carries a bitmask and the log names, one thing only once both are read.
 	Keywords []string
 
-	// ExtData holds extension bytes that arrived in the log rather than in the
-	// base, which is everything about a message appended in the tail.
+	// ExtData holds extension bytes that arrived in the log, not the base.
 	ExtData map[string][]byte
 
-	// Raw is the whole record, so an extension can be read out of it at the
-	// offset its own table entry gives. Kept rather than copied out field by
-	// field: which extensions a store carries is the store's business, and a
-	// reader that decided in advance would have to be changed for every one.
+	// Raw is the whole record: which extensions a store carries is the store's
+	// business, so nothing is copied out in advance.
 	Raw []byte
 }
 
-// ParseRecords reads the base index's record array.
-//
-// This is where an import gets its message list. The transaction logs do not
-// hold it: the appends that created these messages were written to log files
-// that rotation has since deleted, and what the surviving logs carry is only
-// what happened after the base was last written.
+// ParseRecords reads the base index's record array, which is where an import
+// gets its message list: the appends that created them are in log files
+// rotation has since deleted.
 func ParseRecords(b []byte, h Header) ([]Record, error) {
 	start := int(h.HeaderSize)
 	if start > len(b) {

@@ -34,7 +34,7 @@
   "internal/ftsbench": 0.093,
   "internal/ftsservice": 0.217,
   "internal/hostnamewiring": 0.751,
-  "internal/imap": 0.191,
+  "internal/imap": 0.19,
   "internal/imapthread": 0.184,
   "internal/jmap": 0.156,
   "internal/jmaplogin": 0.081,
@@ -50,10 +50,9 @@
   "internal/storage/logrotate": 0.667,
   "internal/storage/mailbox/crlf": 0.258,
   "internal/storage/mailbox/dbox/v1legacy": 0.196,
-  "internal/storage/mailbox/dboxindex": 0.235,
   "internal/storage/mailbox/dboxref": 0.477,
   "internal/storage/mailbox/dboxv2": 0.155,
-  "internal/storage/mailbox/maildir": 0.15,
+  "internal/storage/mailbox/maildir": 0.144,
   "internal/storage/mailbox/mdbox": 0.206,
   "internal/storage/mailbox/mdbox/mdboxmap": 0.242,
   "internal/storage/mailbox/mdbox/v1legacy": 0.119,
@@ -87,6 +86,6 @@
   "pkg/mailbox": 0.309,
   "pkg/mimesalvage": 0.271,
   "pkg/mtls": 0.128,
-  "pkg/quota": 0.127,
+  "pkg/quota": 0.123,
   "pkg/retry": 0.109
 }

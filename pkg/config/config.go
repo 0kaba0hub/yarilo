@@ -1946,7 +1946,7 @@ const (
 // setup the reference expresses as oauth2_openid_configuration_url, and
 // oauth2_mode / oauth2_audience / oauth2_prefer_introspection /
 // oauth2_http_timeout_ms / oauth2_token_expire_grace_seconds have no reference
-// counterpart at all. oauth2_issuers IS a reference key (2.4.4 db-oauth2.c:39)
+// counterpart at all. oauth2_issuers IS a reference key in 2.4.4
 // and belongs to the first group -- corrected here so the comment and the
 // inventory agree, because a classification that drifts reads as permission to
 // change the key.

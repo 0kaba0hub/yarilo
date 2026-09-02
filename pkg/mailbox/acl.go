@@ -607,7 +607,7 @@ func (acl ACL) effectiveMasksSigned(user string, groups []string) (pos, neg Righ
 // the global ACL forming a tier ladder above the local one: a matching global
 // entry REPLACES the local result rather than adding to it, and the local
 // negative mask is reset at the first global match so local negatives cannot
-// undermine a global grant (2.4: acl-rights.c:251-254, acl-api.c:364-369).
+// undermine a global grant, which is the 2.4 behaviour.
 //
 // It used to be `lpos.Add(gpos).Remove(gneg)`, which failed open twice over:
 // global positives added to local ones, and every local negative was discarded
