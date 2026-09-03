@@ -21,17 +21,9 @@ type PurgeStats struct {
 	BytesReclaimed  int64 // total bytes freed from the storage tree
 }
 
-// Purge walks every m.<N> file holding a zero-ref record:
-//   - all records dead: AppendMove expunges them, m.<N> unlinked;
-//   - some live: live records copied into a fresh m.<newFileID>,
-//     AppendMove rewrites map pointers and expunges dead UIDs under
-//     the map X lock, old m.<N> unlinked.
-//
-// map_uid values are preserved across the move, so per-folder
-// indexes keep working with no per-folder I/O.
-//
-// Safe concurrent with Save/Copy on other folders: the map X lock
-// serialises AppendMove against any concurrent AppendBatch.Finish.
+// Purge compacts every m.<N> file holding a zero-ref record: live records are
+// copied to a fresh file, the map is repointed under its lock, the old file is
+// unlinked. map_uids survive, so folder indexes need no I/O.
 func (u *userMailbox) Purge() (PurgeStats, error) {
 	stats := PurgeStats{}
 	m, err := u.openMap()
@@ -112,10 +104,8 @@ func (u *userMailbox) Purge() (PurgeStats, error) {
 	return stats, nil
 }
 
-// compactRecords copies each live record's body from src m.<id> to
-// dst m.<id>, producing the MovedRecord slice AppendMove needs. The
-// original GUID from the dbox trailer is preserved: a fresh GUID
-// would break message identity across purge cycles.
+// compactRecords copies each live record from src to dst, keeping the source
+// GUID -- a fresh one would break identity across purge cycles.
 func (u *userMailbox) compactRecords(srcFileID, dstFileID uint32, live []mdboxmap.MapEntry) ([]mdboxmap.MovedRecord, error) {
 	srcPath := u.mfilePath(srcFileID)
 	src, err := os.Open(srcPath)
@@ -155,10 +145,8 @@ func (u *userMailbox) compactRecords(srcFileID, dstFileID uint32, live []mdboxma
 	return out, nil
 }
 
-// compactRecordsToTier is the tier-aware variant of compactRecords:
-// src and dst paths are supplied directly, allowing cross-tier
-// copies (primary <-> alt). dstFileID becomes the new file_id in
-// the returned MovedRecord slice.
+// compactRecordsToTier is compactRecords with explicit src and dst paths, for
+// a copy across tiers.
 func (u *userMailbox) compactRecordsToTier(srcPath, dstPath string, dstFileID uint32, live []mdboxmap.MapEntry) ([]mdboxmap.MovedRecord, error) {
 	src, err := os.Open(srcPath)
 	if err != nil {
@@ -196,23 +184,16 @@ func (u *userMailbox) compactRecordsToTier(srcPath, dstPath string, dstFileID ui
 	return out, nil
 }
 
-// appendRecordToFile writes a dbox v2 record at end-of-file. guid
-// must be the original GUID from the source trailer, preserved
-// verbatim so message identity survives compaction. The R timestamp
-// is refreshed (last-stored time, not internalDate). Returns the
-// record's start offset.
+// appendRecordToFile writes a record at end of file and returns its offset. guid
+// must be the source's, or identity does not survive compaction.
 func appendRecordToFile(dst *os.File, body []byte, guid [16]byte, origMailbox string) (uint32, error) {
 	pos, err := dst.Seek(0, io.SeekEnd)
 	if err != nil {
 		return 0, err
 	}
-	// File-header line precedes only the first record; later records
-	// start directly at their message header.
-	//
-	// The size is ours without asking: every caller opens the destination
-	// O_CREATE|O_TRUNC, so compaction always writes the header line itself and
-	// the file announces what this binary writes. The save path cannot assume
-	// that -- it appends to files it did not create -- and does read M (#1525).
+	// The header line precedes only the first record. The size is ours without
+	// asking: compaction creates the file and writes the line itself, where the
+	// save path appends to files it did not create and must read M (#1525).
 	rec := buildDboxMessageRecord(body, guid, origMailbox, messageHeaderSize)
 	if pos == 0 {
 		rec = append(buildDboxFileHeader(), rec...)

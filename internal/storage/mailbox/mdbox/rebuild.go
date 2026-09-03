@@ -30,10 +30,8 @@ type parsedTrailer struct {
 	vsize uint32
 }
 
-// scanTrailer reads a dbox v2 metadata trailer at the current reader position.
-// Returns the byte count consumed (magic_post through the terminating blank
-// line) plus the parsed fields. limit caps the scan so a missing terminator on
-// a corrupt file cannot run off the end.
+// scanTrailer reads a metadata trailer and returns the bytes consumed with the
+// parsed fields. limit keeps a missing terminator from running off the end.
 func scanTrailer(r io.Reader, limit uint32) (uint32, parsedTrailer, error) {
 	br := bufio.NewReader(io.LimitReader(r, int64(limit)))
 	// Magic_post: "\n\x01\x03\n" (4 bytes).
@@ -84,15 +82,9 @@ func scanTrailer(r io.Reader, limit uint32) (uint32, parsedTrailer, error) {
 	}
 }
 
-// scanStorage walks every m.<N> file in <home>/mdbox/storage and yields one
-// ScanRecord per stored message. Used by the admin rebuild flow when the map
-// index is corrupt and state must be reconstructed from on-disk bytes.
-//
-// Returned records carry Filename (stringified map_uid if still resolvable
-// through the current map, else empty), Size (body bytes), and GUID +
-// InternalDate from the metadata trailer. Storage is folder-agnostic; the
-// caller pairs the scan output with per-folder fileindex records to know which
-// folder owns each map_uid.
+// scanStorage yields one ScanRecord per stored message across every m.<N> file.
+// Storage knows no folders: the caller pairs the output with per-folder index
+// records to learn which folder owns each map_uid.
 func (u *userMailbox) scanStorage() ([]mailbox.ScanRecord, error) {
 	// Collect fileID -> on-disk path across both tiers. Primary wins when a file
 	// exists in both (a half-finished altmove); an alt-only file is cold-tier
@@ -148,10 +140,8 @@ func (u *userMailbox) scanStorage() ([]mailbox.ScanRecord, error) {
 	var firstErr error // first per-file fault; scan is incomplete once this is set
 	for _, fileID := range fileIDs {
 		recs, serr := u.scanMFileAt(paths[fileID])
-		// Keep whatever this file yielded (the good prefix). Whether the fault was
-		// structural (quarantined tail) or transient I/O, the scan is now an
-		// incomplete view of storage, recorded and surfaced below so a destructive
-		// consumer aborts instead of expunging what could not be read.
+		// Keep the good prefix; the scan is now incomplete, and surfaced so a
+		// destructive consumer aborts instead of expunging what it could not read.
 		if serr != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("m.%d: %w", fileID, serr)
@@ -182,16 +172,9 @@ func (u *userMailbox) scanStorage() ([]mailbox.ScanRecord, error) {
 	return out, nil
 }
 
-// resolveMapFilenames pairs physical scan records with map entries to populate
-// Filename (stringified map_uid). Two strategies, tried in order:
-//
-//  1. GUID match: the trailer GUID against the map entry's GUID (when it carries
-//     one). Robust against offset shifts from partial file corruption.
-//  2. Offset match: fallback for map entries without a stored GUID (records
-//     written before GUID indexing).
-//
-// Records matching neither keep an empty Filename; the rebuild flow treats them
-// as orphaned and rescans per-folder fileindexes.
+// resolveMapFilenames pairs scan records with map entries: by GUID first, which
+// survives an offset shift from partial corruption, then by offset for entries
+// written before GUID indexing. A record matching neither is an orphan.
 func resolveMapFilenames(recs []scanRecord, mapEntries []mdboxmap.MapEntry) {
 	type guidKey = [16]byte
 	guidToUID := make(map[guidKey]uint32, len(mapEntries))
@@ -303,30 +286,16 @@ func scanMFileForAlt(path string) ([]physRecord, error) {
 	return out, nil
 }
 
-// Scan error sentinels, distinguished because a destructive consumer (a
-// per-folder rebuild that expunges records absent from the scan) must handle
-// them differently:
-//
-//   - errScanCorrupt: a structural fault (bad magic, missing LF, unparseable
-//     size, truncation). The bytes are unreadable; records parsed before the bad
-//     offset are still valid and returned, but the tail is lost.
-//   - errScanIO: a transient I/O fault (EIO, ESTALE on NFS). The bytes may be
-//     fine, just unreadable right now. Treating this as "message vanished" would
-//     delete live mail, so it must abort, never quarantine-and-drop.
-//
-// Both bubble up through scanStorage as ErrScanIncomplete so a destructive
-// consumer aborts; the split is preserved in the error chain for diagnostics and
-// a partial-aware storage-wide rebuild.
+// Scan sentinels: errScanCorrupt is unreadable bytes, errScanIO is bytes that
+// may be fine and unreadable now -- taken as "vanished" it deletes live mail.
+// Both surface as ErrScanIncomplete so an expunging consumer aborts.
 var (
 	errScanCorrupt = errors.New("mdbox/scan: corrupt record")
 	errScanIO      = errors.New("mdbox/scan: I/O error")
 
-	// ErrScanIncomplete signals scanStorage could not faithfully enumerate every
-	// stored message (a file was quarantined or unreadable). The returned records
-	// are a best-effort partial set. A consumer that expunges index records absent
-	// from the scan (idxrebuild.RebuildFolder/ExpungeMissing) must treat this as a
-	// hard failure and abort, else it deletes live mail it merely failed to read.
-	// A partial-aware rebuild may use the records together with this signal.
+	// ErrScanIncomplete: not every stored message was enumerated. A consumer
+	// that expunges what the scan did not list must abort, or it deletes live
+	// mail it merely failed to read.
 	ErrScanIncomplete = errors.New("mdbox/scan: incomplete scan")
 )
 
@@ -340,12 +309,9 @@ func scanReadErr(cause error, where string) error {
 	return fmt.Errorf("%w: %s: %w", errScanIO, where, cause)
 }
 
-// scanMFileAt walks one m.<N> file from offset 0 to EOF, parsing each canonical
-// dbox v2 record and emitting a scanRecord per message. A corrupt record cannot
-// be skipped past (its size is what tells us where the next record starts), so
-// the walk stops at the first bad record and returns the good prefix with the
-// classifying error (errScanCorrupt for structural faults, errScanIO for
-// transient I/O). path may point at a primary or an alt-tier m.<N> file.
+// scanMFileAt walks one m.<N> file. A corrupt record cannot be skipped past --
+// its size is what says where the next one starts -- so the walk stops there and
+// returns the good prefix with the classifying error.
 func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -405,11 +371,8 @@ func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
 		rec := scanRecord{
 			scan: mailbox.ScanRecord{
 				Size: uint32(size),
-				// VSize is filled from the trailer's V below, once it is
-				// parsed. The header size is physical, and the two differ for
-				// a record another implementation wrote with bare LF -- which
-				// Fetch now serves as CRLF, so reporting the physical size
-				// would promise fewer octets than go out (#1527).
+				// VSize comes from the trailer's V, not the physical size: a
+				// bare-LF record goes out as CRLF (#1527).
 				VSize: uint32(size),
 			},
 			physicalOffset: pos,
