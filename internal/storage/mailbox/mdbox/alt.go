@@ -20,10 +20,8 @@ type AltMoveQuery struct {
 	// Default (false) moves primary → alt.
 	Reverse bool
 
-	// Mailbox restricts the candidate scan to one folder name. Empty
-	// string means "all folders" (default behaviour).
-	// Currently unused in the storage layer (mdbox is folder-agnostic);
-	// reserved for future per-folder policy.
+	// Mailbox restricts the scan to one folder; empty means all. Unused by
+	// this folder-agnostic driver, reserved for per-folder policy.
 	Mailbox string
 }
 
@@ -40,36 +38,14 @@ type AltMoveStats struct {
 	FilesUnlinked int
 	// BytesMoved is the approximate byte volume relocated.
 	BytesMoved int64
-	// MovedFilenames is the set of Filenames (decimal map_uid strings)
-	// that were physically relocated. The caller uses this to update the
-	// AltTier flag in the fileindex so Fetch can skip primary open()
-	// syscalls for cold-tier messages.
+	// MovedFilenames names what was relocated, so the caller can flag AltTier in
+	// the index and Fetch can skip the primary open.
 	MovedFilenames []string
 }
 
-// AltMove moves messages between primary and alt storage tiers. It:
-//
-//  1. Scans the source-tier storage for m.<N> files.
-//  2. Reads each dbox record's R-field (InternalDate) from the
-//     trailer to apply the Before filter.
-//  3. Collects the eligible map_uids and groups them by source
-//     file_id (so whole files can be evaluated together).
-//  4. For each source file that has at least one eligible record,
-//     rewrites its live records into the destination tier via
-//     compactRecordsToAlt (primary→alt) or compactRecordsFromAlt
-//     (alt→primary), updating the global map atomically.
-//  5. Unlinks the (now empty or fully-moved) source file.
-//
-// Only map_uids whose refcount equals the number of eligible copies
-// found in the source tier are moved — all instances must be marked
-// before physical movement occurs.
-// Because yarilo's Copy() preserves the same map_uid across all
-// folders, a refcount==1 message is always self-consistent and the
-// rule simplifies to: eligibility is per-message, not per-folder.
-//
-// AltMove is idempotent: if the source file is already gone (a
-// previous run moved it), the map lookup will not find records
-// pointing there and the call is a no-op.
+// AltMove rewrites each source file's eligible records into the other tier under
+// the map lock and unlinks the source. Eligibility is per message, since Copy
+// keeps one map_uid across folders. Idempotent.
 func (u *userMailbox) AltMove(q AltMoveQuery) (AltMoveStats, error) {
 	if !u.AltEnabled() {
 		return AltMoveStats{}, fmt.Errorf("mdbox/altmove: alt storage not configured")
@@ -168,11 +144,8 @@ func (u *userMailbox) AltMove(q AltMoveQuery) (AltMoveStats, error) {
 			continue
 		}
 
-		// Partial: only some records move. We need to:
-		// 1. Compact the movers into a new dst file.
-		// 2. Compact the stayers into a new src file (to drop the moved gaps).
-		// 3. Update the map atomically.
-		// 4. Remove the old src file.
+		// Partial: movers into a new dst file, stayers into a new src file, the
+		// map updated atomically, the old src removed.
 		newDstFileID, err := m.AllocFileID()
 		if err != nil {
 			return stats, fmt.Errorf("mdbox/altmove: alloc dst file id: %w", err)
@@ -212,16 +185,9 @@ func (u *userMailbox) AltMove(q AltMoveQuery) (AltMoveStats, error) {
 	return stats, nil
 }
 
-// scanAltCandidates walks every m.<N> file in srcTier, reads each
-// dbox trailer to obtain InternalDate (R field), and returns the
-// map_uids that satisfy the query filter. Only records whose
-// map_uid is still alive in the map (refcount > 0) are returned.
-//
-// The join between physical records and map_uids is done via
-// (fileID, offset): m.RecordsInFile gives the map index for a
-// given file_id; scanMFileForAlt gives the physical layout.
-// Records not found in the map (orphaned) are silently skipped —
-// they will be collected by the next Purge run.
+// scanAltCandidates returns the live map_uids in srcTier whose trailer date
+// satisfies the filter, joining physical records to the map by (fileID, offset).
+// An orphan the map does not know is skipped for the next purge.
 func (u *userMailbox) scanAltCandidates(m *mdboxmap.Map, srcTier string, q AltMoveQuery) ([]altCandidate, error) {
 	entries, err := os.ReadDir(srcTier)
 	if os.IsNotExist(err) {

@@ -8,14 +8,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// preallocateFile reserves size bytes of disk blocks for f up front, so a growing
-// m.<N> lands in contiguous, already-allocated space instead of allocating
-// block-by-block on every append (mdbox_preallocate_space). FALLOC_FL_KEEP_SIZE
-// is mandatory: yarilo derives each record's write offset from the file's logical
-// size (O_APPEND + Stat().Size()), so the fallocate must reserve blocks WITHOUT
-// changing that size — the file still grows from 0 as records are written, just
-// into pre-reserved extents. Best-effort: the caller treats any error as a
-// non-fatal hint.
+// preallocateFile reserves blocks for a growing m.<N> up front. KEEP_SIZE is
+// mandatory: the write offset comes from the file's logical size, so the reserve
+// must not move it. Best effort.
 func preallocateFile(f *os.File, size int64) error {
 	if size <= 0 {
 		return nil
