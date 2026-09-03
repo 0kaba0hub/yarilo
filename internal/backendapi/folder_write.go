@@ -360,7 +360,7 @@ func (s *Server) materialiseFolderACL(bundle *nsBundle, folder string) error {
 		bundle.info.Separator,
 		bundle.info.StorageEscapeChar,
 		bundle.info.Username,
-		"backendapi/folder.create",
+		locks.Owner(bundle.info.Username, bundle.info.LockID()),
 		acl.Policy{},
 		s.opts.Locker,
 	)
@@ -377,7 +377,7 @@ func (s *Server) dropFolderACL(bundle *nsBundle, folder string) error {
 		bundle.info.Separator,
 		bundle.info.StorageEscapeChar,
 		bundle.info.Username,
-		"backendapi/folder.delete",
+		locks.Owner(bundle.info.Username, bundle.info.LockID()),
 		acl.Policy{},
 		s.opts.Locker,
 	)
@@ -394,7 +394,7 @@ func (s *Server) renameFolderACL(bundle *nsBundle, oldFolder, newFolder string) 
 		bundle.info.Separator,
 		bundle.info.StorageEscapeChar,
 		bundle.info.Username,
-		"backendapi/folder.rename",
+		locks.Owner(bundle.info.Username, bundle.info.LockID()),
 		acl.Policy{},
 		s.opts.Locker,
 	)

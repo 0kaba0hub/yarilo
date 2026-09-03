@@ -57,7 +57,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request, id identity) 
 	// closes with the request. Opening up front would fail a whole batch on a
 	// dependency the batch may not use — and Core/echo, which exists to
 	// diagnose exactly that, would be the first casualty.
-	lazy := &lazyStore{storage: s.opts.Storage, user: id.user}
+	lazy := &lazyStore{storage: s.opts.Storage, user: id.user, sessionID: id.sessionID}
 	defer lazy.close()
 
 	resp := jmapcore.Execute(r.Context(), req, s.registry(lazy, id.user), s.opts.Limits)
