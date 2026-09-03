@@ -258,11 +258,14 @@ func (fs *folderState) lockOwner(fallback string) string {
 	return fallback
 }
 
-// stampTrace records this handle's traceID on the folderState so log lines name
-// this session, not whichever opened the folder. No-op when it is empty.
-func (h *userHandle) stampTrace(folderID uint64) {
+// stamped is how a handle reaches the shared index: it records this session's
+// trace id and lock owner on the folder state first, so the log line and the
+// held_by of whatever the call does next name this session rather than
+// whichever one opened the folder. Every folder verb goes through it, so a verb
+// added later cannot quietly announce somebody else's name (#1664).
+func (h *userHandle) stamped(folderID uint64) *userIndex {
 	if h.traceID == "" && h.owner == "" {
-		return
+		return h.ui
 	}
 	h.ui.mu.Lock()
 	fs, ok := h.ui.open[folderID]
@@ -277,6 +280,7 @@ func (h *userHandle) stampTrace(folderID uint64) {
 		}
 		fs.mu.Unlock()
 	}
+	return h.ui
 }
 
 func (h *userHandle) OpenFolder(folder string, uidValidity uint32) (*mailbox.Folder, error) {
@@ -293,113 +297,107 @@ func (h *userHandle) SaveFolder(f *mailbox.Folder) error { return h.ui.SaveFolde
 // AdoptUIDSpace satisfies mailbox.UIDSpaceAdopter, on the handle as well as the
 // index: a capability only on the inner type is one no assertion finds.
 func (h *userHandle) AdoptUIDSpace(folderID uint64, uidValidity, nextUID uint32) error {
-	h.stampTrace(folderID)
-	return h.ui.AdoptUIDSpace(folderID, uidValidity, nextUID)
+	return h.stamped(folderID).AdoptUIDSpace(folderID, uidValidity, nextUID)
 }
 
 func (h *userHandle) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
-	h.stampTrace(folderID)
-	return h.ui.AppendMessage(folderID, m)
+	return h.stamped(folderID).AppendMessage(folderID, m)
 }
 func (h *userHandle) AllocateUID(folderID uint64) (uint32, error) {
-	h.stampTrace(folderID)
-	return h.ui.AllocateUID(folderID)
+	return h.stamped(folderID).AllocateUID(folderID)
 }
 func (h *userHandle) AllocateUIDWithModSeq(folderID uint64) (uint32, uint64, error) {
-	h.stampTrace(folderID)
-	return h.ui.AllocateUIDWithModSeq(folderID)
+	return h.stamped(folderID).AllocateUIDWithModSeq(folderID)
 }
 func (h *userHandle) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) error {
-	h.stampTrace(folderID)
-	return h.ui.AllocateAndAppend(folderID, m)
+	return h.stamped(folderID).AllocateAndAppend(folderID, m)
 }
 func (h *userHandle) UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error {
-	return h.ui.UpdateFlags(folderID, uid, flags, keywords)
+	return h.stamped(folderID).UpdateFlags(folderID, uid, flags, keywords)
 }
 
 func (h *userHandle) AddFlags(folderID uint64, uid uint32, flags, keywords []string) error {
-	return h.ui.AddFlags(folderID, uid, flags, keywords)
+	return h.stamped(folderID).AddFlags(folderID, uid, flags, keywords)
 }
 
 func (h *userHandle) RemoveFlags(folderID uint64, uid uint32, flags, keywords []string) error {
-	return h.ui.RemoveFlags(folderID, uid, flags, keywords)
+	return h.stamped(folderID).RemoveFlags(folderID, uid, flags, keywords)
 }
 
 func (h *userHandle) UpdateFilename(folderID uint64, uid uint32, filename string) error {
-	return h.ui.UpdateFilename(folderID, uid, filename)
+	return h.stamped(folderID).UpdateFilename(folderID, uid, filename)
 }
 
 // UpdateFilenames satisfies mailbox.FilenameWriterMulti. On the handle too:
 // callers hold it, and a method only on *userIndex fails the assertion silently.
 func (h *userHandle) UpdateFilenames(folderID uint64, names map[uint32]string) error {
-	return h.ui.UpdateFilenames(folderID, names)
+	return h.stamped(folderID).UpdateFilenames(folderID, names)
 }
 
 func (h *userHandle) MarkFolderCorrupt(folderID uint64) error {
-	return h.ui.MarkFolderCorrupt(folderID)
+	return h.stamped(folderID).MarkFolderCorrupt(folderID)
 }
 
 func (h *userHandle) ClearFolderCorrupt(folderID uint64) error {
-	return h.ui.ClearFolderCorrupt(folderID)
+	return h.stamped(folderID).ClearFolderCorrupt(folderID)
 }
 func (h *userHandle) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]mailbox.FlagsResult, error) {
-	return h.ui.UpdateFlagsMulti(folderID, updates)
+	return h.stamped(folderID).UpdateFlagsMulti(folderID, updates)
 }
 func (h *userHandle) SetAltTier(folderID uint64, filenames []string, altTier bool) error {
-	return h.ui.SetAltTier(folderID, filenames, altTier)
+	return h.stamped(folderID).SetAltTier(folderID, filenames, altTier)
 }
 func (h *userHandle) GetPOP3UIDLsUnlocked(folderID uint64) (map[uint32]string, error) {
-	return h.ui.GetPOP3UIDLsUnlocked(folderID)
+	return h.stamped(folderID).GetPOP3UIDLsUnlocked(folderID)
 }
 
 func (h *userHandle) VanishedUnlocked(folderID uint64, sinceModSeq uint64) ([]uint32, error) {
-	return h.ui.VanishedUnlocked(folderID, sinceModSeq)
+	return h.stamped(folderID).VanishedUnlocked(folderID, sinceModSeq)
 }
 
 func (h *userHandle) KeywordsUnlocked(folderID uint64) ([]string, error) {
-	return h.ui.KeywordsUnlocked(folderID)
+	return h.stamped(folderID).KeywordsUnlocked(folderID)
 }
 
 func (h *userHandle) GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
-	h.stampTrace(folderID)
-	return h.ui.GetMessagesUnlocked(folderID, uids)
+	return h.stamped(folderID).GetMessagesUnlocked(folderID, uids)
 }
 
 func (h *userHandle) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
-	return h.ui.GetMessages(folderID, uids)
+	return h.stamped(folderID).GetMessages(folderID, uids)
 }
 func (h *userHandle) FolderVSize(folderID uint64) (uint64, uint32, error) {
-	return h.ui.FolderVSize(folderID)
+	return h.stamped(folderID).FolderVSize(folderID)
 }
 func (h *userHandle) RecomputeVSize(folderID uint64) error {
-	return h.ui.RecomputeVSize(folderID)
+	return h.stamped(folderID).RecomputeVSize(folderID)
 }
 func (h *userHandle) GUIDBackfillNeeded(folderID uint64) (bool, error) {
-	return h.ui.GUIDBackfillNeeded(folderID)
+	return h.stamped(folderID).GUIDBackfillNeeded(folderID)
 }
 func (h *userHandle) SetGUIDs(folderID uint64, guids map[uint32][16]byte) error {
-	return h.ui.SetGUIDs(folderID, guids)
+	return h.stamped(folderID).SetGUIDs(folderID, guids)
 }
 func (h *userHandle) ExpungeMessage(folderID uint64, uid uint32) error {
-	return h.ui.ExpungeMessage(folderID, uid)
+	return h.stamped(folderID).ExpungeMessage(folderID, uid)
 }
 func (h *userHandle) NextModSeq(folderID uint64) (uint64, error) {
-	return h.ui.NextModSeq(folderID)
+	return h.stamped(folderID).NextModSeq(folderID)
 }
 func (h *userHandle) Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, error) {
-	return h.ui.Vanished(folderID, sinceModSeq)
+	return h.stamped(folderID).Vanished(folderID, sinceModSeq)
 }
 func (h *userHandle) VanishedGUIDs(folderID uint64, sinceModSeq uint64) ([][16]byte, bool, error) {
-	return h.ui.VanishedGUIDs(folderID, sinceModSeq)
+	return h.stamped(folderID).VanishedGUIDs(folderID, sinceModSeq)
 }
 func (h *userHandle) FolderStamp(folder string) (mailbox.FolderStamp, error) {
 	return h.ui.FolderStamp(folder)
 }
 func (h *userHandle) ExpungeFloor(folderID uint64) (uint64, error) {
-	return h.ui.ExpungeFloor(folderID)
+	return h.stamped(folderID).ExpungeFloor(folderID)
 }
 func (h *userHandle) Keywords(folderID uint64) ([]string, error) {
-	return h.ui.Keywords(folderID)
+	return h.stamped(folderID).Keywords(folderID)
 }
 func (h *userHandle) RenameFolder(oldName, newName string) error {
 	return h.ui.RenameFolder(oldName, newName)
@@ -408,19 +406,19 @@ func (h *userHandle) DeleteFolder(folder string) error {
 	return h.ui.DeleteFolder(folder)
 }
 func (h *userHandle) GetPOP3UIDLs(folderID uint64) (map[uint32]string, error) {
-	return h.ui.GetPOP3UIDLs(folderID)
+	return h.stamped(folderID).GetPOP3UIDLs(folderID)
 }
 func (h *userHandle) SavePOP3UIDLs(folderID uint64, uidls map[uint32]string) error {
-	return h.ui.SavePOP3UIDLs(folderID, uidls)
+	return h.stamped(folderID).SavePOP3UIDLs(folderID, uidls)
 }
 func (h *userHandle) ResetFolder(folderID uint64, records []*mailbox.MessageMeta) ([]uint32, error) {
-	return h.ui.ResetFolder(folderID, records)
+	return h.stamped(folderID).ResetFolder(folderID, records)
 }
 func (h *userHandle) OptimizeIndex(folderID uint64) error {
-	return h.ui.OptimizeIndex(folderID)
+	return h.stamped(folderID).OptimizeIndex(folderID)
 }
 func (h *userHandle) JournalSizes(folderID uint64) (int64, int64, error) {
-	return h.ui.JournalSizes(folderID)
+	return h.stamped(folderID).JournalSizes(folderID)
 }
 
 // Close decrements the session's reference; the last one clears the state and
@@ -1280,35 +1278,30 @@ func debugLog(msg string, kv ...any) { slog.Debug("fileindex: "+msg, kv...) }
 // Cache-pair surface (#1030), forwarded like every other folder verb so the
 // interface assertion in the IMAP layer sees it on the handle sessions hold.
 func (h *userHandle) CachePairIdentity(folderID uint64) (uint32, uint32, bool, error) {
-	h.stampTrace(folderID)
-	return h.ui.CachePairIdentity(folderID)
+	return h.stamped(folderID).CachePairIdentity(folderID)
 }
 
 func (h *userHandle) CachePath(folderID uint64) (string, error) {
-	return h.ui.CachePath(folderID)
+	return h.stamped(folderID).CachePath(folderID)
 }
 
 func (h *userHandle) SetCacheOffsets(folderID uint64, offsets map[uint32]uint32) error {
-	h.stampTrace(folderID)
-	return h.ui.SetCacheOffsets(folderID, offsets)
+	return h.stamped(folderID).SetCacheOffsets(folderID, offsets)
 }
 
 // PurgeCache forwards the cache purge (#1030) like every other folder verb.
 func (h *userHandle) PurgeCache(folderID uint64) (int, int64, error) {
-	h.stampTrace(folderID)
-	return h.ui.PurgeCache(folderID)
+	return h.stamped(folderID).PurgeCache(folderID)
 }
 
 // EnsureCacheExtension forwards the lazy add (#1184).
 func (h *userHandle) EnsureCacheExtension(folderID uint64) (uint32, uint32, error) {
-	h.stampTrace(folderID)
-	return h.ui.EnsureCacheExtension(folderID)
+	return h.stamped(folderID).EnsureCacheExtension(folderID)
 }
 
 // BumpCacheGeneration forwards the generation bump (#1184).
 func (h *userHandle) BumpCacheGeneration(folderID uint64) (uint32, error) {
-	h.stampTrace(folderID)
-	return h.ui.BumpCacheGeneration(folderID)
+	return h.stamped(folderID).BumpCacheGeneration(folderID)
 }
 
 // AdoptForeignNames satisfies mailbox.ForeignNameAdopter. On the handle as well

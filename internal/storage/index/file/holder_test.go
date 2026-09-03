@@ -45,14 +45,17 @@ func TestASecondSessionLocksUnderItsOwnName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A flag write, not an append: STORE is the path the field showed (405 BUSY
+	// on INBOX went through it), and it is one of the verbs that carried no
+	// stamp of its own -- so a future verb that skips the stamp reddens here.
 	before := counterVal(t, metricLockAcquired, "exclusive", lockSiteWrite)
-	if err := second.AppendMessage(g.ID, &mailbox.MessageMeta{UID: 2, Filename: "2", Size: 10}); err != nil {
+	if err := second.UpdateFlags(g.ID, 1, []string{"\\Seen"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// The write has to have gone to the service, or the name it announced was
 	// never sent and this asserts nothing.
 	if got := counterVal(t, metricLockAcquired, "exclusive", lockSiteWrite) - before; got != 1 {
-		t.Fatalf("the second session's append took %v exclusive acquisitions, want 1", got)
+		t.Fatalf("the second session's flag write took %v exclusive acquisitions, want 1", got)
 	}
 
 	shared := backend.users[cacheKey(&mailbox.UserInfo{Username: user, Home: testHome(dir, user)})].ui
@@ -63,7 +66,7 @@ func TestASecondSessionLocksUnderItsOwnName(t *testing.T) {
 	got := fs.lockOwner(shared.owner)
 	want := locks.Owner(user, "session-two")
 	if got != want {
-		t.Errorf("the second session's write announced %q, want %q -- held_by names whoever opened "+
+		t.Errorf("the second session's flag write announced %q, want %q -- held_by names whoever opened "+
 			"the shared index, not the session holding the lock", got, want)
 	}
 	if other := locks.Owner(user, "session-one"); got == other {
