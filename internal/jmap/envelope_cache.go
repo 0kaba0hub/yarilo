@@ -38,9 +38,10 @@ func (c *envelopeCaches) folder(ref messageRef) *msgcache.Handle {
 	var fc *msgcache.Handle
 	if c.h.idx != nil && c.s.opts.Storage != nil {
 		fc = msgcache.Open(c.h.idx, ref.folderID, msgcache.Options{
-			Locker: c.s.opts.Storage.Locker,
-			User:   c.h.info.Username,
-			Folder: ref.folder,
+			Locker:    c.s.opts.Storage.Locker,
+			User:      c.h.info.Username,
+			SessionID: c.h.info.SessionID,
+			Folder:    ref.folder,
 		})
 	}
 	c.open[ref.folderID] = fc

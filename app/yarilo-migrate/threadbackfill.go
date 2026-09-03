@@ -132,7 +132,7 @@ func threadUser(boxBE mailbox.MailboxBackend, byDriver func(string) mailbox.Mail
 	ctx, cancel := context.WithTimeout(context.Background(), backfillLockTimeout)
 	defer cancel()
 	return locks.WithLock(ctx, locker, locks.ThreadsKey(user),
-		fmt.Sprintf("yarilo-migrate/%d", os.Getpid()), backfillLockTTL, backfillLockRenew,
+		locks.Owner(user, ""), backfillLockTTL, backfillLockRenew,
 		func(context.Context) error {
 			return threadUserLocked(boxBE, byDriver, idxBE, resolveUser, o, user, st)
 		})

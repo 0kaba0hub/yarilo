@@ -106,7 +106,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		separator:        mailbox.SepOrDefault(u.Separator),
 		escapeChar:       u.StorageEscapeChar,
 		username:         u.Username,
-		owner:            makeOwner(u),
+		owner:            locks.Owner(u.Username, u.SessionID),
 		listUTF8:         b.listUTF8,
 	}
 }
@@ -222,20 +222,6 @@ type userMailbox struct {
 	sectionFS  atomic.Int32            // stats made inside the section
 	sectionDir atomic.Int32            // directory reads made inside the section
 	cache      map[string]*folderCache // keyed by folder name; lazy-initialised
-}
-
-// makeOwner builds the yarilo-locks owner string
-// "<process>/<pid>/<user>[/<sid>]"; the session ID disambiguates concurrent
-// sessions for the same user.
-func makeOwner(u *mailbox.UserInfo) string {
-	proc := "yarilo"
-	if len(os.Args) > 0 {
-		proc = filepath.Base(os.Args[0])
-	}
-	if u.SessionID != "" {
-		return fmt.Sprintf("%s/%d/%s/%s", proc, os.Getpid(), u.Username, u.SessionID)
-	}
-	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
 }
 
 // withMailboxLock runs fn under the in-process mutex, then the cross-process

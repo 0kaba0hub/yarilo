@@ -20,12 +20,9 @@
 //	<key><value>\n  ...                G, R, Z?, V, P?, O?, B?, X?
 //	<empty line "\n">                  metadata terminator
 //
-// Save uses a two-phase pattern: Save writes to a .temp.* file and
-// returns its name; the caller assigns a UID via the fileindex and
-// then calls AssignUID, which renames the temp file to its final
-// u.<UID> name. This gives a crash-safe atomic publish — a crash
-// before AssignUID leaves only the temp file on disk; the periodic
-// orphan cleanup ages those out.
+// Save is two-phase: it writes a .temp.* file, the caller assigns a UID, and
+// AssignUID renames it to u.<UID>. A crash before that leaves only the temp
+// file, which the orphan cleanup ages out.
 package dboxv2
 
 import (

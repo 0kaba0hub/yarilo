@@ -12,7 +12,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -1179,7 +1178,7 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 		}
 	}
 
-	owner := fmt.Sprintf("yarilo-imap/%d/%s", os.Getpid(), userInfo.Username)
+	owner := locks.Owner(userInfo.Username, userInfo.SessionID)
 	s.specialUse = specialuse.New(
 		userInfo.Home, userInfo.Username, owner, s.srv.opts.Locker,
 		s.srv.opts.SpecialUseDefaults,
@@ -3138,10 +3137,11 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	var envCache *msgcache.Handle
 	if opts.Envelope || opts.BodyStructure != nil {
 		envCache = msgcache.Open(s.folderIdx(), s.folder.ID, msgcache.Options{
-			Locker:  s.srv.opts.Locker,
-			User:    s.userInfo.Username,
-			Folder:  s.folder.Name,
-			TraceID: s.sid,
+			Locker:    s.srv.opts.Locker,
+			User:      s.userInfo.Username,
+			SessionID: s.userInfo.SessionID,
+			Folder:    s.folder.Name,
+			TraceID:   s.sid,
 			// The response below reads bodies from storage and writes them to
 			// a socket. Holding the cache locks across that made one client on
 			// a slow link block every other session of the same user on this

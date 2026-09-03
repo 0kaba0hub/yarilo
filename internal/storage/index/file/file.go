@@ -237,7 +237,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 			// where the driver could not read it (#1579).
 			controlRoot: mailbox.ControlRoot(u),
 			username:    u.Username,
-			owner:       makeOwner(u),
+			owner:       locks.Owner(u.Username, u.SessionID),
 			open:        make(map[uint64]*folderState),
 		}
 		ui.uidValidity = uidvalidity.New(ui.controlRoot, ui.username, ui.owner, b.locker)
@@ -685,16 +685,6 @@ func (fs *folderState) logFileReplaced() bool {
 		return false
 	}
 	return !fdMatchesFile(fs.logFD, logStat)
-}
-
-// makeOwner builds the owner string passed to yarilo-locks BUSY
-// reports. Format mirrors the maildir / dbox / mdbox backends.
-func makeOwner(u *mailbox.UserInfo) string {
-	proc := "yarilo"
-	if len(os.Args) > 0 {
-		proc = filepath.Base(os.Args[0])
-	}
-	return fmt.Sprintf("%s/%d/%s", proc, os.Getpid(), u.Username)
 }
 
 // indexRootDir resolves the index root: INDEX= (indexRoot) when set,
