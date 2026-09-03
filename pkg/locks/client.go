@@ -196,7 +196,9 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 	default:
 	}
 
-	// Take an idle slot (blocks until one is available or ctx fires).
+	// Take an idle slot, timed apart from the exchange: both sit inside one Lock,
+	// where neither the attempt counter nor the server sees them (#1650).
+	waited := time.Now()
 	var slot *connSlot
 	select {
 	case <-c.closed:
@@ -205,7 +207,12 @@ func (c *Client) roundtrip(ctx context.Context, cmd ...string) ([]string, error)
 		return nil, waitFailure(ctx.Err())
 	case slot = <-c.idle:
 	}
-	defer func() { c.idle <- slot }()
+	clientPart.WithLabelValues("slot").Observe(time.Since(waited).Seconds())
+	exchange := time.Now()
+	defer func() {
+		clientPart.WithLabelValues("roundtrip").Observe(time.Since(exchange).Seconds())
+		c.idle <- slot
+	}()
 
 	if err := c.ensureConnected(ctx, slot); err != nil {
 		return nil, fmt.Errorf("locks/client: connect: %w: %w", ErrUnavailable, err)
