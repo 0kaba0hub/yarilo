@@ -548,6 +548,10 @@ func (s *session) ownerHandle(spec NamespaceSpec, owner string) (*nsHandle, erro
 	if err != nil {
 		return nil, err
 	}
+	// The owner comes from userdb, which knows nothing of sessions, so the
+	// handle would open its storage under a second spelling of one holder --
+	// the driver and index from ownerUI, subs and acl from s.owner (#1652).
+	ownerUI.SessionID = s.sessionID()
 	subsFile := mailbox.NamespaceSubsFile(spec.Prefix, string(spec.Separator), string(spec.Type))
 	h, err := s.openHandle(spec, nsSlug(spec), ownerUI, s.owner(ownerUI.Username), subsFile)
 	if err != nil {

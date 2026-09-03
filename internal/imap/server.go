@@ -446,6 +446,9 @@ func proxyPolicy(nets []*net.IPNet) func(net.Addr) (proxyproto.Policy, error) {
 	}
 }
 
+// testSessionID stands in for the login proxy's preamble; empty in production.
+var testSessionID string
+
 func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
 	sess := &session{srv: s, imapConn: c}
 	if pc := unwrapPreambleConn(c.NetConn()); pc != nil {
@@ -1125,6 +1128,13 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	userInfo.QuotaRules = res.QuotaRules
 	userInfo.QuotaOverFlag = res.QuotaOverFlag
 	userInfo.SessionID = s.sid
+	if userInfo.SessionID == "" {
+		// Test seam. A session id arrives from the login proxy's preamble, so
+		// an ordinary test connection has none and every path collapses to the
+		// sessionless spelling -- which is why two owner defects reached the
+		// field before anything failed (#1652).
+		userInfo.SessionID = testSessionID
+	}
 	locErr, drvErr := mailbox.ApplyUserdb(userInfo, mailbox.UserdbOverrides{
 		VolatileDir:  res.VolatileDir,
 		IndexDir:     res.IndexDir,
