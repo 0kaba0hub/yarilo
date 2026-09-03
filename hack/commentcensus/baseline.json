@@ -46,7 +46,6 @@
   "internal/quotawarn": 0.098,
   "internal/readyfile": 0.216,
   "internal/storage/idxrebuild": 0.196,
-  "internal/storage/index/file": 0.212,
   "internal/storage/logrotate": 0.667,
   "internal/storage/mailbox/crlf": 0.258,
   "internal/storage/mailbox/dbox/v1legacy": 0.196,
