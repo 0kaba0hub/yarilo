@@ -212,7 +212,7 @@ func (b *backend) NewSession(c *goSmtp.Conn) (goSmtp.Session, error) {
 			}
 		}
 	}
-	return &session{opts: b.opts, router: b.router, srv: b.srv, peerIP: peerIP, mtaConn: mtaConn, connID: nextConnID(), deliveryID: locks.NewID()}, nil
+	return &session{opts: b.opts, router: b.router, srv: b.srv, peerIP: peerIP, mtaConn: mtaConn, connID: nextConnID(), lockID: locks.NewID()}, nil
 }
 
 // connIDSeq is a per-process monotonic counter identifying one LMTP
@@ -242,9 +242,9 @@ type session struct {
 	// connID identifies this LMTP connection (see nextConnID).
 	connID uint64
 
-	// deliveryID is the id part of every lock owner this connection takes: a
-	// delivery has no session, which is not the same as having no name (#1670).
-	deliveryID string
+	// lockID names this connection in every lock owner it takes -- per
+	// connection, not per delivery: one id covers every message on the link.
+	lockID string
 }
 
 // folderMessageCount returns folder's current message count from the index
@@ -311,7 +311,7 @@ func (s *session) rcptLocal(to string) error {
 	} else {
 		userInfo = resolver.UserInfo(user, "")
 	}
-	s.stampDeliveryID(userInfo)
+	s.stampLockID(userInfo)
 	if s.rcptUserInfo == nil {
 		s.rcptUserInfo = make(map[string]*mailbox.UserInfo)
 	}
@@ -572,7 +572,7 @@ func (s *session) postAllowed(ui *mailbox.UserInfo, ns *config.NamespaceConfig, 
 	}
 	// acl_defaults_from_inbox applies to private / shared namespaces only.
 	defaultsFromInbox := s.opts.ACLDefaultsFromInbox && ns.Type != "public"
-	lockOwner := locks.Owner(ui.Username, s.stampDeliveryID(ui).LockID())
+	lockOwner := locks.Owner(ui.Username, s.stampLockID(ui).LockID())
 	store := acl.New(ui.Home, ui.MailPath, ui.Driver, ui.Separator, ui.StorageEscapeChar, ui.Username, lockOwner, acl.Policy{
 		DefaultsFromInbox: defaultsFromInbox,
 		GlobalsOnly:       s.opts.ACLGlobalsOnly,
@@ -600,31 +600,31 @@ func (s *session) postAllowed(ui *mailbox.UserInfo, ns *config.NamespaceConfig, 
 // recipient must not fall through to the global (maildir) store. Only when there
 // is no userdb to consult does it fall back to the bare resolver (no per-user
 // driver, so the global backend is correct).
-// stampDeliveryID gives a recipient's UserInfo this connection's id (#1670).
-func (s *session) stampDeliveryID(ui *mailbox.UserInfo) *mailbox.UserInfo {
+// stampLockID gives a recipient's UserInfo this connection's id (#1670).
+func (s *session) stampLockID(ui *mailbox.UserInfo) *mailbox.UserInfo {
 	if ui != nil && ui.SessionID == "" {
-		ui.SessionID = s.deliveryID
+		ui.SessionID = s.lockID
 	}
 	return ui
 }
 
 func (s *session) resolveRcptUserInfo(rcpt, username string) *mailbox.UserInfo {
 	if ui := s.rcptUserInfo[rcpt]; ui != nil {
-		return s.stampDeliveryID(ui)
+		return s.stampLockID(ui)
 	}
 	if s.opts.UserdbLookup != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		ui, err := s.opts.UserdbLookup(ctx, username)
 		cancel()
 		if err == nil && ui != nil {
-			return s.stampDeliveryID(ui)
+			return s.stampLockID(ui)
 		}
 	}
 	resolver := s.opts.Resolver
 	if resolver == nil {
 		resolver = &mailbox.Resolver{}
 	}
-	return s.stampDeliveryID(resolver.UserInfo(username, ""))
+	return s.stampLockID(resolver.UserInfo(username, ""))
 }
 
 func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
@@ -866,7 +866,7 @@ func (s *session) recordThread(ui *mailbox.UserInfo, username string, guid [16]b
 	var err error
 	if s.opts.Locker != nil {
 		err = locks.WithLock(ctx, s.opts.Locker, locks.ThreadsKey(username),
-			locks.Owner(username, s.deliveryID), threadLockTTL, threadLockRenew, rec)
+			locks.Owner(username, s.lockID), threadLockTTL, threadLockRenew, rec)
 	} else {
 		// No lock service wired (single-process dev runs), as the other stores
 		// do: the file is still consistent, only uncoordinated across pods.
