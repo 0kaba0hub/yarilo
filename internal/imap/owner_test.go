@@ -84,22 +84,25 @@ func TestASessionTakesEveryLockUnderOneName(t *testing.T) {
 	imapserver.SetTestSessionID("4hbQ6j4PCJz1RCkh1Fr")
 	defer imapserver.SetTestSessionID("")
 	opts := imapserver.Options{
-		Mailbox:  maildir.New(),
-		Index:    file.New(),
+		// The locker goes into the storage backends too, not only the session's
+		// own stores: without it the driver and the index take no lock at all
+		// and this test saw one spelling out of three (#1652).
+		Mailbox:  maildir.New(maildir.WithLocker(rec)),
+		Index:    file.New(file.WithLocker(rec)),
 		Resolver: &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"},
 		Auth:     &quotaAuthStub{user: "user@test.com", pass: "testpass", rule: "*:bytes=1000000"},
 		Locker:   rec,
-		UserdbLookup: func(_ context.Context, name string) (*mailbox.UserInfo, error) {
-			return &mailbox.UserInfo{Username: name, Home: dir + "/" + name, Driver: "maildir"}, nil
-		},
-		// An owner-templated namespace, because its handle takes a different
-		// road to the same storage: the owner is resolved through userdb,
-		// which knows nothing of sessions, so this is the path that produced
-		// a second spelling of one holder (#1652).
+		// An owner-templated namespace: its handle takes a different road to
+		// storage -- the owner comes from userdb, which knows nothing of
+		// sessions -- and that is the road that produced a second spelling of
+		// one holder (#1652).
 		Namespaces: []imapserver.NamespaceSpec{
 			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
-			{Type: imapserver.NamespaceShared, Prefix: "user/", Separator: '/',
-				Location: "maildir:" + dir + "/%u", List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "user/%u/", Separator: '/',
+				Location: "maildir:" + dir + "/shared/%u", List: imapserver.ListYes},
+		},
+		UserdbLookup: func(_ context.Context, name string) (*mailbox.UserInfo, error) {
+			return &mailbox.UserInfo{Username: name, Home: dir + "/" + name, Driver: "maildir"}, nil
 		},
 	}
 	srv := imapserver.New(opts)
@@ -147,6 +150,19 @@ func TestASessionTakesEveryLockUnderOneName(t *testing.T) {
 	}
 	if _, err := c.List("", "*", nil).Collect(); err != nil {
 		t.Fatalf("list: %v", err)
+	}
+	// Through the owner-templated namespace: its own maildir under dir/%u, so
+	// Save takes the folder lock with an owner built from the userdb answer
+	// rather than from the session.
+	oc := c.Append("user/user@test.com/INBOX", int64(len(body)), nil)
+	if _, err := oc.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := oc.Close(); err != nil {
+		t.Fatalf("append through the owner namespace: %v", err)
+	}
+	if _, err := oc.Wait(); err != nil {
+		t.Fatalf("append through the owner namespace: %v", err)
 	}
 	if err := c.Logout().Wait(); err != nil {
 		t.Fatal(err)
