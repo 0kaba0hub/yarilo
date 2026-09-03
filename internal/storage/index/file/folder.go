@@ -1353,6 +1353,11 @@ func (u *userIndex) writeFlags(folderID uint64, uid uint32, flags, keywords []st
 	})
 }
 
+// beforeAppendName runs before each name is written. Test seam: what the split
+// has to prove is that the append clock spans the writes, and a fast disk
+// reports zero either way.
+var beforeAppendName func()
+
 // UpdateFilenames records a whole command's new names under one acquisition. The
 // single form locks per message, and a 41-name STORE spent 17.7s of its 18.1s
 // here at 121ms a name (#1646).
@@ -1360,21 +1365,50 @@ func (u *userIndex) UpdateFilenames(folderID uint64, names map[uint32]string) er
 	if len(names) == 0 {
 		return nil
 	}
-	return u.withFolder(folderID, func(fs *folderState) error {
+	u.mu.Lock()
+	fs, ok := u.open[folderID]
+	u.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("fileindex: folder %d not open", folderID)
+	}
+
+	// Timed in three, because the batch is one acquisition and a single name
+	// still cost 4s in a run whose mean was 14ms: the wait, the freshness check
+	// and the appends are three different floors and only one of them has a
+	// known cure (#1650).
+	whole := time.Now()
+	var lockMS, reloadMS, appendMS int64
+	err := u.withFolderLock(fs, func() error {
+		lockMS = time.Since(whole).Milliseconds()
+		reloadStart := time.Now()
+		if rerr := fs.reload(); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			return rerr
+		}
+		reloadMS = time.Since(reloadStart).Milliseconds()
+		appendStart := time.Now()
+		defer func() { appendMS = time.Since(appendStart).Milliseconds() }()
 		for uid, filename := range names {
+			if beforeAppendName != nil {
+				beforeAppendName()
+			}
 			// A uid the folder no longer carries is skipped, not refused: it was
 			// expunged between the rename and this call, and the names beside it
 			// still have to land.
-			if cur, ok := fs.filenames[uid]; !ok || cur == filename {
+			if cur, have := fs.filenames[uid]; !have || cur == filename {
 				continue
 			}
 			fs.filenames[uid] = filename
-			if err := fs.appendName(uid, filename, fs.sizes[uid]); err != nil {
-				return err
+			if aerr := fs.appendName(uid, filename, fs.sizes[uid]); aerr != nil {
+				return aerr
 			}
 		}
 		return nil
 	})
+	slog.Debug("fileindex: names timing",
+		"user", u.username, "folder", fs.folder, "names", len(names),
+		"lock_ms", lockMS, "reload_ms", reloadMS, "append_ms", appendMS,
+		"total_ms", time.Since(whole).Milliseconds())
+	return err
 }
 
 // UpdateFilename repoints the stored on-disk filename for a UID. The
