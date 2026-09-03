@@ -453,6 +453,12 @@ func (s *Server) newSession(c *imapserver.Conn) (imapserver.Session, *imapserver
 	sess := &session{srv: s, imapConn: c}
 	if pc := unwrapPreambleConn(c.NetConn()); pc != nil {
 		sess.sid = pc.SessionID
+		if sess.sid == "" {
+			// The proxy did not carry one. A connection without an id is still
+			// a holder, and an anonymous holder is what cost three rounds of
+			// diagnosis (#1670).
+			sess.sid = locks.NewID()
+		}
 		if err := sess.completeLogin(&protocol.AuthResponse{
 			Result:        protocol.AuthOK,
 			Username:      pc.Username,
@@ -1129,12 +1135,15 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 	userInfo.QuotaOverFlag = res.QuotaOverFlag
 	userInfo.SessionID = s.sid
 	if userInfo.SessionID == "" {
-		// Test seam. A session id arrives from the login proxy's preamble, so
-		// an ordinary test connection has none and every path collapses to the
-		// sessionless spelling -- which is why two owner defects reached the
-		// field before anything failed (#1652).
+		// testSessionID is the seam that plants a known id (#1652); with none
+		// planted the session mints its own, because no path may reach storage
+		// without one (#1670).
 		userInfo.SessionID = testSessionID
 	}
+	if userInfo.SessionID == "" {
+		userInfo.SessionID = locks.NewID()
+	}
+	s.sid = userInfo.SessionID
 	locErr, drvErr := mailbox.ApplyUserdb(userInfo, mailbox.UserdbOverrides{
 		VolatileDir:  res.VolatileDir,
 		IndexDir:     res.IndexDir,
@@ -1188,7 +1197,7 @@ func (s *session) completeLogin(res *protocol.AuthResponse) error {
 		}
 	}
 
-	owner := locks.Owner(userInfo.Username, userInfo.SessionID)
+	owner := locks.Owner(userInfo.Username, userInfo.LockID())
 	s.specialUse = specialuse.New(
 		userInfo.Home, userInfo.Username, owner, s.srv.opts.Locker,
 		s.srv.opts.SpecialUseDefaults,

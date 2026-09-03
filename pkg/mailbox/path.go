@@ -7,7 +7,22 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/yarilomail/yarilo/pkg/locks"
 )
+
+// LockID is the id part of every lock owner this UserInfo takes. It is
+// SessionID when something upstream supplied one; otherwise one is minted here
+// and kept, because a holder with no name is what three rounds of diagnosis
+// were spent on (#1670).
+// It mints into SessionID rather than beside it: a UserInfo that took a lock
+// under an id has that id, and every later reader agrees with the first.
+func (u *UserInfo) LockID() string {
+	if u.SessionID == "" {
+		u.SessionID = locks.NewID()
+	}
+	return u.SessionID
+}
 
 // UserInfo carries the per-session storage identity for a user, resolved once
 // at session start (after passdb/userdb lookup) and passed to
@@ -69,9 +84,11 @@ type UserInfo struct {
 	// quota_over_status check reconciles against actual usage at login.
 	QuotaOverFlag string
 
-	// SessionID is the IMAP/POP3 session identifier from the login proxy,
-	// included in the yarilo-locks owner string for BUSY diagnostics. Empty
-	// for LMTP and other non-session contexts.
+	// SessionID is the identifier this piece of work announces in the
+	// yarilo-locks owner string: the login proxy's session for IMAP and POP3,
+	// the connection's own id for a delivery, the request's for an admin call.
+	// Read it through LockID, never directly, so a UserInfo built by hand
+	// cannot take a lock anonymously (#1670).
 	SessionID string
 
 	// MailPath, when non-empty, is the mail storage root, separated from Home
@@ -210,8 +227,13 @@ func (r *Resolver) Resolve(username, homeOverride string) string {
 func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 	home := r.Resolve(username, homeOverride)
 	ui := &UserInfo{
-		Username:   username,
-		Home:       home,
+		Username: username,
+		Home:     home,
+		// Every UserInfo is built by something doing one piece of work, and that
+		// work owns whatever locks it takes. An entry point with a real id (a
+		// login proxy's session, a delivery, an admin request) overwrites this;
+		// one without still announces a holder rather than nothing (#1670).
+		SessionID:  locks.NewID(),
 		QuotaRules: r.DefaultQuotaRules,
 		Separator:  r.DefaultSeparator,
 

@@ -29,15 +29,26 @@ func TestOwnerCarriesTheSession(t *testing.T) {
 		t.Error("two sessions of one user produced one owner: held_by cannot say which holds it")
 	}
 
-	// And without one, the user is still there. A caller with no session must
-	// not fall back to naming only itself, which is what yarilo-fts did while
-	// holding a per-user key.
-	sessionless := Owner("u1@example.com", "")
-	if !strings.HasSuffix(sessionless, "/u1@example.com") {
-		t.Errorf("sessionless owner = %q, which does not end in the user it holds for", sessionless)
+	if n := len(strings.Split(withSession, "/")); n != 4 {
+		t.Errorf("owner %q has %d segments, want 4", withSession, n)
 	}
-	if strings.HasPrefix(sessionless, withSession) || sessionless == withSession {
-		t.Errorf("the sessionless form is not distinct from the session one: %q against %q",
-			sessionless, withSession)
-	}
+}
+
+// An empty id is a defect at the caller, not a spelling this function serves.
+//
+// It used to be legal and produced a three-segment name. Three rounds of
+// diagnosis went into repairing the places that lost the id; what none of them
+// could fix is that losing it was allowed (#1670).
+func TestAnEmptyIDIsRejected(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Owner accepted an empty session id: an anonymous holder reaches the " +
+				"lock service and held_by cannot say who it is")
+		}
+		if msg, _ := r.(string); !strings.Contains(msg, "empty session id") {
+			t.Errorf("panic did not name the defect: %v", r)
+		}
+	}()
+	_ = Owner("u1@example.com", "")
 }
