@@ -2,10 +2,8 @@ package mdboxmap
 
 import "sort"
 
-// store is the in-memory view of the v2 base: the record area as raw bytes,
-// kept sorted by map_uid. Records are read and written through offset
-// arithmetic, so loading the map is a read and nothing else — no per-record
-// objects, no lookup table to rebuild.
+// store is the v2 base in memory: the record area as raw bytes sorted by map_uid,
+// read through offset arithmetic, so loading the map is a read and nothing else.
 type store struct {
 	recs []byte
 }

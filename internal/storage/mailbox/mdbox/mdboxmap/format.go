@@ -7,19 +7,15 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
-// On-disk filenames. The yarilo-native name is what we write;
-// the legacy name is read once at Open() time and the file is
-// atomically renamed to the yarilo-native name, so subsequent
-// runs see only the yarilo file.
+// On-disk filenames. The legacy name is read once at Open and renamed, so later
+// runs see only ours.
 const (
 	MapIndexFileName       = "yarilo.map.index"
 	LegacyMapIndexFileName = "dovecot.map.index"
 )
 
-// Extension names and on-disk sizes are pinned by the wire spec (the
-// internal docs). They describe the append log's record layout, and the
-// v1 base the converter reads once; the v2 base carries the same fields
-// at fixed offsets instead (see formatv2.go).
+// Extension names and sizes are pinned by the wire spec. They describe the log's
+// record layout and the v1 base; v2 carries the same fields at fixed offsets.
 const (
 	// extMap holds {file_id, offset, size} per record.
 	extMap     = "map"
@@ -30,26 +26,13 @@ const (
 	extRef     = "ref"
 	extRefSize = 2
 
-	// extGUID holds the 128-bit message GUID (16 bytes) per record.
-	// Stored in the global map so rebuild can pair physical m.<N>
-	// records with map_uids via GUID match (strategy 1) rather
-	// than the less-robust offset match (strategy 2). Records
-	// written before GUID indexing carry zero GUIDs — the rebuild
-	// path falls back to offset matching for those.
+	// extGUID lets a rebuild pair records by GUID rather than by offset; those
+	// written before it carry zeroes and fall back to the offset match.
 	extGUID     = "guid"
 	extGUIDSize = 16 // 128-bit
 
-	// mapHeaderSize is the size of the extension-header data for the "map"
-	// extension. It stores, in order: highest_file_id (uint32), rebuild_count
-	// (uint32) — the storage-wide-rebuild generation counter (#594 Phase 2b),
-	// bumped once per successful rebuild — then create_file_id (uint32) and
-	// create_time (uint64), the id and unix-second creation stamp of the current
-	// append file, used by the mdbox_rotate_interval age check (#623). The
-	// create-time is persisted here (not derived from a filesystem btime, which is
-	// unreliable over NFS) so it survives restarts. Older files are shorter and
-	// decodeMapHeader tolerates them: a 4-byte header (highest_file_id only) reads
-	// the rest back as 0, an 8-byte header adds rebuild_count, and the next flush
-	// grows the header to 20 bytes in place.
+	// mapHeaderSize covers the counters and the append file's creation stamp,
+	// persisted rather than taken from btime, unreliable over NFS (#623).
 	mapHeaderSize        = 20
 	mapHeaderRebuildSize = 8
 	mapHeaderLegacySize  = 4
@@ -94,9 +77,8 @@ func encodeRefExt(r uint16) []byte {
 	return buf
 }
 
-// decodeRefExt is the inverse of encodeRefExt. Missing or short
-// data is treated as refcount 0 — newly-allocated records do not
-// yet carry a value for the extension.
+// decodeRefExt inverts encodeRefExt; missing or short data is refcount 0, which
+// is what a freshly allocated record carries.
 func decodeRefExt(b []byte) uint16 {
 	if len(b) < extRefSize {
 		return 0
@@ -115,11 +97,8 @@ func encodeMapHeader(highestFileID, rebuildCount, createFileID uint32, createTim
 	return buf
 }
 
-// decodeMapHeader extracts highest_file_id, rebuild_count, and the current append
-// file's create_file_id + create_time from the "map" extension's header bytes.
-// All default to zero on a missing header. A legacy 4-byte header (highest_file_id
-// only) reads the rest back as 0; an 8-byte header adds rebuild_count — backward
-// compatible with files written before each field existed.
+// decodeMapHeader reads the "map" extension header, tolerating the shorter ones
+// written before each field existed: a missing field reads back as zero.
 func decodeMapHeader(b []byte) (highestFileID, rebuildCount, createFileID uint32, createTime uint64) {
 	if len(b) >= 4 {
 		highestFileID = binary.LittleEndian.Uint32(b[0:4])
@@ -152,11 +131,8 @@ func decodeGUIDExt(b []byte) [16]byte {
 	return g
 }
 
-// defaultExtensions returns the three extensions every map.index
-// file must carry. Used by Open when the file does not yet exist
-// and the caller is creating it from scratch. Extension order
-// matches descending RecordAlign so ComputeRecordLayout packs
-// them without padding: map(align=4), ref(align=2), guid(align=1).
+// defaultExtensions returns the three extensions a fresh map file carries, in
+// descending alignment so the layout packs without padding.
 func defaultExtensions(highestFileID uint32) []mailindex.Extension {
 	return []mailindex.Extension{
 		{

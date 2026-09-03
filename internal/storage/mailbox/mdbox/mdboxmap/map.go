@@ -17,13 +17,9 @@ import (
 	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
-// Map is the in-memory + on-disk handle for one user's map index. All mutations
-// route through Map so the in-process Mutex and cross-process X lock stay
-// coherent.
-//
-// Map is not goroutine-safe outside its own methods; share a single Map per
-// user-session, do not pass it to a worker pool without external
-// synchronisation.
+// Map is the handle for one user's map index; every mutation routes through it so
+// the in-process mutex and the cross-process lock stay coherent. Not
+// goroutine-safe outside its own methods.
 type Map struct {
 	path     string
 	username string
@@ -53,12 +49,8 @@ type Map struct {
 	// per successful rebuild.
 	rebuildCount uint32
 
-	// createFileID / createTime record the id and unix-second creation stamp of
-	// the current append file (the one Save writes into) for the
-	// mdbox_rotate_interval age check. Persisting the stamp keeps it
-	// restart-safe without depending on an unreliable-over-NFS filesystem btime.
-	// Only the current append file's stamp is tracked; an already-rotated file is
-	// never appended to again, so its age no longer matters.
+	// createFileID / createTime stamp the current append file for the age check,
+	// persisted because btime is unreliable over NFS.
 	createFileID uint32
 	createTime   uint64
 
@@ -81,20 +73,15 @@ type Map struct {
 	// means the package default (defaultRotateSize).
 	rotateSize uint32
 
-	// logRotate* is the append log's rotation triple, shared with the folder
-	// file index. Zero fields select the package defaults.
-	// logRotateSet distinguishes "not configured" from a configured 0, which
-	// disables rotation.
+	// logRotate* is the log's rotation triple; logRotateSet separates "not
+	// configured" from a configured 0, which disables rotation.
 	logRotateSet     bool
 	logRotateMinSize int64
 	logRotateMaxSize int64
 	logRotateMinAge  time.Duration
 
-	// baseInfo / logSize track what this handle has applied from disk so
-	// reloadLocked can fast-path when nothing changed and replay only the log
-	// tail a sibling process appended since. baseInfo is the stat of the base
-	// file the records came from; logSize is the replayed byte offset of the
-	// append log.
+	// baseInfo / logSize are what this handle has applied: the stat of the base
+	// the records came from, and how far into the log it has replayed.
 	baseInfo os.FileInfo
 	logSize  int64
 	// inReload is true while a freshness check is running, so its parts are
@@ -118,10 +105,8 @@ const (
 // Option configures Map construction.
 type Option func(*Map)
 
-// WithFormat selects the base format this handle writes (mdbox_map_format). A
-// base already on disk in the other format is converted on open, in whichever
-// direction the setting asks for. Anything but the two known formats is a
-// wiring error and is reported at open.
+// WithFormat selects the base format this handle writes; one already on disk in
+// the other is converted on open. An unknown format is a wiring error.
 func WithFormat(f Format) Option {
 	return func(m *Map) { m.format = f }
 }
@@ -149,11 +134,8 @@ func WithRotateSize(n uint32) Option {
 	return func(m *Map) { m.rotateSize = n }
 }
 
-// WithLogRotation sets the append log's rotation triple (the
-// storage.mail_index_log_rotate_* keys). A zero field selects the package
-// default; a zero minSize passed explicitly through a caller that read a
-// configured 0 disables rotation, which is the same contract the file index
-// gives.
+// WithLogRotation sets the log's rotation triple. A zero field takes the default;
+// an explicitly configured zero minSize disables rotation, as in the file index.
 func WithLogRotation(minSize, maxSize int64, minAge time.Duration) Option {
 	return func(m *Map) {
 		m.logRotateMinSize = minSize
@@ -192,10 +174,8 @@ func (m *Map) rotateSizeOrDefault() uint32 {
 	return m.rotateSize
 }
 
-// Open opens (or creates) the per-user mdbox map at dir. The canonical filename
-// is MapIndexFileName ("yarilo.map.index"). On first open it also probes for
-// LegacyMapIndexFileName and migrates it in place (see loadOrInit). username is
-// the cross-process map-lock key (see locks.MdboxMapKey).
+// Open opens or creates the per-user mdbox map at dir, migrating a legacy-named
+// file in place on first open. username is the cross-process lock key.
 func Open(dir, username string, opts ...Option) (*Map, error) {
 	m := &Map{
 		path:     filepath.Join(dir, MapIndexFileName),
@@ -238,25 +218,16 @@ func (m *Map) Close() error {
 	return nil
 }
 
-// loadOrInit reads the base from disk or, when it does not yet exist, creates a
-// fresh one.
-//
-// Two file-level transitions happen here, both once per user. A legacy-named
-// file is renamed into place; a v1-format base is converted to v2 (see
-// convert.go). Anything else the version byte does not name is refused: this
-// index decides which physical bytes belong to which message and which file a
-// purge may unlink, so a misparse is mail loss.
+// loadOrInit reads the base or creates one, carrying the two once-per-user
+// transitions: a legacy rename and a v1 conversion. An unnamed version is refused
+// -- this index decides which file a purge may unlink, so a misparse is mail loss.
 func (m *Map) loadOrInit() error {
 	if _, err := os.Stat(m.path); errors.Is(err, os.ErrNotExist) {
 		legacy := filepath.Join(filepath.Dir(m.path), LegacyMapIndexFileName)
 		if _, lerr := os.Stat(legacy); lerr == nil {
-			// Only if it is ours. That name was ours once and is another
-			// implementation's now, and renaming theirs is worse than reading
-			// it wrong: their base is gone from where they look for it before
-			// anything has decided this store should be touched at all, and
-			// what lands under our name is then misread as a map of ours --
-			// wrong offsets, a conversion that stops partway, and a store with
-			// both halves broken (#1590).
+			// Only if it is ours: that name is another implementation's now,
+			// and renaming theirs takes their base away before anything decided
+			// to touch this store, then misreads it as ours (#1590).
 			if foreign, ferr := looksForeignMapBase(legacy); ferr != nil {
 				return ferr
 			} else if foreign {
@@ -399,10 +370,9 @@ func (m *Map) writeBaseLocked() error {
 	return nil
 }
 
-// applyLogTailLocked brings the handle up to the end of the log that belongs to
-// the base it now holds. Both branches that take a new base end here: whatever
-// the base does not contain is in the log, and a check that returns without
-// reading it hands the caller a state that is one transaction stale.
+// applyLogTailLocked brings the handle to the end of the log belonging to the
+// base it now holds. Every branch that takes a new base ends here: returning
+// without it hands the caller a state one transaction stale.
 func (m *Map) applyLogTailLocked() error {
 	applied, err := m.replayFromPersistedLocked()
 	if errors.Is(err, errLogIndexMismatch) {
@@ -417,14 +387,9 @@ func (m *Map) applyLogTailLocked() error {
 	return nil
 }
 
-// sameBaseLocked reports whether st is the very file the records in memory came
-// from. Identity first: every base rewrite goes through .tmp and a rename, so
-// the file behind the name is a different one afterwards. Size and mtime are
-// compared too, for the writer that ever updates a base in place.
-//
-// Timestamps alone are not enough, and this is not theoretical: on a filesystem
-// with coarse mtime granularity a rewrite lands in the same tick as the read
-// that preceded it, and a reader watching only the clock never looks again.
+// sameBaseLocked reports whether st is the file the records came from: identity
+// first, since every rewrite renames, then size and mtime for a writer that
+// updates in place. At coarse granularity a rewrite shares a tick with the read.
 func (m *Map) sameBaseLocked(st os.FileInfo) bool {
 	if m.baseInfo == nil || st == nil {
 		return false
@@ -449,18 +414,9 @@ func (m *Map) peekHeaderLocked() (baseHeader, error) {
 	return decodeBaseHeader(buf)
 }
 
-// adoptFoldLocked takes ownership of a rewritten base without reading it, and
-// reports whether it could. The fast path holds only when the new base is this
-// handle's own state folded flat: it absorbed the log this handle was applying,
-// no further than this handle got, and the records it published hash to the ones
-// in memory.
-//
-// The digest is what keeps this honest without a list to maintain. Several write
-// paths rewrite the base outside the log — purge, expunge-vanished, the refcount
-// recompute, the rebuild counter, the file-id allocator — and any of them can
-// have folded exactly the same log while changing what it holds. A future one
-// would too. None of them has to declare anything: a base whose records differ
-// cannot match the digest, so it is read.
+// adoptFoldLocked takes a rewritten base without reading it, only when it is this
+// handle's state folded flat: same log, no further, records hashing to memory.
+// The digest is what keeps that honest without a list of the paths that rewrite.
 func (m *Map) adoptFoldLocked(h baseHeader, baseInfo os.FileInfo) bool {
 	if h.FoldedLineage != m.logLineage || m.logSize < int64(h.FoldedOffset) {
 		return false
@@ -527,25 +483,15 @@ func timed(h prometheus.Observer, fn func() error) error {
 	return err
 }
 
-// invalidateLocked drops the freshness stamps so the next read reloads from
-// disk instead of trusting memory. Used where an in-memory change could not be
-// persisted: memory is then ahead of the file, and the fast path would keep it
-// that way.
+// invalidateLocked drops the freshness stamps where a change could not be
+// persisted: memory is ahead of the file, and the fast path would keep it so.
 func (m *Map) invalidateLocked() {
 	m.baseInfo = nil
 	m.logSize = -1
 }
 
-// flushLocked rewrites the whole base from memory and drops the append log: the
-// base now holds the full state. This is the compaction point and the
-// full-state persist for refcount/purge/file-id allocation. Caller MUST hold
-// m.mu.
-//
-// The order matters. The base is written first, carrying the log offset it
-// already incorporates, and only then is the log removed: a crash in between
-// leaves a base that knows the log is folded in, so the next open replays
-// nothing from it. Replaying it would double-apply every refcount delta it
-// carries.
+// flushLocked rewrites the base and drops the log; caller MUST hold m.mu. Base
+// first, carrying the offset it folded, or a crash between them doubles deltas.
 func (m *Map) flushLocked() error {
 	start := time.Now()
 	defer func() {
@@ -572,15 +518,8 @@ func (m *Map) flushLocked() error {
 	return nil
 }
 
-// Compact folds the append log into the base and drops it, under the
-// cross-process map lock.
-//
-// It exists because the map is the other structure an mdbox account replays at
-// open time, and folding the folder indexes leaves it untouched: after a seed
-// the map log holds every delivery, and the first open of every session replays
-// all of it. An operator asking for an account's indexes to be folded means
-// everything that gets replayed, not the half that happens to live in the
-// folder index.
+// Compact folds the log into the base under the map lock. Folding only the folder
+// indexes leaves every delivery here for the first open of every session.
 func (m *Map) Compact() error {
 	return m.withMapLock(func() error {
 		if err := m.reloadLocked(); err != nil {
@@ -612,11 +551,9 @@ func (m *Map) RebuildCount() uint32 {
 	return m.rebuildCount
 }
 
-// CreateTime returns the persisted unix-second creation stamp of file fileID and
-// whether it is known. Only the current append file's stamp is tracked, so it
-// returns ok=false for any other (already-rotated or legacy) file; the caller
-// then skips the age-based rotation check (a file whose age cannot be proven is
-// rotated by size only, never by age).
+// CreateTime returns the persisted creation stamp of fileID, known only for the
+// current append file. A file whose age cannot be proven is rotated by size
+// only, never by age.
 func (m *Map) CreateTime(fileID uint32) (int64, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -626,11 +563,9 @@ func (m *Map) CreateTime(fileID uint32) (int64, bool) {
 	return int64(m.createTime), true
 }
 
-// RecordFileCreated persists fileID as the current append file with creation
-// stamp ts (unix seconds), under the cross-process map lock. Called once when a
-// new physical m.<N> file is first written (Save's first record, or a compaction
-// destination) so the mdbox_rotate_interval age check has a restart-safe anchor.
-// A no-op when fileID already matches the recorded current file.
+// RecordFileCreated persists fileID as the current append file with stamp ts,
+// under the map lock, so the age check has a restart-safe anchor. A no-op when
+// it already matches.
 func (m *Map) RecordFileCreated(fileID uint32, ts int64) error {
 	return m.withMapLock(func() error {
 		if err := m.reloadLocked(); err != nil {
@@ -657,12 +592,8 @@ func (m *Map) BumpRebuildCount() error {
 	})
 }
 
-// reloadLocked refreshes m from disk incrementally. It re-reads the base only
-// when it changed (compaction / full-state rewrite) and otherwise replays just
-// the append-log tail a sibling process wrote since our last apply, so a peer's
-// deliveries become visible without re-reading the whole map. Caller MUST hold
-// m.mu. Write callers additionally hold the cross-process lock; readers may call
-// it lock-free (a torn log tail is stopped cleanly by replayLogLocked).
+// reloadLocked refreshes incrementally: the base only when changed, else the log
+// tail. Caller holds m.mu; readers need no cross-process lock, a torn tail stops.
 func (m *Map) reloadLocked() error {
 	whole := time.Now()
 	m.inReload = true
@@ -680,10 +611,8 @@ func (m *Map) reloadLocked() error {
 	m.observePart("stat", time.Since(statStart))
 
 	sameBase := m.loaded && m.sameBaseLocked(baseStat)
-	// A log only ever shrinks by being folded into a rewritten base, so it is a
-	// change signal in its own right -- and one that does not depend on a clock:
-	// a rewrite within the filesystem's timestamp granularity leaves the mtime
-	// where it was.
+	// A log shrinks only by being folded, so it signals change without a clock --
+	// a rewrite inside one timestamp tick leaves the mtime where it was.
 	logShrank := logSize < m.logSize
 
 	// Fast path: nothing changed on disk.
@@ -706,11 +635,9 @@ func (m *Map) reloadLocked() error {
 			}
 			if m.adoptFoldLocked(h, baseStat) {
 				metricMapReload.WithLabelValues("fold").Inc()
-				// Adopting the fold is not the end of the check: the writer that
-				// folded may already have appended to the log of the lineage it
-				// just started. Leaving here would carry that tail over to the
-				// next check, and a check is exactly what the purge scan runs
-				// before deciding what to unlink.
+				// The writer that folded may already have appended to the log of
+				// the lineage it started; leaving here carries that tail into
+				// the next check, which is what purge runs before unlinking.
 				return m.applyLogTailLocked()
 			}
 		}
@@ -768,20 +695,9 @@ func (m *Map) MessageCount() int {
 	return m.st.count()
 }
 
-// looksForeignMapBase reports whether a file under the legacy map-index name was
-// written by another implementation rather than by an older yarilo.
-//
-// Both are major-7 mail-index files and both carry "map" and "ref", so neither
-// the name nor a successful parse tells them apart. Two things do, and either is
-// enough:
-//
-//   - ours carries a "guid" extension per record and theirs does not;
-//   - our "map" extension header is 20 bytes -- highest_file_id, rebuild_count,
-//     create_file_id and one more -- and theirs is 8.
-//
-// A v2 base of ours is named by its magic and never reaches here. Anything that
-// does not parse at all is treated as foreign: not ours to claim, and renaming
-// an unreadable file into our namespace only moves the question.
+// looksForeignMapBase separates a legacy-named file of ours from theirs, which
+// the name and a clean parse do not: ours has a "guid" extension and a 20-byte
+// "map" header against their 8. Unparseable counts as theirs.
 func looksForeignMapBase(path string) (bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
