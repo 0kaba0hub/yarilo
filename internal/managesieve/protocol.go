@@ -20,10 +20,9 @@ func readAtom(r *bufio.Reader) (string, error) {
 	var sb strings.Builder
 	for {
 		b, err := r.ReadByte()
-		if err == io.EOF {
-			break
-		}
 		if err != nil {
+			// EOF included: a peer that hung up is not a blank line, and
+			// reporting it as one spins the loop forever (#1668).
 			return "", err
 		}
 		if b == ' ' || b == '\t' || b == '\r' || b == '\n' {
