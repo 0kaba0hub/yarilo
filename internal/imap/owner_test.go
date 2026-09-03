@@ -73,15 +73,34 @@ func (l *recordingLocker) IncrementCounter(context.Context, string, int64) (int6
 // operator depends on: everything a session does reaches the service under one
 // byte-identical name. There were six spellings, and held_by said three
 // different things about one holder (#1647).
+//
+// The session id is planted, because a real one comes from the login proxy's
+// preamble and a test connection has none -- which made every spelling here
+// collapse to the sessionless form, so a regression dropping the session
+// passed unnoticed. It does not any more (#1652).
 func TestASessionTakesEveryLockUnderOneName(t *testing.T) {
 	dir := t.TempDir()
 	rec := &recordingLocker{}
+	imapserver.SetTestSessionID("4hbQ6j4PCJz1RCkh1Fr")
+	defer imapserver.SetTestSessionID("")
 	opts := imapserver.Options{
 		Mailbox:  maildir.New(),
 		Index:    file.New(),
 		Resolver: &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"},
 		Auth:     &quotaAuthStub{user: "user@test.com", pass: "testpass", rule: "*:bytes=1000000"},
 		Locker:   rec,
+		UserdbLookup: func(_ context.Context, name string) (*mailbox.UserInfo, error) {
+			return &mailbox.UserInfo{Username: name, Home: dir + "/" + name, Driver: "maildir"}, nil
+		},
+		// An owner-templated namespace, because its handle takes a different
+		// road to the same storage: the owner is resolved through userdb,
+		// which knows nothing of sessions, so this is the path that produced
+		// a second spelling of one holder (#1652).
+		Namespaces: []imapserver.NamespaceSpec{
+			{Type: imapserver.NamespacePersonal, Prefix: "", Separator: '/', List: imapserver.ListYes},
+			{Type: imapserver.NamespaceShared, Prefix: "user/", Separator: '/',
+				Location: "maildir:" + dir + "/%u", List: imapserver.ListYes},
+		},
 	}
 	srv := imapserver.New(opts)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
