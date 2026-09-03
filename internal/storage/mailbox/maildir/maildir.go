@@ -1363,7 +1363,15 @@ func (u *userMailbox) WriteFlagsMulti(folder string, writes []mailbox.FlagWrite)
 	for i := range writes {
 		out[i] = mailbox.FlagWriteResult{UID: writes[i].UID, Filename: writes[i].Filename}
 	}
+	// Timed in three: one acquisition covers the batch (#1623), so a slow one
+	// is either the wait, the keyword file, or the renames themselves -- and
+	// the summed number said only that the batch was slow (#1662).
+	whole := time.Now()
+	var lockMS, keywordsMS, renamesMS int64
+	renamed := 0
 	err := u.withMailboxLockSite(folder, lockSiteWriteFlagsBulk, func() error {
+		lockMS = time.Since(whole).Milliseconds()
+		kwStart := time.Now()
 		t := u.loadKeywordTableLocked(folder)
 		added := false
 		for i := range writes {
@@ -1376,17 +1384,30 @@ func (u *userMailbox) WriteFlagsMulti(folder string, writes []mailbox.FlagWrite)
 				return werr
 			}
 		}
+		keywordsMS = time.Since(kwStart).Milliseconds()
+		renStart := time.Now()
+		defer func() { renamesMS = time.Since(renStart).Milliseconds() }()
 		for i := range writes {
+			if beforeFlagRename != nil {
+				beforeFlagRename()
+			}
 			name, werr := u.writeFlagsLocked(folder, writes[i].Filename,
 				writes[i].Flags, t.letters(writes[i].Keywords))
 			if werr != nil {
 				out[i].Err = werr
 				continue
 			}
+			if name != writes[i].Filename {
+				renamed++
+			}
 			out[i].Filename = name
 		}
 		return nil
 	})
+	slog.Debug("maildir: flags timing",
+		"user", u.username, "folder", folder, "writes", len(writes), "renamed", renamed,
+		"lock_ms", lockMS, "keywords_ms", keywordsMS, "renames_ms", renamesMS,
+		"total_ms", time.Since(whole).Milliseconds())
 	if err != nil {
 		// The lock itself: nothing in the batch was written.
 		for i := range out {
@@ -1395,6 +1416,10 @@ func (u *userMailbox) WriteFlagsMulti(folder string, writes []mailbox.FlagWrite)
 	}
 	return out
 }
+
+// beforeFlagRename runs before each rename. Test seam: the rename clock has to
+// be proven to span the writes, since a fast disk reports zero either way.
+var beforeFlagRename func()
 
 // writeFlagsLocked renames one file, with its keyword letters already resolved.
 // The caller holds the folder lock.
