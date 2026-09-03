@@ -205,7 +205,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 		separator:   mailbox.SepOrDefault(u.Separator),
 		escapeChar:  u.StorageEscapeChar,
 		username:    u.Username,
-		owner:       locks.Owner(u.Username, u.SessionID),
+		owner:       locks.Owner(u.Username, u.LockID()),
 		altBasePath: resolveAltBase(u.AltDir, b.altStorageTmpl, u.Username),
 		listUTF8:    b.listUTF8,
 	}

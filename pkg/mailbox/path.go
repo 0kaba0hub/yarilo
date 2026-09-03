@@ -7,7 +7,19 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/yarilomail/yarilo/pkg/locks"
 )
+
+// LockID is SessionID, or a minted one when nothing upstream supplied it. It
+// mints into SessionID rather than beside it, so every later reader agrees with
+// the first about who holds the lock (#1670).
+func (u *UserInfo) LockID() string {
+	if u.SessionID == "" {
+		u.SessionID = locks.NewID()
+	}
+	return u.SessionID
+}
 
 // UserInfo carries the per-session storage identity for a user, resolved once
 // at session start (after passdb/userdb lookup) and passed to
@@ -69,9 +81,9 @@ type UserInfo struct {
 	// quota_over_status check reconciles against actual usage at login.
 	QuotaOverFlag string
 
-	// SessionID is the IMAP/POP3 session identifier from the login proxy,
-	// included in the yarilo-locks owner string for BUSY diagnostics. Empty
-	// for LMTP and other non-session contexts.
+	// SessionID is what this work announces in the lock owner: the proxy's
+	// session, a delivery's connection id, an admin request's. Read it through
+	// LockID, so a hand-built UserInfo cannot lock anonymously (#1670).
 	SessionID string
 
 	// MailPath, when non-empty, is the mail storage root, separated from Home
@@ -210,8 +222,11 @@ func (r *Resolver) Resolve(username, homeOverride string) string {
 func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 	home := r.Resolve(username, homeOverride)
 	ui := &UserInfo{
-		Username:   username,
-		Home:       home,
+		Username: username,
+		Home:     home,
+		// An entry point with a real id overwrites this; one without still
+		// announces a holder rather than nothing (#1670).
+		SessionID:  locks.NewID(),
 		QuotaRules: r.DefaultQuotaRules,
 		Separator:  r.DefaultSeparator,
 

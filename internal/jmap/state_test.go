@@ -127,7 +127,7 @@ func TestEmittedStatesAreVersionedDescriptions(t *testing.T) {
 // openHandleForTest opens the user's store the way a request does.
 func openHandleForTest(t *testing.T, s *Server) *userHandle {
 	t.Helper()
-	h, err := s.opts.Storage.open(testUser)
+	h, err := s.opts.Storage.open(testUser, "test-session")
 	if err != nil {
 		t.Fatalf("open user: %v", err)
 	}

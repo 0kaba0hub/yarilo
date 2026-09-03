@@ -9,6 +9,7 @@ import (
 	"github.com/yarilomail/yarilo/internal/auth/protocol"
 	"github.com/yarilomail/yarilo/internal/userdbinfo"
 	"github.com/yarilomail/yarilo/pkg/config"
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -20,6 +21,9 @@ type userContext struct {
 	username string
 	info     *mailbox.UserInfo
 	owner    string
+	// requestID identifies this admin request in held_by. An admin holder with
+	// no id is as unattributable as a session with none (#1670).
+	requestID string
 
 	// handles maps namespace slug ("personal", "shared", "public") to its
 	// opened handle. Personal is always present after open(); shared/public
@@ -73,11 +77,14 @@ func (s *Server) openUserContextInner(username string, readOnly bool) (*userCont
 		}
 		userdbinfo.Apply(ui, pui, username)
 	}
+	reqID := locks.NewID()
+	ui.SessionID = reqID
 	uc := &userContext{
-		username: username,
-		info:     ui,
-		owner:    fmt.Sprintf("yarilo-backend-api/%d/%s", os.Getpid(), username),
-		handles:  make(map[string]*nsBundle),
+		username:  username,
+		info:      ui,
+		owner:     locks.Owner(username, reqID),
+		requestID: reqID,
+		handles:   make(map[string]*nsBundle),
 	}
 
 	personalSpec, ok := s.personalSpec()
@@ -339,7 +346,10 @@ func (uc *userContext) setActor(actor string) {
 	if actor == "" {
 		return
 	}
-	uc.owner = fmt.Sprintf("yarilo-backend-api/%d/%s", os.Getpid(), actor)
+	if uc.requestID == "" {
+		uc.requestID = locks.NewID()
+	}
+	uc.owner = locks.Owner(actor, uc.requestID)
 }
 
 // dirExists reports whether path is an existing directory.

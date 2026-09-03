@@ -46,7 +46,7 @@ func TestStateCacheDoesNotCrossAccounts(t *testing.T) {
 		return base(name)
 	}
 
-	first, err := s.opts.Storage.open(testUser)
+	first, err := s.opts.Storage.open(testUser, "test-session")
 	if err != nil {
 		t.Fatalf("open first: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestStateCacheDoesNotCrossAccounts(t *testing.T) {
 		t.Fatalf("state of the first account: %v", err)
 	}
 
-	second, err := s.opts.Storage.open(otherUser)
+	second, err := s.opts.Storage.open(otherUser, "test-session")
 	if err != nil {
 		t.Fatalf("open second: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestStateCacheInvalidatesOnAShrunkLog(t *testing.T) {
 func TestStateCacheInvalidatesWhenTheLogShrinks(t *testing.T) {
 	s, _, _ := storedServerWithMessageAt(t, setTestMessage, 0)
 
-	warm, err := s.opts.Storage.open(testUser)
+	warm, err := s.opts.Storage.open(testUser, "test-session")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestStateCacheInvalidatesWhenTheLogShrinks(t *testing.T) {
 
 	// A fresh handle, as a later request gets. The fold rewrote the base and
 	// truncated the log: the marker must be recomputed, not served.
-	after, err := s.opts.Storage.open(testUser)
+	after, err := s.opts.Storage.open(testUser, "test-session")
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestStateCacheInvalidatesWhenTheLogShrinks(t *testing.T) {
 	// before it; what must not happen is a state built from the pre-fold entry
 	// without checking. That is asserted by rebuilding from a cold read and
 	// comparing.
-	cold, err := s.opts.Storage.open(testUser)
+	cold, err := s.opts.Storage.open(testUser, "test-session")
 	if err != nil {
 		t.Fatalf("cold open: %v", err)
 	}

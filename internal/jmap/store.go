@@ -58,7 +58,7 @@ func (h *userHandle) close() {
 }
 
 // open resolves the user and opens their handles.
-func (s *Storage) open(username string) (*userHandle, error) {
+func (s *Storage) open(username, sessionID string) (*userHandle, error) {
 	if s == nil || s.ResolveUser == nil || s.Mailbox == nil || s.Index == nil {
 		return nil, fmt.Errorf("jmap: storage is not wired")
 	}
@@ -72,14 +72,21 @@ func (s *Storage) open(username string) (*userHandle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jmap: userdb %s: %w", username, err)
 	}
+	if sessionID != "" {
+		info.SessionID = sessionID
+	}
+	// The session's own name on every lock this request takes. It used to pass
+	// the bare username as the owner: one segment, no process, no request
+	// (#1670).
+	owner := locks.Owner(username, info.LockID())
 	h := &userHandle{
 		info: info,
 		box:  s.mailboxFor(info).OpenUser(info),
 		idx:  s.Index.OpenUser(info),
 	}
 	h.threads = s.Threads
-	h.subs = subs.New(controlRoot(info), subsFile, username, username, s.Locker)
-	h.specialUse = specialuse.New(info.Home, username, username, s.Locker, s.SpecialUseDefaults)
+	h.subs = subs.New(controlRoot(info), subsFile, username, owner, s.Locker)
+	h.specialUse = specialuse.New(info.Home, username, owner, s.Locker, s.SpecialUseDefaults)
 	return h, nil
 }
 
@@ -111,6 +118,10 @@ func (s *Storage) mailboxFor(info *mailbox.UserInfo) mailbox.MailboxBackend {
 // and Core/echo — whose whole purpose is to answer when other things do not —
 // must never be the first thing a broken dependency takes out.
 type lazyStore struct {
+	// sessionID is the login hop's id for this request, and what its locks
+	// announce (#1670).
+	sessionID string
+
 	storage *Storage
 	user    string
 	handle  *userHandle
@@ -130,7 +141,7 @@ func (l *lazyStore) get() (*userHandle, error) {
 		l.err = fmt.Errorf("jmap: no mail store configured")
 		return nil, l.err
 	}
-	l.handle, l.err = l.storage.open(l.user)
+	l.handle, l.err = l.storage.open(l.user, l.sessionID)
 	return l.handle, l.err
 }
 

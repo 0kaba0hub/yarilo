@@ -12,7 +12,7 @@ import (
 func serverWithFolders(tb testing.TB, n int) (*Server, *userHandle) {
 	tb.Helper()
 	s, _, _ := storedServerWithMessageAt(tb, setTestMessage, 0)
-	h, err := s.opts.Storage.open(testUser)
+	h, err := s.opts.Storage.open(testUser, "test-session")
 	if err != nil {
 		tb.Fatalf("open user: %v", err)
 	}
@@ -32,7 +32,7 @@ func serverWithFolders(tb testing.TB, n int) (*Server, *userHandle) {
 		}
 	}
 	h.close()
-	fresh, err := s.opts.Storage.open(testUser)
+	fresh, err := s.opts.Storage.open(testUser, "test-session")
 	if err != nil {
 		tb.Fatalf("reopen: %v", err)
 	}
@@ -50,7 +50,7 @@ func BenchmarkEmailState(b *testing.B) {
 				// A fresh handle per iteration, because that is what a request
 				// gets: the handle does not outlive it, so every request starts
 				// from a cold index.
-				h, err := s.opts.Storage.open(testUser)
+				h, err := s.opts.Storage.open(testUser, "test-session")
 				if err != nil {
 					b.Fatalf("open: %v", err)
 				}
@@ -73,7 +73,7 @@ func BenchmarkStateFloor(b *testing.B) {
 			s, _ := serverWithFolders(b, folders)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				h, err := s.opts.Storage.open(testUser)
+				h, err := s.opts.Storage.open(testUser, "test-session")
 				if err != nil {
 					b.Fatalf("open: %v", err)
 				}
