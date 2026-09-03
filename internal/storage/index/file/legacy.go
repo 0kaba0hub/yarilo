@@ -10,41 +10,9 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
-// Pre-Phase-2 ("yarilo-legacy") .index file layout — preserved
-// here purely to enable automatic on-open migration. The
-// canonical reader is the runtime path; this code is dead the
-// moment every existing folder has been touched once.
-//
-// Legacy header was 120 bytes with:
-//
-//	offset 0  uint8  major (=7)
-//	offset 1  uint8  minor (=4 in legacy)
-//	offset 2  uint16 base_header_size
-//	offset 4  uint32 header_size (== base, no real extensions)
-//	offset 8  uint32 record_size (= 5 + 8 + 4 = 17)
-//	offset 12 uint8  compat_flags (0x01)
-//	offset 16 uint32 index_id
-//	offset 24 uint32 uid_validity
-//	offset 28 uint32 next_uid
-//	offset 32 uint32 messages_count
-//	offset 36 uint32 seen_count
-//	offset 40 uint32 deleted_count
-//	offset 44 uint32 log_file_seq
-//	offset 48 uint32 log_file_tail
-//	offset 52 uint32 log_file_head
-//	offset 56 uint64 modseq          ← yarilo-only — straddles two legacy index fields
-//	offset 64 [16]byte folder_guid   ← yarilo-only — straddles 4 legacy index fields
-//
-// Per-record (17 bytes):
-//
-//	offset 0  uint32 uid
-//	offset 4  uint8  flags
-//	offset 5  uint64 modseq
-//	offset 13 uint32 keyword_bits
-//
-// A sibling .index.keywords text file held the keyword name
-// registry (one name per line, index = line number). The .names
-// sidecar (UID → filename) used today is preserved verbatim.
+// The pre-Phase-2 ("yarilo-legacy") .index layout, ours and read-only: kept so
+// a folder is migrated the first time it is opened, and dead once every folder
+// has been touched once. Wire layout in INTERNALS.md §7.
 const (
 	legacyMinor       = 4
 	legacyRecordSize  = 17

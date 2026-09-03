@@ -31,10 +31,8 @@ const (
 	intentCreate
 )
 
-// OpenFolder opens or creates the per-folder index; uidValidity is used only
-// for a fresh folder, and the returned Folder.ID keys all per-folder calls. A
-// legacy-format .index is migrated atomically on first open, leaving a
-// .legacy backup.
+// OpenFolder opens or creates the per-folder index; uidValidity applies only to
+// a fresh folder. A legacy .index is migrated on first open, leaving a backup.
 func (u *userIndex) OpenFolder(folder string, uidValidity uint32, traceID string) (*mailbox.Folder, error) {
 	return u.openFolder(folder, uidValidity, traceID, intentOpen)
 }
@@ -76,16 +74,14 @@ func (u *userIndex) openFolder(folder string, uidValidity uint32, traceID string
 	id := u.next
 	u.mu.Unlock()
 
-	// indexDir depends on u.driver via mailbox.FolderSubpath. A driver
-	// mismatch would compute a different indexDir for the same folder and
-	// register a disconnected folderState; log first opens to catch that.
+	// indexDir depends on u.driver: a mismatch computes a different path for
+	// one folder and registers a disconnected folderState.
 	slog.Debug("fileindex: openfolder first-open, computing layout",
 		"trace_id", traceID, "folder", folder, "driver", u.driver, "index_dir", indexDir)
 
 	if u.b.noCreate {
-		// Check before any mkdir: a no-create open must leave the filesystem
-		// exactly as it found it, or a mis-resolved path still gets a directory
-		// chain built under it.
+		// Before any mkdir: a no-create open must leave the filesystem as it
+		// found it, or a mis-resolved path still gets a directory chain.
 		if _, statErr := os.Stat(indexPath); statErr != nil {
 			if errors.Is(statErr, os.ErrNotExist) {
 				return nil, fmt.Errorf("fileindex/openfolder: no index at %s for folder %q: %w",
@@ -99,9 +95,8 @@ func (u *userIndex) openFolder(folder string, uidValidity uint32, traceID string
 	switch err := migrateLegacyFilenames(indexDir); {
 	case errors.Is(err, errForeignIndexPresent):
 		// Theirs, under a name that was ours once. A dbox folder is converted
-		// from it and keeps it until then; a maildir folder is served from
-		// its own files and never reads it, so for maildir it is dead weight
-		// (#1593).
+		// from it and keeps it until then; maildir is served from its own files
+		// and never reads it, so there it is dead weight (#1593).
 		if u.driver == "maildir" {
 			removeForeignIndexFiles(indexDir)
 		}
@@ -156,9 +151,8 @@ func (u *userIndex) stampLineage(fs *folderState) error {
 		if fs.lineage.Lineage != lineageUnknown {
 			return nil
 		}
-		// Flush only: truncating the log here would be a second, wrong decision
-		// -- a concurrent writer's committed entries would be lost. The flush
-		// folds the log into the base and records how far it reached.
+		// Flush only: truncating here would lose a concurrent writer's committed
+		// entries. The flush folds the log in and records how far it reached.
 		if err := fs.flush(true); err != nil {
 			return fmt.Errorf("fileindex/stamp: flush: %w", err)
 		}
@@ -173,9 +167,8 @@ func (u *userIndex) stampLineage(fs *folderState) error {
 			headerOnly := lg.f != nil && lg.size <= int64(mailindex.LogHeaderSize)
 			stale := lg.lineage() != fs.lineage.Lineage
 			lg.close()
-			// No floor stamp here: this log is a header and nothing else, so no
-			// expunge record is dropped, and raising the floor would cost every
-			// reader a resync for a truncate that lost nothing.
+			// No floor stamp: this log is a header and nothing else, so raising
+			// the floor would cost a resync for a truncate that lost nothing.
 			if headerOnly && stale {
 				if err := truncateLogLineage(fs.indexPath, fs.file.Header.IndexID, fs.lineage.Lineage); err != nil {
 					return fmt.Errorf("fileindex/stamp: reissue empty log: %w", err)
@@ -190,9 +183,8 @@ func (u *userIndex) stampLineage(fs *folderState) error {
 	})
 }
 
-// loadOrInit populates fs.file from the existing .index, a legacy migration, or
-// a fresh file. The initial stat is unlocked -- existing folders are the
-// common case, and only ErrNotExist needs the cross-process lock.
+// loadOrInit populates fs.file from the existing .index, a legacy migration or
+// a fresh file. The initial stat is unlocked: only ErrNotExist needs the lock.
 func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	st, err := os.Stat(fs.indexPath)
 	// Log every stat outcome so cross-process stat-history for a path can
@@ -212,18 +204,15 @@ func (u *userIndex) loadOrInit(fs *folderState, uidValidity uint32) error {
 	}
 	_ = st
 	if err := u.loadExisting(fs); err != nil {
-		// An unreadable on-disk format is the state of the data, not a fault
-		// in this code, and it stops at one folder. Named here so every layer
-		// above can say WHICH folder without re-deriving it from a path.
+		// An unreadable format is the state of the data, not a fault here, and
+		// it stops at one folder -- named so the layers above can say which.
 		return asCorrupt(fs.folder, err)
 	}
 	return nil
 }
 
-// loadOrInitMissing handles ErrNotExist under the cross-process lock: two
-// racing openers can both see it from the unlocked stat, and without the
-// lock's re-stat the loser's createFresh would reset NextUID and discard the
-// winner's UIDs.
+// loadOrInitMissing handles ErrNotExist under the lock: two openers can both see
+// it unlocked, and without the re-stat the loser's createFresh resets NextUID.
 func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error {
 	return u.withDistLock(fs, false, lockSiteOpenProbe, func() error {
 		st, err := os.Stat(fs.indexPath)
@@ -234,8 +223,7 @@ func (u *userIndex) loadOrInitMissing(fs *folderState, uidValidity uint32) error
 					fs.indexPath, fs.folder, os.ErrNotExist)
 			}
 			// Before deciding this folder is new: another implementation may
-			// have written it, in which case its state is on disk in their
-			// format and a fresh empty index would hide it (#1524).
+			// have written it, and a fresh empty index would hide it (#1524).
 			if fs.intent == intentCreate {
 				// A folder being created has no past: nothing of theirs to
 				// adopt into a name somebody just asked for.
@@ -265,10 +253,8 @@ func (u *userIndex) loadExisting(fs *folderState) error {
 	if _, isLegacy, err := detectAndDecodeLegacy(fs.indexPath); err != nil {
 		return fmt.Errorf("fileindex/openfolder: legacy probe: %w", err)
 	} else if isLegacy {
-		// Legacy migration writes the index, so take the folder lock and
-		// re-detect under it: a racer that already migrated wins and we load
-		// the migrated file. Re-entrant via HoldsResource when the missing
-		// branch already holds the lock.
+		// Legacy migration writes the index, so re-detect under the folder lock:
+		// a racer that already migrated wins and we load its file.
 		return u.withDistLock(fs, false, lockSiteOpenProbe, func() error {
 			legacy, stillLegacy, err := detectAndDecodeLegacy(fs.indexPath)
 			if err != nil {
@@ -295,26 +281,23 @@ func (u *userIndex) loadExisting(fs *folderState) error {
 	return u.loadModern(fs)
 }
 
-// readBase opens the base .index into fs.file, records its mtime, and
-// replays the .log (resetting a mismatched-IndexID log under the folder
-// lock).
+// readBase opens the base into fs.file, records its mtime and replays the log,
+// resetting a mismatched-IndexID one under the folder lock.
 func (u *userIndex) readBase(fs *folderState) error {
 	mf, err := mailindex.Open(fs.indexPath)
 	if err != nil {
 		return fmt.Errorf("fileindex/openfolder: open: %w", err)
 	}
 	fs.file = mf
-	// Every path that loads a base learns its pairing here, so "does this
-	// folder have a lineage" is answered by the file rather than by which
-	// function happened to load it.
+	// Every path that loads a base learns its pairing here, so the lineage
+	// question is answered by the file, not by which function loaded it.
 	fs.lineage = readLineage(mf)
 	if st, stErr := os.Stat(fs.indexPath); stErr == nil {
 		fs.baseMod = st.ModTime()
 		fs.baseIdent = st
 	}
-	// fs.logSize must come from applyLog's confirmed-applied offset, never a
-	// stat around the call: a post-call stat can over-report a concurrent
-	// append applyLog never parsed, wedging reload's fast path forever.
+	// fs.logSize comes from applyLog's confirmed offset, never a stat: a
+	// post-call stat over-reports an append it never parsed, wedging reload.
 	if _, logErr := os.Stat(fs.indexPath + ".log"); logErr == nil {
 		confirmedEnd, applyErr := fs.applyLog(0)
 		if errors.Is(applyErr, errLogIndexIDMismatch) {
@@ -324,9 +307,8 @@ func (u *userIndex) readBase(fs *folderState) error {
 				slog.Warn("fileindex: discarding log with mismatched IndexID on open",
 					"folder", fs.folder)
 				fs.closeFDs()
-				// A zero lineage here is fine and intended, not a gap: the base
-				// may predate the extension, and a log that pairs with nothing
-				// simply sends readers back to the locked path.
+				// A zero lineage is intended, not a gap: a base may predate the
+				// extension, and an unpaired log sends readers back to the lock.
 				if truncErr := truncateLogLineage(fs.indexPath, fs.file.Header.IndexID, fs.lineage.Lineage); truncErr != nil {
 					return fmt.Errorf("fileindex/openfolder: truncate after indexid mismatch: %w", truncErr)
 				}
@@ -351,9 +333,8 @@ func (u *userIndex) loadModern(fs *folderState) error {
 		return err
 	}
 	if fs.file.Header.UIDValidity == 0 {
-		// The UIDVALIDITY repair writes the index; serialize against other
-		// openers and re-read under the lock so a racer that already repaired
-		// it wins. Re-entrant via HoldsResource.
+		// The UIDVALIDITY repair writes the index, so re-read under the lock:
+		// a racer that already repaired it wins.
 		if err := u.withDistLock(fs, false, lockSiteOpenProbe, func() error {
 			if err := u.readBase(fs); err != nil {
 				return err
@@ -412,10 +393,8 @@ func (fs *folderState) createFresh(uidValidity uint32) error {
 	return ensureLogStub(fs.indexPath, fs.volatileDir, indexID, fs.lineage.Lineage)
 }
 
-// refreshExtStateFromDisk re-reads the base file's extension HEADERS -- never
-// its records -- and re-parses fs's typed copies from them. For the path that
-// keeps the records it already has and must still pick up what the headers now
-// say (see the adopt branch in reload).
+// refreshExtStateFromDisk re-reads the base's extension HEADERS, never its
+// records: for the path keeping the records it has but needing the headers.
 func (fs *folderState) refreshExtStateFromDisk() error {
 	exts, err := peekExtHeaders(fs.indexPath)
 	if err != nil {
@@ -424,9 +403,8 @@ func (fs *folderState) refreshExtStateFromDisk() error {
 	if len(exts) == 0 {
 		return nil
 	}
-	// The typed copies come from the freshly read headers; fs.file keeps its
-	// own extension list, which describes the record layout the records in
-	// memory were decoded with.
+	// The typed copies come from the fresh headers; fs.file keeps its own
+	// list, describing the layout its in-memory records were decoded with.
 	saved := fs.file.Extensions
 	fs.file.Extensions = exts
 	err = fs.refreshExtState()
@@ -461,9 +439,8 @@ func (fs *folderState) refreshExtState() error {
 	return nil
 }
 
-// recalcVsizeLocked recomputes the aggregate virtual size from the
-// per-record vsize extension, falling back to the physical size for
-// records that predate the extension. Caller holds fs.mu.
+// recalcVsizeLocked recomputes the aggregate from the per-record vsize
+// extension, falling back to physical size for records predating it.
 func (fs *folderState) recalcVsizeLocked() {
 	var (
 		total  uint64
@@ -486,10 +463,8 @@ func (fs *folderState) recalcVsizeLocked() {
 	}
 }
 
-// ensureVsizeLocked recomputes the aggregate only when the O(1) validity
-// check (highest_uid+1 == uidnext && message_count == messages) says it
-// is stale, so a quota read does not rescan every message. Caller holds
-// fs.mu.
+// ensureVsizeLocked recomputes the aggregate only when the O(1) validity check
+// says it is stale, so a quota read does not rescan every message. Holds fs.mu.
 func (fs *folderState) ensureVsizeLocked() {
 	if fs.vsize.MessageCount == fs.file.Header.MessagesCount &&
 		fs.vsize.HighestUID+1 == fs.file.Header.NextUID {
@@ -507,9 +482,8 @@ func (fs *folderState) persistVsizeLocked() {
 		ext.HdrSize = uint32(len(data))
 		return
 	}
-	// Backfill the extension for base indexes that predate hdr-vsize.
-	// AddHeaderExtension also fixes Header.HeaderSize; Recreate rejects a
-	// header-size mismatch.
+	// Backfill for base indexes predating hdr-vsize. AddHeaderExtension also
+	// fixes Header.HeaderSize, which Recreate rejects on mismatch.
 	if err := fs.file.AddHeaderExtension(extNameHdrVsize, data, 8, fs.file.Header.UIDValidity); err != nil {
 		slog.Warn("fileindex: hdr-vsize backfill failed", "folder", fs.folder, "err", err)
 	}
@@ -564,9 +538,8 @@ func (fs *folderState) highestModSeq() (uint64, error) {
 	return hdr.HighestModSeq, nil
 }
 
-// bumpModSeqHeader increments highest_modseq in the modseq
-// extension header and returns the new value. Caller is
-// responsible for calling flush afterwards.
+// bumpModSeqHeader increments highest_modseq and returns the new value; the
+// caller flushes.
 func (fs *folderState) bumpModSeqHeader() (uint64, error) {
 	ext := findExt(fs.file.Extensions, extNameModSeq)
 	if ext == nil {
@@ -581,9 +554,8 @@ func (fs *folderState) bumpModSeqHeader() (uint64, error) {
 	return hdr.HighestModSeq, nil
 }
 
-// advanceModSeqAtLeast bumps highest_modseq to at least target; no-op
-// when already >= target. Used when the caller pre-allocated a modseq
-// via NextModSeq: the header must reflect it without bumping past it.
+// advanceModSeqAtLeast raises highest_modseq to target, for a caller that
+// pre-allocated one: the header must reflect it without bumping past it.
 func (fs *folderState) advanceModSeqAtLeast(target uint64) error {
 	ext := findExt(fs.file.Extensions, extNameModSeq)
 	if ext == nil {
@@ -603,9 +575,8 @@ func (fs *folderState) advanceModSeqAtLeast(target uint64) error {
 // flush rewrites the on-disk .index file from fs.file plus the .names
 // sidecar from fs.filenames.
 func (fs *folderState) flush(wholeNames bool) error {
-	// flush persists Header.NextUID as ground truth and discards the log;
-	// log the caller so a NextUID regression can be traced to the flush
-	// that wrote it.
+	// flush persists Header.NextUID as ground truth and discards the log; name
+	// the caller so a NextUID regression traces to the flush that wrote it.
 	if pc, _, _, ok := runtime.Caller(1); ok {
 		caller := "unknown"
 		if fn := runtime.FuncForPC(pc); fn != nil {
@@ -622,15 +593,11 @@ func (fs *folderState) flush(wholeNames bool) error {
 	// the message-count recount below.
 	fs.recalcVsizeLocked()
 	fs.persistVsizeLocked()
-	// Mint the next lineage and record which log this base absorbs, and how far
-	// into it, before the base is built from fs.file. A crash between the
-	// rewrite and the log truncation then leaves a base that knows what it
-	// already contains, rather than one the whole log is applied to again.
+	// Mint the lineage and record what this base absorbs before building it: a
+	// crash before the truncation leaves a base that knows what it contains.
 	prev := readLineage(fs.file)
-	// Which log is being folded is read from the log, not assumed from our own
-	// previous lineage: a log written before the extension carries the constant
-	// the old code wrote, and assuming it carries ours would pair a base with a
-	// log it never absorbed.
+	// Read from the log, not our own previous lineage: a pre-extension log
+	// carries a constant, and assuming ours pairs a base with a foreign log.
 	folded := prev.Lineage
 	if lg, lerr := openLogRead(fs.indexPath); lerr == nil {
 		if seq := lg.lineage(); seq != lineageUnknown {
@@ -644,18 +611,16 @@ func (fs *folderState) flush(wholeNames bool) error {
 		FoldedOffset:  uint64(fs.logSize),
 		RecordsDigest: digestRecords(fs.file),
 	}
-	// Lineages start above the constant a pre-extension log carries, so a
-	// stamped base can never claim that log as its own and replay what it has
-	// already absorbed.
+	// Lineages start above the pre-extension constant, so a stamped base cannot
+	// claim such a log as its own and replay what it already absorbed.
 	if next.Lineage < legacyLogLineage+1 {
 		next.Lineage = legacyLogLineage + 1
 	}
 	if err := setLineage(fs.file, next); err != nil {
 		return fmt.Errorf("fileindex/flush: lineage: %w", err)
 	}
-	// One truth for the header size: recomputed here from what is about to be
-	// written. A path that grew an extension header without recomputing used to
-	// produce a base Recreate refuses, unflushable until noticed (#1285).
+	// One truth for the header size, recomputed here: a path that grew an
+	// extension without it produced a base Recreate refuses (#1285).
 	if err := fs.syncHeaderSizeLocked(); err != nil {
 		return err
 	}
@@ -682,14 +647,12 @@ func (fs *folderState) flush(wholeNames bool) error {
 		}
 		ri.TmpDir = fs.volatileDir
 	}
-	// Durability is off by default: the rename is atomic, so a lost tail
-	// re-derives from the log. Conversion is the exception -- it removes the
-	// only other copy right after, so the bytes must be on disk (#1524).
+	// Durability off by default: the rename is atomic and a lost tail re-derives
+	// from the log. Conversion removes the only other copy right after (#1524).
 	ri.Fsync = fs.fsyncOnFlush
 	if _, err := mailindex.Recreate(ri); err != nil {
-		// A rejected base is unwritable until someone sees WHY: the error names a
-		// size disagreement without naming which extension carries it, and the
-		// state is gone by the time anyone reads the log (#1285).
+		// A rejected base stays unwritable until someone sees WHY: the error
+		// names a size disagreement, not which extension carries it (#1285).
 		slog.Error("fileindex: base rewrite refused; the folder cannot be flushed",
 			"folder", fs.folder, "err", err,
 			"header_size", ri.Header.HeaderSize, "record_size", ri.Header.RecordSize,
@@ -715,10 +678,8 @@ func (fs *folderState) flush(wholeNames bool) error {
 	return nil
 }
 
-// withFolder locates folderID's state, locks it, reloads the on-disk
-// snapshot, and runs fn. fn sees the freshest committed state and must
-// flush its own mutations. "file does not exist" from reload is
-// swallowed so the caller can still createFresh.
+// withFolder locks folderID's state, reloads and runs fn against the freshest
+// committed state. A missing file is swallowed so the caller can createFresh.
 func (u *userIndex) withFolder(folderID uint64, fn func(*folderState) error) error {
 	u.mu.Lock()
 	fs, ok := u.open[folderID]
@@ -742,15 +703,13 @@ func (u *userIndex) withFolder(folderID uint64, fn func(*folderState) error) err
 //  2. Base unchanged, log grew: apply only the new log entries.
 //  3. Base changed: full re-read of base + remaining log.
 func (fs *folderState) reload() error {
-	// One wrapper for every path out of the read, found through the field this
-	// way (#1344), naming the folder so layers above answer per folder rather
-	// than per account.
+	// One wrapper for every path out of the read (#1344), naming the folder so
+	// layers above answer per folder rather than per account.
 	return asCorrupt(fs.folder, fs.reloadLocked())
 }
 
-// asCorrupt names the folder on an error that means what is on disk is not
-// what this version reads. It is the state of the data, not a fault in this
-// code, and it stops at one folder.
+// asCorrupt names the folder on an error meaning the disk holds what this
+// version does not read -- the data's state, and it stops at one folder.
 func asCorrupt(folder string, err error) error {
 	if err == nil {
 		return nil
@@ -799,15 +758,12 @@ func (fs *folderState) reloadLocked() error {
 		newBaseMod = baseStat.ModTime()
 	}
 
-	// Base identity check: mtime resolution is coarse on some filesystems,
-	// so a same-tick replace of the base .index could be missed.
-	// baseReplaced is true only when both stats are known and differ; an
-	// unknown identity falls back to the mtime comparison below.
+	// Identity, since coarse mtime resolution hides a same-tick replace. True
+	// only when both stats are known and differ; unknown falls back to mtime.
 	baseReplaced := fs.baseIdent != nil && baseStat != nil && !os.SameFile(fs.baseIdent, baseStat)
 
-	// Fast path: nothing on disk changed. Never taken when the log was
-	// replaced: that means a concurrent compaction rewrote the base too,
-	// and its new mtime may coincide with the cached one.
+	// Fast path, never taken when the log was replaced: a concurrent compaction
+	// rewrote the base too, and its new mtime may coincide with the cached one.
 	if !logReplaced && !baseReplaced && newBaseMod == fs.baseMod && newLogSize == fs.logSize {
 		slog.Debug("fileindex: reload fast-path",
 			"trace_id", fs.traceID, "folder", fs.folder,
@@ -835,10 +791,9 @@ func (fs *folderState) reloadLocked() error {
 		if baseErr != nil {
 			return fmt.Errorf("fileindex/reload: %w", baseErr)
 		}
-		// A rewritten base often holds exactly what this handle already holds --
-		// a compaction folding in the log already applied. The digest proves it
-		// rather than assumes it: several paths rewrite the base folding the
-		// same log, so offsets agreeing is not enough (#1228).
+		// A rewritten base often holds exactly what this handle holds -- a
+		// compaction folding in the applied log. The digest proves it: several
+		// paths fold the same log, so offsets agreeing is not enough (#1228).
 		if fs.file != nil && !logReplaced {
 			if h, perr := peekLineage(fs.indexPath); perr == nil && h.Lineage != lineageUnknown &&
 				h.FoldedLineage == fs.lineage.Lineage && uint64(fs.logSize) >= h.FoldedOffset &&
@@ -873,10 +828,8 @@ func (fs *folderState) reloadLocked() error {
 		fs.baseMod = newBaseMod
 		fs.baseIdent = baseStat
 		fs.lineage = readLineage(mf)
-		// Where to resume in the log the base did not fully absorb. Without the
-		// pairing this restarts from zero and relies on every transaction type
-		// being idempotent -- which they are today, but that is a property
-		// nobody declared and the next transaction type need not have.
+		// Where to resume in the log the base did not fully absorb: without the
+		// pairing this restarts from zero, relying on idempotence nobody declared.
 		fs.logSize = 0
 		if off, paired := replayStart(fs.lineage, lg.lineage()); paired {
 			fs.logSize = off
@@ -900,24 +853,19 @@ func (fs *folderState) reloadLocked() error {
 	return nil
 }
 
-// applyLogTail folds in whatever the log gained past what this handle has
-// applied. Split out because both the full reload and the adopt path end here:
-// taking a new base is never the end of a refresh, since the writer that
-// produced it may already have appended to the log it started.
+// applyLogTail folds in what the log gained past this handle -- both reload and
+// adopt end here, since a new base's writer may already have appended to it.
 func (fs *folderState) applyLogTail(lg *logReader) error {
 	if lg.size > fs.logSize {
-		// fs.logSize comes from applyLog's confirmed-applied return value,
-		// not the pre-call stat (see readBase). If an append landed mid-read,
-		// the next reload re-applies the remainder.
+		// fs.logSize comes from applyLog's confirmed return, not the pre-call
+		// stat: an append mid-read is re-applied by the next reload.
 		if confirmedEnd, err := fs.applyLogFrom(lg, fs.logSize); errors.Is(err, errLogIndexIDMismatch) {
 			// Stale log from a previous mailbox at this path: flush the
 			// current base and reset the log.
 			slog.Warn("fileindex: discarding log with mismatched IndexID, re-flushing base",
 				"folder", fs.folder)
-			// Conservative: the log belonged to a different mailbox at this
-			// path, so its expunges were never ours -- but a reader cannot tell
-			// that from the outside, and raising the floor costs a resync while
-			// leaving it costs a phantom message.
+			// Conservative: those expunges were a different mailbox's, and
+			// raising the floor costs a resync where leaving it costs a phantom.
 			if floorErr := fs.stampExpungeFloorLocked(); floorErr != nil {
 				return fmt.Errorf("fileindex/reload: stamp floor after indexid mismatch: %w", floorErr)
 			}
@@ -937,19 +885,17 @@ func (fs *folderState) applyLogTail(lg *logReader) error {
 	return nil
 }
 
-// SaveFolder persists header-level mutations from f back to disk.
-// Record-state changes are ignored; callers use AppendMessage /
-// UpdateFlags / ExpungeMessage for those.
+// SaveFolder persists header-level mutations from f. Record-state changes are
+// ignored; callers use AppendMessage, UpdateFlags or ExpungeMessage.
 func (u *userIndex) SaveFolder(f *mailbox.Folder) error {
 	return u.withFolder(f.ID, func(fs *folderState) error {
 		return fs.flush(false)
 	})
 }
 
-// AdoptUIDSpace sets a folder's UIDVALIDITY and next UID from a store that
-// already records them, and refuses a folder that holds messages -- the
-// refusal is the substance, since changing the UID space of a mailbox a
-// session may have seen is what UIDVALIDITY exists to prevent.
+// AdoptUIDSpace sets UIDVALIDITY and next UID from a store that records them,
+// refusing a folder that holds messages -- changing the UID space of a mailbox
+// a session may have seen is what UIDVALIDITY exists to prevent.
 func (u *userIndex) AdoptUIDSpace(folderID uint64, uidValidity, nextUID uint32) error {
 	if uidValidity == 0 {
 		return fmt.Errorf("fileindex/adopt: uid validity 0")
@@ -970,14 +916,12 @@ func (u *userIndex) AdoptUIDSpace(folderID uint64, uidValidity, nextUID uint32) 
 	})
 }
 
-// AppendMessage records m as a new on-disk record. The caller is
-// expected to have already assigned m.UID via AllocateUID or via
-// an external authority (mdbox-style map_uid).
+// AppendMessage records m as a new on-disk record; m.UID must already be
+// assigned, by AllocateUID or by an external authority.
 func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error {
 	if err := u.withFolder(folderID, func(fs *folderState) error {
-		// next_uid_before exposes a UID-reuse race in the logs: a commit with
-		// UID < next_uid_before means the counter advanced past this UID
-		// since AllocateUID ran.
+		// next_uid_before exposes a UID-reuse race: a commit below it means the
+		// counter advanced past this UID since AllocateUID ran.
 		slog.Debug("fileindex: committing pre-allocated uid", "trace_id", fs.traceID,
 			"user", u.username, "folder", fs.folder, "uid", m.UID, "next_uid_before", fs.file.Header.NextUID)
 		if err := fs.appendLocked(m); err != nil {
@@ -994,10 +938,9 @@ func (u *userIndex) AppendMessage(folderID uint64, m *mailbox.MessageMeta) error
 	return nil
 }
 
-// FolderVSize returns the folder's aggregate virtual size and message count
-// from the hdr-vsize cache, which is what the count quota backend sums. A read,
-// taken as one: through the write path it cost an exclusive lock per folder,
-// for every folder, before every save (#1634).
+// FolderVSize returns the aggregate the quota backend sums, from the hdr-vsize
+// cache. A read, taken as one: through the write path it cost an exclusive lock
+// per folder before every save (#1634).
 func (u *userIndex) FolderVSize(folderID uint64) (bytes uint64, messages uint32, err error) {
 	err = u.withFolderROUnlocked(folderID, func(fs *folderState) error {
 		bytes = fs.vsize.Vsize
@@ -1007,9 +950,8 @@ func (u *userIndex) FolderVSize(folderID uint64) (bytes uint64, messages uint32,
 	return bytes, messages, err
 }
 
-// RecomputeVSize forces a full rebuild of the folder's hdr-vsize aggregate from
-// the per-record vsize extension and persists it, bypassing the validity check.
-// The admin recovery path for a corrupted aggregate; normal reads self-heal.
+// RecomputeVSize rebuilds the hdr-vsize aggregate from the per-record extension
+// and persists it -- the admin path for a corrupt one; normal reads self-heal.
 func (u *userIndex) RecomputeVSize(folderID uint64) error {
 	return u.withFolder(folderID, func(fs *folderState) error {
 		fs.recalcVsizeLocked()
@@ -1018,9 +960,8 @@ func (u *userIndex) RecomputeVSize(folderID uint64) error {
 	})
 }
 
-// GUIDBackfillNeeded reads the guid extension header. An index predating the
-// extension has no header at all and decodes as pending, which is exactly the
-// set of folders that still carry zero GUIDs.
+// GUIDBackfillNeeded reads the guid extension header; an index predating it
+// decodes as pending, which is exactly the set still carrying zero GUIDs.
 func (u *userIndex) GUIDBackfillNeeded(folderID uint64) (bool, error) {
 	var need bool
 	err := u.withFolderRO(folderID, func(fs *folderState) error {
@@ -1031,9 +972,8 @@ func (u *userIndex) GUIDBackfillNeeded(folderID uint64) (bool, error) {
 	return need, err
 }
 
-// SetGUIDs stamps storage-provided GUIDs onto records that have none and flips
-// the header to complete. Records already carrying a GUID are left alone, so an
-// interrupted pass resumes to the same result and a second run changes nothing.
+// SetGUIDs stamps GUIDs onto records that have none and flips the header to
+// complete, leaving existing ones alone -- so an interrupted pass resumes.
 func (u *userIndex) SetGUIDs(folderID uint64, guids map[uint32][16]byte) error {
 	var zero [16]byte
 	return u.withFolder(folderID, func(fs *folderState) error {
@@ -1066,10 +1006,9 @@ func (u *userIndex) SetGUIDs(folderID uint64, guids map[uint32][16]byte) error {
 	})
 }
 
-// AllocateUID reserves and persists the folder's next UID, for the caller to
-// pass to Save and then AppendMessage. A crash between the two burns the UID;
-// the periodic rebuild reconciles by scanning the tree. One cross-process lock
-// covers the read-modify-write window against a concurrent AllocateUID.
+// AllocateUID reserves and persists the next UID for the caller to pass to Save
+// and AppendMessage; a crash between them burns it, and the rebuild reconciles.
+// One cross-process lock covers the read-modify-write window.
 func (u *userIndex) AllocateUID(folderID uint64) (uint32, error) {
 	var assigned uint32
 	err := u.withFolder(folderID, func(fs *folderState) error {
@@ -1129,10 +1068,9 @@ func (u *userIndex) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) e
 	return nil
 }
 
-// appendLocked is the in-memory half of AppendMessage. Caller must hold
-// the folder lock. Non-zero m.ModSeq is a pre-allocated value and is
-// recorded as-is (advancing the high-watermark only if needed); zero
-// means bump the counter and write the new value into m.
+// appendLocked is the in-memory half of AppendMessage; caller holds the folder
+// lock. A non-zero m.ModSeq is pre-allocated and recorded as-is; zero bumps the
+// counter and writes the new value back into m.
 func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 	if m.UID == 0 {
 		return fmt.Errorf("fileindex/append: UID=0 (use AllocateUID first)")
@@ -1159,9 +1097,8 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 	if err := fs.persistKeywordRegistry(); err != nil {
 		return err
 	}
-	// Keyword registry grew: persist extension headers to the base file so
-	// a cross-pod reader can decode keyword bitmasks. Rare write (first use
-	// of each keyword name only).
+	// The registry grew: persist the extension headers so a cross-pod reader
+	// can decode the bitmasks. Rare -- first use of each name only.
 	if len(fs.keywords.Names) > prevKwCount {
 		if err := fs.flush(false); err != nil {
 			return err
@@ -1212,18 +1149,15 @@ func (u *userIndex) UpdateFlags(folderID uint64, uid uint32, flags, keywords []s
 	return u.writeFlags(folderID, uid, flags, keywords, flagsReplace)
 }
 
-// AddFlags adds flags and keywords, unioned against the record as the lock
-// finds it -- unlike UpdateFlags's absolute list, which overwrites changes made
-// since an earlier read. The implicit \Seen of a non-PEEK FETCH is that caller
-// (#1250).
+// AddFlags unions flags and keywords against the record as the lock finds it,
+// unlike UpdateFlags's absolute list, which overwrites changes since an earlier
+// read -- the implicit \Seen of a non-PEEK FETCH being that caller (#1250).
 func (u *userIndex) AddFlags(folderID uint64, uid uint32, flags, keywords []string) error {
 	return u.writeFlags(folderID, uid, flags, keywords, flagsAdd)
 }
 
-// RemoveFlags clears flags and keywords from a message, leaving the rest as the
-// lock finds them. The counterpart of AddFlags, and needed for the same reason:
-// a caller clearing one flag through UpdateFlags has to send the whole
-// remaining set, which is a set it read earlier.
+// RemoveFlags clears flags and keywords, leaving the rest as the lock finds
+// them: AddFlags's counterpart, since UpdateFlags needs a whole set read earlier.
 func (u *userIndex) RemoveFlags(folderID uint64, uid uint32, flags, keywords []string) error {
 	return u.writeFlags(folderID, uid, flags, keywords, flagsRemove)
 }
@@ -1245,10 +1179,8 @@ func (u *userIndex) writeFlags(folderID uint64, uid uint32, flags, keywords []st
 		if err != nil {
 			return err
 		}
-		// Read the record's own keywords under the lock: Add/Remove fold the
-		// caller's list into them, so a keyword set between the caller's read
-		// and this write is not dropped by a list that predates it, and every
-		// mode needs them anyway to journal the difference.
+		// The record's own keywords under the lock: Add/Remove fold into them,
+		// so one set since the caller's read is not dropped.
 		var have []string
 		for _, rec := range fs.file.Records {
 			if rec.UID != uid {
@@ -1322,14 +1254,12 @@ func (u *userIndex) writeFlags(folderID uint64, uid uint32, flags, keywords []st
 	})
 }
 
-// beforeAppendName runs before each name is written. Test seam: what the split
-// has to prove is that the append clock spans the writes, and a fast disk
-// reports zero either way.
+// beforeAppendName runs before each name is written. Test seam: the append
+// clock must be proven to span the writes, since a fast disk reports zero.
 var beforeAppendName func()
 
-// UpdateFilenames records a whole command's new names under one acquisition. The
-// single form locks per message, and a 41-name STORE spent 17.7s of its 18.1s
-// here at 121ms a name (#1646).
+// UpdateFilenames records a command's new names under one acquisition: the
+// single form locks per message, costing a 41-name STORE 17.7s of 18.1s (#1646).
 func (u *userIndex) UpdateFilenames(folderID uint64, names map[uint32]string) error {
 	if len(names) == 0 {
 		return nil
@@ -1341,10 +1271,9 @@ func (u *userIndex) UpdateFilenames(folderID uint64, names map[uint32]string) er
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
 
-	// Timed in three, because the batch is one acquisition and a single name
-	// still cost 4s in a run whose mean was 14ms: the wait, the freshness check
-	// and the appends are three different floors and only one of them has a
-	// known cure (#1650).
+	// Timed in three: one acquisition, and a single name still cost 4s where the
+	// mean was 14ms. The wait, the freshness check and the appends are separate
+	// floors, and only one has a known cure (#1650).
 	whole := time.Now()
 	var lockMS, reloadMS, appendMS int64
 	err := u.withFolderLock(fs, func() error {
@@ -1361,8 +1290,7 @@ func (u *userIndex) UpdateFilenames(folderID uint64, names map[uint32]string) er
 				beforeAppendName()
 			}
 			// A uid the folder no longer carries is skipped, not refused: it was
-			// expunged between the rename and this call, and the names beside it
-			// still have to land.
+			// expunged between the rename and here, and the rest must land.
 			if cur, have := fs.filenames[uid]; !have || cur == filename {
 				continue
 			}
@@ -1380,9 +1308,8 @@ func (u *userIndex) UpdateFilenames(folderID uint64, names map[uint32]string) er
 	return err
 }
 
-// UpdateFilename repoints the stored on-disk filename for a UID. The
-// filename lives only in the .names sidecar; last write wins on reload.
-// No-op when uid is unknown.
+// UpdateFilename repoints a UID's stored filename, which lives only in the
+// .names sidecar; last write wins on reload, and an unknown uid is a no-op.
 func (u *userIndex) UpdateFilename(folderID uint64, uid uint32, filename string) error {
 	return u.withFolder(folderID, func(fs *folderState) error {
 		if _, ok := fs.filenames[uid]; !ok {
@@ -1419,10 +1346,8 @@ func (u *userIndex) ClearFolderCorrupt(folderID uint64) error {
 	})
 }
 
-// UpdateFlagsMulti replaces flags+keywords for a batch of UIDs in a single
-// lock/reload/flush cycle. Each UID gets an individual modseq bump so clients
-// can use CONDSTORE to pinpoint which messages changed. Returns the new modseq
-// per UID; UIDs not found in the index are silently skipped.
+// UpdateFlagsMulti replaces a batch's flags in one lock/reload/flush cycle,
+// bumping each UID's modseq so CONDSTORE can pinpoint what changed.
 func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox.FlagsUpdate) (map[uint32]mailbox.FlagsResult, error) {
 	result := make(map[uint32]mailbox.FlagsResult, len(updates))
 	err := u.withFolder(folderID, func(fs *folderState) error {
@@ -1460,9 +1385,8 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 			if err != nil {
 				return err
 			}
-			// Under Add/Remove the caller named only what changes, so the set
-			// is resolved here, against the record the lock is holding. A set
-			// computed by the caller would be as old as its last read.
+			// Add/Remove name only what changes, so the set is resolved here
+			// against the held record -- the caller's would be as old as its read.
 			kwWanted := upd.Keywords
 			have := keywordsFromBitmask(fs.keywords, decodeKeywordsRec(rec.Ext[extNameKeywords]))
 			if upd.Mode == mailbox.FlagsAdd {
@@ -1532,9 +1456,8 @@ func (u *userIndex) UpdateFlagsMulti(folderID uint64, updates map[uint32]mailbox
 	return result, err
 }
 
-// ExpungeMessage removes a record: writes a TxTypeExpungeGUID log entry
-// (with EXPUNGE_PROT) and drops the in-memory record. Vanished later
-// reads those log entries to satisfy QRESYNC.
+// ExpungeMessage writes a TxTypeExpungeGUID log entry and drops the in-memory
+// record; Vanished reads those entries later to satisfy QRESYNC.
 func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 	if err := u.withFolder(folderID, func(fs *folderState) error {
 		modseq, err := fs.bumpModSeqHeader()
@@ -1560,9 +1483,8 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 		}
 		expungedVSize := decodeVsizeRec(rec.Ext[extNameVsize])
 		if expungedVSize == 0 {
-			// Record without the per-record vsize extension: fall back to the
-			// physical size, matching recalcVsizeLocked, so the aggregate is
-			// not decremented by 0 and left stale.
+			// Without the per-record vsize extension, fall back to physical
+			// size as recalcVsizeLocked does, or the aggregate goes stale.
 			expungedVSize = fs.sizes[rec.UID]
 		}
 		fs.file.Records = append(fs.file.Records[:idx], fs.file.Records[idx+1:]...)
@@ -1583,10 +1505,9 @@ func (u *userIndex) ExpungeMessage(folderID uint64, uid uint32) error {
 		expPayload := make([]byte, 28)
 		le := binary.LittleEndian
 		le.PutUint32(expPayload[0:], uid)
-		// The MESSAGE's GUID, the only place its identity survives once the
-		// record is removed. The mailbox GUID here once gave every expunge in a
-		// folder the same value -- invisible to QRESYNC, which matches by UID,
-		// but unusable by a protocol addressing messages by id (#1216).
+		// The MESSAGE's GUID, the only place identity survives the record. The
+		// mailbox GUID here once gave every expunge the same value -- invisible
+		// to QRESYNC, unusable by anything addressing by id (#1216).
 		msgGUID := decodeGUIDRec(rec.Ext[extNameGUID])
 		copy(expPayload[4:20], msgGUID[:])
 		le.PutUint64(expPayload[20:], modseq)
@@ -1608,10 +1529,9 @@ func (u *userIndex) GetMessages(folderID uint64, uids mailbox.SeqSet) ([]*mailbo
 	return u.getMessages(folderID, uids, false)
 }
 
-// GetMessagesUnlocked answers without the cross-process lock where the files can
-// prove their own consistency. For readers whose answer goes to a client and
-// decides nothing on disk -- FETCH, SEARCH, SELECT, STATUS, POLL. A caller whose
-// answer drives a write or a delete must use GetMessages (#1249).
+// GetMessagesUnlocked answers without the cross-process lock where the files
+// prove their own consistency: for readers answering a client and deciding
+// nothing. A caller driving a write or delete must use GetMessages (#1249).
 func (u *userIndex) GetMessagesUnlocked(folderID uint64, uids mailbox.SeqSet) ([]*mailbox.MessageMeta, error) {
 	return u.getMessages(folderID, uids, true)
 }
@@ -1677,9 +1597,8 @@ func (u *userIndex) NextModSeq(folderID uint64) (uint64, error) {
 	return out, err
 }
 
-// Vanished returns every UID expunged from this folder with expunge
-// modseq strictly greater than sinceModSeq. Drives the QRESYNC VANISHED
-// response (RFC 7162).
+// Vanished returns every UID expunged with modseq above sinceModSeq, driving
+// the QRESYNC VANISHED response (RFC 7162).
 func (u *userIndex) Vanished(folderID uint64, sinceModSeq uint64) ([]uint32, error) {
 	return u.vanished(folderID, sinceModSeq, false)
 }
@@ -1712,9 +1631,8 @@ func (u *userIndex) Keywords(folderID uint64) ([]string, error) {
 	return u.keywords(folderID, false)
 }
 
-// KeywordsUnlocked is Keywords for the SELECT response: a keyword declared a
-// moment later shows up on the next command, which is the staleness the
-// protocol already accepts (#1249).
+// KeywordsUnlocked is Keywords for SELECT: a keyword declared a moment later
+// appears on the next command, the staleness the protocol accepts (#1249).
 func (u *userIndex) KeywordsUnlocked(folderID uint64) ([]string, error) {
 	return u.keywords(folderID, true)
 }
@@ -1849,9 +1767,8 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 	return expunged, nil
 }
 
-// SetAltTier sets or clears FlagBackend on every record whose Filename
-// is in the filenames set. Called after AltMove relocates m.<N> files so
-// Fetch skips the primary open() for cold-tier messages.
+// SetAltTier sets or clears FlagBackend on the named records, after AltMove,
+// so Fetch skips the primary open for cold-tier messages.
 func (u *userIndex) SetAltTier(folderID uint64, filenames []string, altTier bool) error {
 	if len(filenames) == 0 {
 		return nil
@@ -1884,10 +1801,8 @@ func (u *userIndex) SetAltTier(folderID uint64, filenames []string, altTier bool
 	})
 }
 
-// OptimizeIndex compacts pending log records into the base file and
-// truncates the log. Afterwards Vanished(sinceModSeq) returns empty for
-// every sinceModSeq < currentHighest: prior expunges have been absorbed
-// into the base index.
+// OptimizeIndex folds pending log records into the base and truncates it, so
+// Vanished(since) is then empty below the current highest.
 func (u *userIndex) OptimizeIndex(folderID uint64) error {
 	return u.withFolder(folderID, func(fs *folderState) error {
 		if err := fs.stampExpungeFloorLocked(); err != nil {
@@ -1907,10 +1822,9 @@ func (u *userIndex) OptimizeIndex(folderID uint64) error {
 	})
 }
 
-// VanishedGUIDs is Vanished by message identity, for a GUID-addressed protocol.
-// complete is false when a record cannot be named: an expunge written before
-// the field carried the message GUID holds the MAILBOX's instead, dropped
-// rather than handed out as an id that names no message.
+// VanishedGUIDs is Vanished by message identity. complete is false when a
+// record cannot be named: an expunge predating the field holds the MAILBOX's
+// GUID, dropped rather than handed out as an id naming no message.
 func (u *userIndex) VanishedGUIDs(folderID uint64, sinceModSeq uint64) (guids [][16]byte, complete bool, err error) {
 	complete = true
 	err = u.withFolder(folderID, func(fs *folderState) error {
@@ -1930,10 +1844,9 @@ func (u *userIndex) VanishedGUIDs(folderID uint64, sinceModSeq uint64) (guids []
 	return guids, complete, err
 }
 
-// FolderStamp stats the folder's two files without opening it, so a caller
-// holding a cached marker pays two stats instead of a base read and a log
-// replay. A missing file reports as size -1, the JournalSizes convention, so
-// "not there" and "empty" stay different states.
+// FolderStamp stats the folder's two files without opening it, so a cached
+// marker costs two stats instead of a read and a replay. A missing file is -1,
+// keeping "not there" and "empty" apart.
 func (u *userIndex) FolderStamp(folder string) (mailbox.FolderStamp, error) {
 	indexPath := indexPathFor(u.indexDir(folder))
 	stamp := mailbox.FolderStamp{BaseSize: -1, LogSize: -1}
@@ -1960,10 +1873,9 @@ func (u *userIndex) ExpungeFloor(folderID uint64) (uint64, error) {
 	return floor, err
 }
 
-// JournalSizes reports the base index and log sizes right now; a log that does
-// not exist reports -1, a state drivers reach on purpose, not an empty log.
-// Measured here since the paths are this package's, and a caller
-// reconstructing them would drift the moment the layout changes.
+// JournalSizes reports the base and log sizes now; a missing log is -1, a state
+// drivers reach on purpose. Measured here since the paths are this package's and
+// a caller reconstructing them would drift.
 func (u *userIndex) JournalSizes(folderID uint64) (int64, int64, error) {
 	u.mu.Lock()
 	fs, ok := u.open[folderID]
@@ -2003,9 +1915,8 @@ func (fs *folderState) persistKeywordRegistry() error {
 	return nil
 }
 
-// syncHeaderSizeLocked recomputes Header.HeaderSize from the extension headers,
-// the way Recreate validates it. Cheap and idempotent, so it is a barrier every
-// write passes rather than a rule every writer has to remember.
+// syncHeaderSizeLocked recomputes Header.HeaderSize the way Recreate validates
+// it -- a barrier every write passes, not a rule every writer must remember.
 func (fs *folderState) syncHeaderSizeLocked() error {
 	extBytes, err := mailindex.EncodeExtHeaders(fs.file.Extensions)
 	if err != nil {
@@ -2084,9 +1995,8 @@ func decodeKeywordsRec(b []byte) uint32 {
 
 // ---- log file expunge tracking -----------------------------
 
-// scanExpungesSince reads every TxTypeExpungeGUID record in the .log
-// file and returns the UIDs whose embedded modseq is strictly greater
-// than sinceModSeq.
+// scanExpungesSince returns the UIDs from every TxTypeExpungeGUID record whose
+// embedded modseq is above sinceModSeq.
 func scanExpungesSince(indexPath string, sinceModSeq uint64) ([]uint32, error) {
 	logPath := indexPath + ".log"
 	f, err := os.Open(logPath)
@@ -2138,9 +2048,8 @@ func scanExpungesSince(indexPath string, sinceModSeq uint64) ([]uint32, error) {
 	return out, nil
 }
 
-// scanExpungedGUIDsSince is scanExpungesSince reading the record's other half:
-// the message GUID beside its UID, needed once the message is gone and its
-// identity cannot be looked up elsewhere (RFC 8621 destroyed ids, #1216).
+// scanExpungedGUIDsSince reads the record's other half, the message GUID --
+// the only place identity survives once the message is gone (#1216).
 func scanExpungedGUIDsSince(indexPath string, sinceModSeq uint64) ([][16]byte, error) {
 	logPath := indexPath + ".log"
 	f, err := os.Open(logPath)
@@ -2206,9 +2115,8 @@ func encLogRec(txType mailindex.TxType, extraType mailindex.TxTypeFlags, payload
 }
 
 // keywordLogRecords journals a keyword change with the NAME inside the record,
-// so a replay learns the bit and what it stands for without a registry the log
-// did not carry -- an unseen name simply gets the next bit. An emptied set is
-// one RESET rather than N removals.
+// so a replay learns the bit and its meaning without an external registry -- an
+// unseen name gets the next bit. An emptied set is one RESET.
 func keywordLogRecords(uid uint32, have, want []string) [][]byte {
 	added := subtractStrings(want, have)
 	removed := subtractStrings(have, want)
@@ -2245,10 +2153,8 @@ func encU32Update(offset uint16, v uint32) []byte {
 		mailindex.EncodeTxHeaderUpdatePayload(mailindex.TxHeaderUpdate{Offset: offset, Data: data}))
 }
 
-// appendMutLog writes pre-encoded tx records to the .index.log file,
-// wrapped in a BOUNDARY record so the group is atomic on recovery.
-// Caller must hold fs.mu. fs.logFD stays open across calls; closeFDs()
-// must be called before any operation that replaces the log file.
+// appendMutLog writes pre-encoded tx records wrapped in a BOUNDARY, atomic on
+// recovery. Caller holds fs.mu; closeFDs() runs before the log is replaced.
 func (fs *folderState) appendMutLog(records ...[]byte) error {
 	t0 := time.Now()
 
@@ -2260,9 +2166,8 @@ func (fs *folderState) appendMutLog(records ...[]byte) error {
 		}
 		st, _ := f.Stat()
 		if st != nil && st.Size() == 0 {
-			// FileSeq carries the base's lineage, which is what makes the log
-			// self-describing: a reader can tell whether this log belongs to
-			// the base it is holding.
+			// FileSeq carries the base's lineage, so a reader can tell whether
+			// this log belongs to the base it holds.
 			hdr := mailindex.NewLogHeader(fs.file.Header.IndexID, fs.lineage.Lineage, uint32(time.Now().Unix()))
 			if err := hdr.Encode(f); err != nil {
 				_ = f.Close()
@@ -2282,9 +2187,8 @@ func (fs *folderState) appendMutLog(records ...[]byte) error {
 	boundary := encLogRec(mailindex.TxTypeBoundary, 0,
 		mailindex.EncodeTxBoundaryPayload(mailindex.TxBoundary{Size: uint32(12 + subSize)}))
 
-	// Single write: BOUNDARY + sub-records must land atomically so a
-	// concurrent applyLog cannot see a BOUNDARY whose payload is not yet on
-	// disk and truncate a committed update.
+	// One write: the BOUNDARY and its sub-records must land together, or a
+	// concurrent applyLog truncates a committed update.
 	buf := make([]byte, 0, 12+subSize)
 	buf = append(buf, boundary...)
 	for _, rec := range records {
@@ -2318,9 +2222,8 @@ func (fs *folderState) applyLog(fromOffset int64) (int64, error) {
 	return fs.applyLogFrom(lg, fromOffset)
 }
 
-// applyLogFrom folds in the log lg holds open, starting at fromOffset. Taking
-// the reader rather than a path is the point: the caller decided where to start
-// from THIS descriptor's header, so the body it reads has to be the same one.
+// applyLogFrom folds in the log lg holds open from fromOffset. It takes the
+// reader, not a path: the offset came from THIS descriptor's header.
 func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, error) {
 	if lg.f == nil || !lg.ok {
 		return fromOffset, nil // absent, empty or unreadable log
@@ -2331,10 +2234,8 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 		// path; caller flushes a fresh base + empty log.
 		return fromOffset, errLogIndexIDMismatch
 	}
-	// The reader consumed the header when it opened, so seek explicitly rather
-	// than inheriting whatever position the last user of this descriptor left.
-	// fromOffset itself is not rewritten: zero means "full replay" further
-	// down, where it gates the torn-tail truncate.
+	// Seek explicitly rather than inheriting the descriptor's position; zero
+	// still means "full replay" below, where it gates the torn-tail truncate.
 	start := int64(mailindex.LogHeaderSize)
 	if fromOffset > start {
 		start = fromOffset
@@ -2353,10 +2254,8 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 	hdrBuf := make([]byte, 8)
 	appendedMsgs := false
 
-	// filePos and committedEnd are absolute file offsets. committedEnd
-	// tracks the offset after the last complete BOUNDARY seen during this
-	// call, so a partial/torn trailing group is excluded from the confirmed
-	// return value on incremental reads too.
+	// Absolute offsets; committedEnd follows the last complete BOUNDARY, so a
+	// torn trailing group stays out of the confirmed return.
 	filePos := fromOffset
 	if fromOffset == 0 {
 		filePos = int64(mailindex.LogHeaderSize)
@@ -2438,11 +2337,9 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 			}
 			for i := 0; i+stride <= len(payload); i += stride {
 				uid := le.Uint32(payload[i:])
-				// The 28-byte form carries the expunge modseq at offset 20. Feed
-				// it into maxModseq so a cross-process reader advances its header
-				// HighestModSeq on an expunge — otherwise a sibling process's
-				// NextModSeq reuses the expunge's modseq for the next delivery,
-				// breaking modseq monotonicity and the poll-based new-mail refresh.
+				// The 28-byte form carries the expunge modseq at offset 20; a
+				// reader must advance HighestModSeq from it, or a sibling reuses
+				// it for the next delivery and breaks monotonicity.
 				if stride == 28 {
 					if ms := le.Uint64(payload[i+20:]); ms > maxModseq {
 						maxModseq = ms
@@ -2527,14 +2424,12 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 		case kind == mailindex.TxTypeKeywordUpdate:
 			rec, ok := mailindex.DecodeTxKeywordUpdatePayload(payload)
 			if !ok {
-				// The framing already passed, so this is not a torn tail: it is
-				// a whole record too short to hold its own name. Skipping it
-				// would be the #1314 class one floor down.
+				// The framing passed, so this is a whole record too short to
+				// hold its own name -- skipping it is #1314 one floor down.
 				return committedEnd, fmt.Errorf("fileindex/applylog: malformed keyword record (type %#x) at offset %d", uint32(kind), recStart)
 			}
-			// The name arrived with the record, so the registry is grown from
-			// the log itself: no adapter, and no separate case for a keyword
-			// this reader has never seen.
+			// The name arrived with the record, so the registry grows from the
+			// log itself -- no separate case for an unseen keyword.
 			bits, reg, kwErr := keywordsBitmaskFor(fs.keywords, []string{rec.Name})
 			if kwErr != nil {
 				// The 32-bit ceiling. Swallowing it here would drop the word
@@ -2577,9 +2472,8 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 			}
 
 		case kind == mailindex.TxTypeExpunge || kind == mailindex.TxTypeExpungeGUID:
-			// A known type judged corrupt, not an unknown one: an expunge
-			// without its corruption-defence bit is ignored by the format's
-			// own rule, and saying so here keeps it out of the refusal below.
+			// A known type judged corrupt, not an unknown one: the format's own
+			// rule ignores an expunge without its defence bit.
 
 		default:
 			// Proceeding past a record we cannot read reports a fully replayed
@@ -2603,9 +2497,8 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 		}
 	}
 
-	// Recount message counters from actual records so that any drift introduced
-	// by a corrupted TxTypeHeaderUpdate (e.g. from a stale SaveFolder flush) is
-	// corrected in memory immediately after log replay, not only at the next flush.
+	// Recount from actual records so drift from a corrupted header update is
+	// corrected right after replay, not only at the next flush.
 	fs.file.Header.MessagesCount = uint32(len(fs.file.Records))
 	fs.file.Header.SeenMessagesCount = 0
 	fs.file.Header.DeletedMessagesCount = 0
@@ -2634,17 +2527,13 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 			"folder", fs.folder, "read_size", filePos, "truncate_to", committedEnd)
 		_ = os.Truncate(logPath, committedEnd)
 	}
-	// Return committedEnd, not filePos: on an incremental read (fromOffset>0)
-	// a torn/partial trailing group is never truncated (a legitimate writer
-	// may still be mid-append at that exact position — see the no-truncate
-	// rationale above), but it must also not be reported as confirmed. The
-	// next reload() naturally retries from this same conservative point.
+	// committedEnd, not filePos: an incremental read neither truncates a partial
+	// trailing group nor confirms it; the next reload retries from here.
 	return committedEnd, nil
 }
 
-// flushAppend persists a newly appended record to the log and updates the
-// filenames sidecar. rec must be the record that was just added to
-// fs.file.Records (i.e. the last element). Caller must hold fs.mu.
+// flushAppend persists a newly appended record and updates the names sidecar;
+// rec must be the last element of fs.file.Records. Caller holds fs.mu.
 func (fs *folderState) flushAppend(rec *mailindex.Record) error {
 	layout, err := mailindex.ComputeRecordLayout(fs.file.Extensions)
 	if err != nil {
@@ -2705,9 +2594,8 @@ func truncateLogLineage(indexPath string, indexID, lineage uint32) error {
 	return nil
 }
 
-// SetCacheOffsets stamps cache-file offsets for the given UIDs (#1030), batched
-// so a FETCH's worth of messages stamps in one flush. Unlike SetGUIDs an offset
-// may be overwritten with a non-zero value; zeroing is expunge/reconcile's job.
+// SetCacheOffsets stamps cache offsets for the given UIDs (#1030), a FETCH's
+// worth per flush. An offset may be overwritten, but only with a non-zero one.
 func (u *userIndex) SetCacheOffsets(folderID uint64, offsets map[uint32]uint32) error {
 	if len(offsets) == 0 {
 		return nil
@@ -2733,10 +2621,8 @@ func (u *userIndex) SetCacheOffsets(folderID uint64, offsets map[uint32]uint32) 
 	})
 }
 
-// CachePairIdentity returns what the cache layer needs to open or create the
-// paired yarilo.index.cache: the index identity and the cache extension's
-// reset_id (== the file_seq a valid cache file must carry). ok is false when
-// the folder's index predates the extension and no offset was ever stamped.
+// CachePairIdentity returns the index identity and the reset_id a valid cache
+// must carry; ok is false when the index predates the extension.
 func (u *userIndex) CachePairIdentity(folderID uint64) (indexID, resetID uint32, ok bool, err error) {
 	err = u.withFolderRO(folderID, func(fs *folderState) error {
 		indexID = fs.file.Header.IndexID
@@ -2779,9 +2665,8 @@ func (u *userIndex) PurgeCache(folderID uint64) (carried int, reclaimed int64, e
 		}
 		old, oerr := mailindex.OpenCache(path, fs.file.Header.IndexID, ext.ResetID)
 		if oerr != nil {
-			// Already invalid: drop it -- and enter a new generation, or the
-			// stamps still in the index would apply to whatever is written
-			// at those offsets next.
+			// Already invalid: drop it and enter a new generation, or the stamps
+			// still in the index apply to whatever lands at those offsets.
 			if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
 				return fmt.Errorf("fileindex: purge cache remove: %w", rerr)
 			}
@@ -2835,11 +2720,8 @@ func (u *userIndex) PurgeCache(folderID uint64) (carried int, reclaimed int64, e
 	return carried, reclaimed, err
 }
 
-// newCacheGeneration returns a file_seq no live stamp can belong to. Seeded
-// from the clock, as the reference seeds its first one: a counter would
-// repeat after adoptLegacy, which reapplies defaultExtensions and drops every
-// reset_id back to UIDValidity. Never goes backwards -- a clock that does
-// would otherwise hand back a generation already used.
+// newCacheGeneration returns a file_seq no live stamp can belong to, from the
+// clock: a counter repeats after adoptLegacy resets reset_id. Never goes back.
 func newCacheGeneration(prev uint32) uint32 {
 	now := uint32(time.Now().Unix())
 	if now <= prev {
@@ -2848,11 +2730,10 @@ func newCacheGeneration(prev uint32) uint32 {
 	return now
 }
 
-// abandonCacheGeneration enters a new generation and drops every stamp
-// pointing into the old one. A generation may only be left by entering the
-// next: an offset kept across a file that was removed and recreated under the
-// SAME file_seq stays "valid" by all four levels, and the first append to
-// reuse that offset answers one message's FETCH with another's record.
+// abandonCacheGeneration enters a new generation and drops every stamp into the
+// old one. A generation may only be left by entering the next: an offset kept
+// across a file recreated under the SAME file_seq still reads as valid, and the
+// first append to reuse it answers one FETCH with another message's record.
 func abandonCacheGeneration(fs *folderState) (uint32, error) {
 	ext := findExt(fs.file.Extensions, extNameCache)
 	if ext == nil {
@@ -2878,10 +2759,9 @@ func (u *userIndex) BumpCacheGeneration(folderID uint64) (uint32, error) {
 }
 
 // EnsureCacheExtension adds the cache extension to an index written before it
-// existed, and returns the pair identity. Folders created since carry it from
-// defaultExtensions; without this an older folder could never gain one, since
-// the only other add sits behind a stamping write that needs the extension to
-// be reachable at all (#1184).
+// existed, returning the pair identity. Without it an older folder could never
+// gain one: the only other add sits behind a write that needs the extension to
+// be reachable already (#1184).
 func (u *userIndex) EnsureCacheExtension(folderID uint64) (indexID, resetID uint32, err error) {
 	err = u.withFolder(folderID, func(fs *folderState) error {
 		if findExt(fs.file.Extensions, extNameCache) == nil {
@@ -2919,9 +2799,8 @@ func subtractStrings(a, b []string) []string {
 	return out
 }
 
-// unionStrings returns a ∪ b with the order of a preserved, then whatever b
-// adds. Used where a flag or keyword write must keep what the record already
-// carries.
+// unionStrings returns a then whatever b adds, for a write that must keep what
+// the record already carries.
 func unionStrings(a, b []string) []string {
 	seen := make(map[string]bool, len(a)+len(b))
 	out := make([]string, 0, len(a)+len(b))
