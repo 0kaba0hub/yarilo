@@ -42,9 +42,8 @@ type Backend struct {
 // Option configures a Backend at construction time.
 type Option func(*Backend)
 
-// WithLocker wires a yarilo-locks client into the backend: every shared-file
-// write takes a cross-process X lock on `mbox:<user>:<folder>`. A nil Locker
-// keeps the in-process sync.Mutex only (single-process tests / dev).
+// WithLocker wires a lock client in: every shared-file write then takes the
+// cross-process X lock. Nil keeps the in-process mutex only.
 func WithLocker(l locks.Locker) Option {
 	return func(b *Backend) { b.locker = l }
 }
@@ -111,12 +110,8 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	}
 }
 
-// folderCache holds mtime-validated in-memory state for one maildir folder.
-// folderCache is one folder's cached view of its uidlist and directory. Its own
-// mutex, not the handle's: the reconcile's scan reaches it holding no mailbox
-// lock since #1626, and guarding only the lookup in the map left every field
-// inside it unguarded -- which the race detector finds as soon as a delivery
-// moves the uidlist while a scan reads it.
+// folderCache is one folder's mtime-validated view of its uidlist and directory.
+// Its own mutex: the scan reaches it holding no mailbox lock since #1626.
 type folderCache struct {
 	mu       sync.Mutex
 	uidMap   map[string]uint32
@@ -154,10 +149,8 @@ func (c *folderCache) guidOf(base string) ([16]byte, bool) {
 	return g, ok
 }
 
-// addUID records one message, replacing the maps rather than writing into them:
-// snapshotUIDs hands its map out, and a scan holds it while it works, holding
-// no folder lock since #1626. One copy per delivery leaves every reader with a
-// map nobody can touch.
+// addUID replaces the maps rather than writing into them: snapshotUIDs hands one
+// out and a scan holds it unlocked, so a copy per delivery keeps it untouched.
 func (c *folderCache) addUID(base string, uid uint32, guid [16]byte, hasGUID bool, mtime time.Time, size int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -224,11 +217,9 @@ type userMailbox struct {
 	cache      map[string]*folderCache // keyed by folder name; lazy-initialised
 }
 
-// withMailboxLock runs fn under the in-process mutex, then the cross-process
-// yarilo-locks X lock (only when b.locker is non-nil).
-// withMailboxLockSite takes the folder's cross-process lock and records which
-// call took it: this driver and the index take the same key, so a total without
-// the caller says nothing about which one to change (#1630).
+// withMailboxLockSite takes the in-process mutex then the cross-process lock,
+// recording which call took it: this driver and the index share the key, so a
+// total without the caller says nothing about which to change (#1630).
 func (u *userMailbox) withMailboxLockSite(folder, site string, fn func() error) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -236,9 +227,8 @@ func (u *userMailbox) withMailboxLockSite(folder, site string, fn func() error) 
 		return fn()
 	}
 	key := locks.MailboxKey(u.username, folder)
-	// Re-entrancy: an outer scope already holds this resource for a batch
-	// (POP3 QUIT / multi-message EXPUNGE); skip Acquire to avoid a same-owner
-	// BUSY loop.
+	// An outer scope already holds it for a batch (POP3 QUIT, multi-message
+	// EXPUNGE): acquiring again is a same-owner BUSY loop.
 	if u.b.locker.HoldsResource(key) {
 		return fn()
 	}
@@ -273,13 +263,8 @@ func (u *userMailbox) Init() error {
 	return u.adoptFolderNames()
 }
 
-// adoptFolderNames brings the folder directories to this deployment's encoding.
-// Where the two spellings differ nothing matches by name and a folder is listed
-// as mojibake, selectable under no name a client can send (#1586, #1593).
-//
-// Level by level: splitting on the layout separator is safe because modified
-// base64 is A-Z a-z 0-9 '+' ',', so '.' never appears inside an encoded run. On
-// Init, one directory read when there is nothing to rename.
+// adoptFolderNames brings the folder directories to this deployment's encoding;
+// otherwise a folder lists as mojibake, selectable under no name (#1586, #1593).
 func (u *userMailbox) adoptFolderNames() error {
 	// Maildir++ keeps every folder as a dotted directory beside INBOX, in the
 	// mail path.
@@ -324,9 +309,8 @@ func (u *userMailbox) adoptedDirName(name string) (string, bool) {
 			continue
 		}
 		if isASCIIName(level) && !strings.Contains(level, "&") {
-			// The two encodings agree on plain ASCII. The ampersand is the
-			// exception: it is the escape in modified UTF-7, so a level
-			// carrying one is not the same string in both.
+			// The encodings agree on ASCII except "&", the modified-UTF-7
+			// escape: a level carrying one differs between them.
 			continue
 		}
 		var want string
@@ -391,10 +375,9 @@ func (u *userMailbox) Delete(folder string) error {
 	}
 	return u.withMailboxLockSite(folder, lockSiteDelete, func() error {
 		path := u.folderPath(folder)
-		// Last check before the removal, on the resolved path rather than the
-		// name: whatever was validated above, this must not be the mail root.
-		// On maildir++ INBOX *is* that root, so the difference between
-		// removing a folder and removing an account is one path (#1069).
+		// Last check before the removal, on the resolved path: on maildir++
+		// INBOX is the mail root, so a folder and an account are one path
+		// apart (#1069).
 		if err := mailbox.GuardDestructivePath(u.mailPath, path, u.inboxPath); err != nil {
 			return err
 		}
@@ -463,18 +446,13 @@ func (u *userMailbox) withTwoMailboxLocks(folderA, folderB, site string, fn func
 	return fn()
 }
 
-// driverName labels this driver in the timings shared with the others. This is
-// the baseline the packed drivers are compared against: a write to tmp and a
-// rename, with no steps of its own worth naming. The one part it does report
-// is the wait for a write slot, which every driver reports -- leaving it out
-// here would let the packed drivers subtract a queue the baseline still
-// carries.
+// driverName labels this driver in the shared timings. It is the baseline the
+// packed drivers are compared against, and it reports the wait for a write slot
+// like they do -- leaving that out would let them subtract a queue it carries.
 const driverName = "maildir"
 
-// Save streams r into tmp/ then atomically renames into cur/. uid comes from
-// UserIndex.AllocateUID; Maildir does not encode it in the filename, so the
-// uid→filename mapping is appended inline to the yarilo-uidlist sidecar for
-// later List() / Fetch() resolution.
+// Save streams r into tmp/ then renames into cur/. A maildir name carries no
+// uid, so the mapping is appended to the uidlist sidecar for later resolution.
 func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flags []string, guid [16]byte) (string, uint32, [16]byte, error) {
 	whole := time.Now()
 	defer func() { mailboxmetrics.ObserveSave(driverName, time.Since(whole)) }()
@@ -556,10 +534,8 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 	return finalName, sc.phys + sc.lfNoCR, effGUID, nil
 }
 
-// Move renames the message into dstFolder keeping its base name, so the derived
-// GUID and with it EMAILID is unchanged (RFC 8474); only the ":2," trailer and
-// the folder change. A base-name collision falls back to a fresh name plus an
-// explicit uidlist GUID override.
+// Move keeps the base name, so the derived GUID and its EMAILID survive (RFC
+// 8474). A collision falls back to a fresh name with an explicit GUID override.
 func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte) (string, [16]byte, error) {
 	var noGUID [16]byte
 	if srcFolder == dstFolder {
@@ -624,10 +600,8 @@ func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename st
 	if info != nil && info.Size() == 0 {
 		fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
 	}
-	// v3 record: "<uid> [G<guid>] :<base filename>". The name is cut at the info
-	// separator, as they cut it: keyed by the whole name a record stops matching
-	// its own message the moment a flag changes it. The GUID field appears only
-	// when it must differ from the name-derived one.
+	// v3 record: "<uid> [G<guid>] :<base filename>", cut at the info separator --
+	// keyed by the whole name a record stops matching the moment a flag moves.
 	if guidOverride {
 		_, err = fmt.Fprintf(f, "%d G%s :%s\n", uid, hex.EncodeToString(guid[:]), maildirBase(filename))
 	} else {
@@ -783,10 +757,9 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 			}
 			logical = decoded
 		}
-		// maildir++ stores hierarchy flat with "."; map it back to the
-		// namespace's IMAP separator (every "." is a level). With escaping on,
-		// a "." the client wrote literally is not one of those levels: it is
-		// an escape sequence, decoded per level after the split.
+		// maildir++ is flat with "." per level; map it back to the namespace
+		// separator. Under escaping a literal "." is not a level but an escape,
+		// decoded after the split.
 		if u.escapeChar != "" {
 			parts := strings.Split(logical, ".")
 			for i, p := range parts {
@@ -801,11 +774,9 @@ func (u *userMailbox) ListFolders() ([]mailbox.FolderEntry, error) {
 	return folders, nil
 }
 
-// Scan walks cur/ + new/ and returns one ScanRecord per message. Flags and
-// size come from the filename (size from the "S=" infix, else os.Stat);
-// InternalDate from the file mtime. GUID is left zero — Maildir filenames
-// carry no stable GUID, so the rebuild flow must preserve the index's GUID
-// for matched filenames.
+// Scan walks cur/ + new/ and returns one ScanRecord per message, reading flags
+// and size from the name and the date from the mtime. GUID stays zero -- a
+// maildir name carries none, so a rebuild must keep the index's.
 func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 	if u.inSection.Load() > 0 {
 		u.sectionDir.Add(1) // a walk under the lock is what #1626 took apart
@@ -860,10 +831,8 @@ func (u *userMailbox) Scan(folder string) ([]mailbox.ScanRecord, error) {
 
 func (u *userMailbox) Close() error { return nil }
 
-// ProactiveScan reports that the on-disk state may change out of band (MDA
-// delivery into new/, another MUA renaming for flags), so the index must be
-// reconciled by scanning on SELECT. Index-authoritative drivers (dbox) omit
-// this and self-heal reactively.
+// ProactiveScan says the store changes out of band -- an MDA into new/, another
+// MUA renaming for flags -- so SELECT must scan. The dbox drivers say no.
 func (u *userMailbox) ProactiveScan() bool { return true }
 
 // guidFor returns the message GUID for a stored file: the explicit uidlist
@@ -885,10 +854,8 @@ func maildirBase(name string) string {
 	return name
 }
 
-// guidFromBase derives the per-message GUID from the maildir base name. The
-// base is unique per message and never rewritten: a flag change touches only
-// the ":2," trailer and Move keeps it across folders, so EMAILID survives both
-// and an index rebuild recomputes it.
+// guidFromBase derives the GUID from the base name, which is never rewritten: a
+// flag change touches the trailer and Move keeps it, so EMAILID survives both.
 func guidFromBase(filename string) [16]byte {
 	sum := sha256.Sum256([]byte(maildirBase(filename)))
 	var g [16]byte
@@ -929,19 +896,15 @@ func (u *userMailbox) moveNewToCurLocked(folder string) error {
 	return nil
 }
 
-// ReconcileIndex brings idx into agreement with the physical maildir: new/ is
-// migrated into cur/, messages match by base name so a flag rename keeps its
-// UID, new files take a UID from the index's allocator, a vanished one is
-// expunged with a tombstone. A message whose name has not changed is left
-// alone -- the index is authoritative for flags this server set, which do not
-// rename the file.
+// ReconcileIndex brings idx into agreement with the maildir, matching by base
+// name so a flag rename keeps its UID. An unchanged name is left alone: the
+// index is authoritative for flags this server set.
 func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Folder) (mailbox.SyncStats, error) {
 	var st mailbox.SyncStats
 	adopted := false
-	// The move precedes the scan because it renames, and it is asked about
-	// before the lock because every acquisition is a round trip -- one taken to
-	// find an empty directory is paid on every poll (#1630). A message landing
-	// after the check waits for the next pass.
+	// The move precedes the scan because it renames, and is asked about before
+	// the lock: one acquisition taken to find an empty new/ is paid on every
+	// poll (#1630).
 	movedNew := u.hasNewMail(folder.Name)
 	if movePhaseProbe != nil {
 		movePhaseProbe(movedNew)
@@ -965,11 +928,9 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 		afterScan()
 	}
 
-	// Nothing to apply, no lock at all: fifty sessions polling one folder each
-	// took it to find the first had done the work (#1630). The comparison needs
-	// no lock -- the index answers without one, and the section re-reads under
-	// the lock before writing. A stale answer errs toward taking the lock: a
-	// record it missed shows up as a file the index does not know.
+	// Nothing to apply, no lock at all: fifty sessions polling one folder took
+	// it to find the first had done the work (#1630). A stale answer errs
+	// toward taking the lock, and the section re-reads before writing.
 	if u.reconcileIsClean(idx, folder, scanned) {
 		return st, nil
 	}
@@ -1045,22 +1006,17 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 			}
 			tracked[base] = struct{}{}
 			if m.GUID == zeroGUID && rec.GUID != zeroGUID {
-				// Stamped regardless of the backfill marker: a record imported
-				// into an already-complete folder is invisible to the backfill,
-				// so this is the only thing that can still give it an EMAILID.
+				// Regardless of the backfill marker: a record imported into a
+				// complete folder is invisible to it, and would have no EMAILID.
 				if restamp == nil {
 					restamp = make(map[uint32][16]byte, 4)
 				}
 				restamp[m.UID] = rec.GUID
 			}
 			if rec.Filename != m.Filename {
-				// Renamed out of band (a flag change moves the ":2," trailer):
-				// adopt the on-disk flags and repoint the filename.
-				//
-				// Only if the scanned name is still on disk: writing flags from
-				// a name somebody has renamed past would put a state nobody set
-				// into the index. If it moved on, the index keeps what it has
-				// and the next pass settles it (#1626).
+				// Renamed out of band, so adopt the on-disk flags -- but only
+				// if that name is still there: writing flags from a name
+				// somebody renamed past records a state nobody set (#1626).
 				if !u.stillOnDisk(folder.Name, rec.Filename) {
 					continue
 				}
@@ -1104,15 +1060,9 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 				Keywords:     rec.Keywords,
 				GUID:         rec.GUID,
 			}
-			// The uidlist already says which UID this file has -- it is the
-			// same file this implementation and the other one both write, and
-			// it is read here for its GUIDs already. Using its number keeps a
-			// client's cache valid across a takeover; allocating a fresh one
-			// makes every client refetch every mailbox (#1593).
-			//
-			// Only for a file the list knows. One delivered by an MDA since is
-			// not in it, and that is the ordinary case this path was written
-			// for: it gets the next UID, as before.
+			// The uidlist already says which UID this file has, and reusing it
+			// keeps a client's cache valid across a takeover (#1593). Only for
+			// a file the list knows: one delivered since gets the next UID.
 			if uid, known := u.UIDFor(folder.Name, rec.Filename); known && adopted {
 				m.UID = uid
 				if err := idx.AppendMessage(folder.ID, m); err != nil {
@@ -1157,19 +1107,9 @@ func sameFlags(a, b []string) bool {
 	return true
 }
 
-// SyncToken returns an opaque token over the folder's cur/ and new/ mtime and
-// size. Unchanged since the previous SELECT means nothing was delivered,
-// removed or renamed, so the caller may skip the reconcile scan and its lock.
-// An empty token (both dirs missing or unstattable) forces a reconcile.
-//
-// A directory whose mtime is within the current wall-clock second is "dirty":
-// on coarse (1 s) mtime granularity a second same-tick change would not move
-// the mtime, so the token embeds a per-call nonce to force a reconcile until
-// the directory settles. This is the classic maildir same-second dirty-sync
-// rule.
-//
-// Over NFS a stale attribute-cache mtime only delays visibility until the next
-// changed token, never corrupts; keep attribute-cache TTLs short.
+// SyncToken is an opaque token over cur/ and new/ mtime and size; unchanged lets
+// the caller skip the reconcile. A directory touched this wall-clock second
+// carries a nonce: at 1s granularity a same-tick change moves nothing.
 func (u *userMailbox) SyncToken(folder string) string {
 	base := u.folderPath(folder)
 	now := time.Now()
@@ -1194,11 +1134,8 @@ func (u *userMailbox) SyncToken(folder string) string {
 
 // ---- uidlist ---------------------------------------------------------------
 
-// On-disk filenames. The legacy name is renamed to UIDListFileName on first
-// access, so subsequent runs see only the yarilo file.
-// keywordsFileName is their keyword file: the mapping from the letters a
-// filename carries to the names they stand for. Read, not written -- what we
-// write is #1601.
+// keywordsFileName is their keyword file: letters in a name against the words
+// they stand for. Read, not written (#1601).
 const keywordsFileName = "dovecot-keywords"
 
 const (
@@ -1280,12 +1217,9 @@ func (u *userMailbox) readUIDList(folder string) (map[string]uint32, error) {
 		if err != nil {
 			continue
 		}
-		// The key is the base name -- everything before the first ':' -- because
-		// that is what survives a flag change, and because it is what the other
-		// implementation writes: it cuts the name at the info separator before
-		// recording it. We used to
-		// write the whole name; normalising on read keeps those files working
-		// and leaves one rule over the file instead of two (#1593).
+		// The key is the base name: it survives a flag change, and it is what
+		// the other implementation writes. Normalising on read keeps the files
+		// we wrote whole under one rule instead of two (#1593).
 		m[maildirBase(filename)] = uint32(uid64)
 		// Optional "G<hex>" field: an explicit GUID that must win over the
 		// name-derived one. A later record for the same file supersedes.
@@ -1332,14 +1266,9 @@ func (u *userMailbox) folderCacheFor(folder string) *folderCache {
 
 // ---- path helpers ----------------------------------------------------------
 
-// folderDiskName maps a logical folder name to the on-disk directory component:
-// storage-name escaping, then modified-UTF-7 when legacy encoding is set.
-//
-// It does not normalise. NFC is applied once at the name-entry boundary
-// (mailbox.NormalizeName), so folder arrives already in its final form and the
-// order of NFC against escaping -- which lived here and in FolderSubpath both,
-// and broke a name with a combining mark straight after an escape -- no longer
-// exists to get wrong (#1113).
+// folderDiskName maps a folder to its on-disk component: escaping, then
+// modified-UTF-7 under legacy encoding. It does not normalise -- NFC happens
+// once at name entry, so its order against escaping cannot be got wrong (#1113).
 func (u *userMailbox) folderDiskName(folder string) string {
 	folder = mailbox.EscapeLogicalName(folder, u.separator, ".", u.escapeChar)
 	if !u.listUTF8 {
@@ -1348,10 +1277,9 @@ func (u *userMailbox) folderDiskName(folder string) string {
 	return folder
 }
 
-// checkName refuses a folder name that would resolve outside its own folder.
-//
-// INBOX is exempt because it names the root deliberately; every other name that
-// resolves there does so by accident, and the accident removes a mailbox.
+// checkName refuses a name resolving outside its own folder. INBOX is exempt
+// because it names the root deliberately; any other name doing so is an accident
+// that removes a mailbox.
 func (u *userMailbox) checkName(folder string) error {
 	if folder == "INBOX" {
 		return nil
@@ -1359,19 +1287,9 @@ func (u *userMailbox) checkName(folder string) error {
 	return mailbox.ValidateFolderName(folder, u.separator)
 }
 
-// folderPath maps a folder name to its directory.
-//
-// A name that would resolve to the mailbox root or above it is mapped to a
-// path that cannot exist instead. Refusing here rather than only in the
-// mutating operations is what makes it safe: the same names read another
-// account's mail on a deployment whose IMAP separator is "." — the rewrite to
-// the on-disk separator neutralises "../" only while the two differ, which is
-// configuration rather than a guarantee (#1063).
-//
-// Every caller then fails with "no such file or directory", which is the right
-// answer for a mailbox that cannot exist. The operations that destroy data
-// check the name explicitly as well, so they refuse with a message naming the
-// cause rather than a missing path.
+// folderPath maps a folder to its directory, sending anything resolving at or
+// above the mailbox root to a path that cannot exist -- here and not only in the
+// mutating calls, since an IMAP separator of "." stops neutralising "../" (#1063).
 func (u *userMailbox) folderPath(folder string) string {
 	if folder != "INBOX" {
 		if err := mailbox.ValidateFolderName(folder, u.separator); err != nil {
@@ -1387,12 +1305,8 @@ func (u *userMailbox) folderPath(folder string) string {
 	return filepath.Join(u.mailPath, mailbox.FolderSubpath("maildir", folder, u.folderDiskName(folder), u.separator))
 }
 
-// controlFolderPath returns the directory for per-folder control files
-// (yarilo-uidlist): under controlDir when CONTROL= is set, else co-located
-// with the folder.
-// invalidFolderMarker is the directory an invalid name resolves to. It is not
-// a legal maildir++ folder name — a folder is ".name" — so it cannot collide
-// with a real one, and it does not exist, so every read and write fails.
+// invalidFolderMarker is where an invalid name resolves: not a legal maildir++
+// name, so it cannot collide, and absent, so every read and write fails.
 const invalidFolderMarker = "invalid-folder-name"
 
 func (u *userMailbox) controlFolderPath(folder string) string {
@@ -1419,11 +1333,9 @@ func (u *userMailbox) controlFolderPath(folder string) string {
 
 // ---- flag helpers ----------------------------------------------------------
 
-// WriteFlags renames a message so its name carries the flags and keywords it
-// now has, which is where a maildir keeps that state. Within one directory, so
-// the rename is atomic; a new keyword takes the first free letter and never
-// renumbers one in use, since that changes what every existing name means. A
-// name that would not change is returned as it is.
+// WriteFlags renames a message so its name carries its flags, which is where a
+// maildir keeps them. Within one directory, so the rename is atomic; a new
+// keyword takes the first free letter and never renumbers one in use.
 func (u *userMailbox) WriteFlags(folder, filename string, flags, keywords []string) (string, error) {
 	var newName string
 	err := u.withMailboxLockSite(folder, lockSiteWriteFlags, func() error {
@@ -1441,10 +1353,9 @@ func (u *userMailbox) WriteFlags(folder, filename string, flags, keywords []stri
 	return newName, nil
 }
 
-// WriteFlagsMulti records a whole command's flag writes under one acquisition of
-// the folder lock, reading the keyword file once and rewriting it at most once
-// for the batch; per message it did both per message (#1623). Best effort stays
-// per message: one failure is reported against its uid, the rest are written.
+// WriteFlagsMulti records a command's flag writes under one acquisition, reading
+// the keyword file once for the batch rather than once per message (#1623). Best
+// effort stays per message: a failure is reported against its uid.
 func (u *userMailbox) WriteFlagsMulti(folder string, writes []mailbox.FlagWrite) []mailbox.FlagWriteResult {
 	out := make([]mailbox.FlagWriteResult, len(writes))
 	for i := range writes {
@@ -1626,12 +1537,9 @@ func (t *keywordTable) letters(keywords []string) string {
 	return string(letters)
 }
 
-// firstFreeKeywordLetter returns the lowest letter no keyword holds.
-//
-// The first free one rather than the next after the highest: the reference
-// fills a hole left by a removed keyword the same way, and either choice has to
-// avoid renumbering, which is what would change the meaning of every filename
-// already written.
+// firstFreeKeywordLetter returns the lowest letter no keyword holds -- filling a
+// hole rather than taking the next, as the reference does. Either way nothing is
+// renumbered, which would change the meaning of every filename already written.
 func firstFreeKeywordLetter(names map[byte]string) (byte, bool) {
 	for c := byte('a'); c <= 'z'; c++ {
 		if _, taken := names[c]; !taken {
@@ -1713,11 +1621,9 @@ func parseSizeInfo(name string) (phys, virt uint32, hasPhys, hasVirt bool) {
 	return
 }
 
-// keywordNames reads the folder's keyword file: the mapping from the letters a
-// maildir filename carries to the names they stand for. One line per keyword,
-// "<index> <name>", the letter being 'a'+index. A letter the file does not name
-// stays unresolved: inventing a name for it served a client something nothing
-// on disk ever said (#1600).
+// keywordNames reads the folder's keyword file, one "<index> <name>" per line
+// with the letter being 'a'+index. An unnamed letter stays unresolved: inventing
+// one served a client something nothing on disk said (#1600).
 func (u *userMailbox) keywordNames(folder string) map[byte]string {
 	path := filepath.Join(u.folderPath(folder), keywordsFileName)
 	if keywordFileRead != nil {
@@ -1770,10 +1676,9 @@ func decodeFlagsWith(filename string, names map[byte]string) (flags, keywords []
 			flags = append(flags, `\Deleted`)
 		default:
 			if c >= 'a' && c <= 'z' {
-				// Only what the folder's keyword file names. A letter with no
-				// line of its own is a keyword whose name is not recorded
-				// anywhere, and inventing one puts a name in front of a client
-				// that nothing on disk ever said (#1600).
+				// Only what the keyword file names: a letter with no line has
+				// its name recorded nowhere, and inventing one shows a client
+				// what nothing on disk said (#1600).
 				if name, ok := names[byte(c)]; ok {
 					keywords = append(keywords, name)
 				}
@@ -1789,15 +1694,9 @@ func randomGUID() string {
 	return fmt.Sprintf("%032x", b)
 }
 
-// UIDSpace reports the UIDVALIDITY and next UID a folder's uidlist records, and
-// whether it had them.
-//
-// The header line is "3 V<uidvalidity> N<next uid> G<guid>", written by this
-// implementation and by the one whose file this may have been -- the format is
-// the same, which is why the file is adopted under our name rather than
-// converted. What was not adopted until now is what it says: the numbers were
-// parsed past on every read, so a store taken over got a fresh UID space and
-// every client refetched every mailbox (#1593).
+// UIDSpace reports the UIDVALIDITY and next UID from the uidlist header, which
+// both implementations write alike -- so the file is adopted, not converted. The
+// numbers used to be parsed past, costing a taken-over store its UIDs (#1593).
 func (u *userMailbox) UIDSpace(folder string) (uidValidity, nextUID uint32, ok bool) {
 	if err := u.migrateLegacyUIDList(folder); err != nil {
 		return 0, 0, false
@@ -1873,12 +1772,9 @@ func (u *userMailbox) stillOnDisk(folder, filename string) bool {
 	return false
 }
 
-// hasNewMail reports whether new/ holds anything to move: one directory read,
-// unlocked, deciding only whether a round trip is worth taking.
-//
-// Unreadable answers yes, so the locked phase runs and fails loudly: answering
-// no would skip the move for good on a faulty mount, and since only cur/ is
-// imported from, the mail would sit invisible with nothing reported (#1630).
+// hasNewMail reports whether new/ holds anything to move: one unlocked read
+// deciding whether a round trip is worth it. Unreadable answers yes, so the
+// locked phase fails loudly rather than leaving mail invisible (#1630).
 func (u *userMailbox) hasNewMail(folder string) bool {
 	entries, err := os.ReadDir(filepath.Join(u.folderPath(folder), "new"))
 	if err != nil {
@@ -1903,12 +1799,9 @@ func (u *userMailbox) inCurDir(folder, filename string) bool {
 	return err == nil
 }
 
-// reconcileIsClean reports whether the scan and the index already agree, so the
-// apply phase has nothing to do and need not take its lock. Every difference is
-// work: an unknown file, a vanished one, a renamed one -- which in maildir is
-// what a flag change is -- a duplicate record, and a record with no GUID where
-// storage has one. It answers false whenever it cannot be sure, including on a
-// folder with no records, which may still be waiting to adopt a UID space.
+// reconcileIsClean reports whether the scan and the index agree, so the apply
+// phase need not take its lock. False whenever it cannot be sure, including an
+// empty folder still waiting to adopt a UID space.
 func (u *userMailbox) reconcileIsClean(idx mailbox.UserIndex, folder *mailbox.Folder, scanned []mailbox.ScanRecord) bool {
 	reader, ok := idx.(mailbox.UnlockedReader)
 	if !ok {
