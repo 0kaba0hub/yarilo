@@ -30,8 +30,7 @@ const (
 )
 
 // guid extension: wire layout in INTERNALS.md §7. The header state is the O(1)
-// "is this folder backfilled" marker, sparing a rescan for zeros on every open.
-// RecordAlign is 1, so adding it leaves every other extension's offset unchanged.
+// backfilled marker, and RecordAlign 1 leaves every other offset unchanged.
 const (
 	guidRecSize       = 16
 	guidHdrSize       = 4
@@ -90,10 +89,8 @@ func decodeIdateRec(b []byte) time.Time {
 	return time.Unix(int64(unix), 0).UTC()
 }
 
-// hdr-vsize extension: wire layout in INTERNALS.md §7. Caches the folder's
-// aggregate virtual size so quota does not rescan every read; the
-// {HighestUID, MessageCount} pair validates it against the folder's current
-// state, falling back to a recompute from the per-record vsize extension.
+// hdr-vsize extension: wire layout in INTERNALS.md §7. Caches the aggregate,
+// validated by {HighestUID, MessageCount} and recomputed when they drift.
 const (
 	hdrVsizeSize            = 16
 	hdrVsizeOffVsize        = 0
@@ -175,9 +172,7 @@ const (
 )
 
 // keywords extension: a variable header of {count, {unused, name_offset}[],
-// null-terminated names} and a 4-byte per-record bitmask, bit N set for keyword
-// index N. Capped at 32 keywords; growing to multi-uint32 is a bump of
-// keywordsRecSize plus more bits, deferred until the limit is hit in production.
+// names} and a 4-byte per-record bitmask, capped at 32 keywords.
 
 // expungeFloorSize is the header: one uint64, the folder's HighestModSeq at the
 // moment its log was folded away.
@@ -357,9 +352,8 @@ func keywordsBitmaskFor(registry keywordsHdr, names []string) (uint32, keywordsH
 	return bits, out, nil
 }
 
-// keywordsFromBitmask is the reverse: decode a per-record
-// bitmask into the keyword names sorted alphabetically (stable
-// output for tests + IDLE pushes).
+// keywordsFromBitmask decodes a per-record bitmask into names, sorted for
+// stable output.
 func keywordsFromBitmask(registry keywordsHdr, bits uint32) []string {
 	if bits == 0 {
 		return nil
@@ -430,9 +424,8 @@ func defaultExtensions(uidValidity uint32, guid [16]byte) []mailindex.Extension 
 			ResetID:     uidValidity,
 		},
 		{
-			// Offset into yarilo.index.cache; ResetID doubles as the cache
-			// file's file_seq, so a purge invalidates every offset with one
-			// bump (#1030).
+			// ResetID doubles as the cache file's file_seq, so one bump
+			// invalidates every offset (#1030).
 			Name:        extNameCache,
 			HdrSize:     0,
 			HdrData:     nil,
@@ -453,9 +446,8 @@ func defaultExtensions(uidValidity uint32, guid [16]byte) []mailindex.Extension 
 	}
 }
 
-// findExt locates the extension with the given name in a slice
-// or returns nil. Sorted-by-RecordOffset slices stay sorted on
-// return; the function is read-only.
+// findExt returns the named extension or nil. Read-only, so a sorted slice
+// stays sorted.
 func findExt(exts []mailindex.Extension, name string) *mailindex.Extension {
 	for i := range exts {
 		if exts[i].Name == name {
@@ -495,10 +487,8 @@ func encodeExpungeFloor(modseq uint64) []byte {
 	return out
 }
 
-// decodeExpungeFloor reads the floor. A missing or short header reads as 0,
-// which means "no history has been folded away" -- the honest answer for an
-// index written before this extension existed, because such an index has
-// whatever its log still holds and nothing was silently dropped by us.
+// decodeExpungeFloor reads the floor; a missing header is 0, the honest answer
+// for a pre-extension index that still has whatever its log holds.
 func decodeExpungeFloor(b []byte) uint64 {
 	if len(b) < expungeFloorSize {
 		return 0
@@ -529,9 +519,8 @@ var ourExtensions = map[string]bool{
 // Narrow on purpose: an sdbox store of theirs would not be recognised, matching
 // the conversion path itself being mdbox-only for now (#1524).
 func looksForeign(path string) bool {
-	// Read once. Checking existence and then reading leaves a window another
-	// opener's rename fits through, and "unreadable" would then class an
-	// ordinary race as a foreign store (#1593).
+	// Read once: checking existence first leaves a window for another opener's
+	// rename, which "unreadable" would then class as a foreign store (#1593).
 	raw, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -565,8 +554,7 @@ func looksForeign(path string) bool {
 	return false
 }
 
-// looksLikeOurLegacyHeader reports whether these bytes begin with the header our
-// own legacy format wrote: the same four fields the legacy decoder insists on,
+// looksLikeOurLegacyHeader checks the four fields the legacy decoder insists on,
 // so anything this accepts, that reads.
 func looksLikeOurLegacyHeader(raw []byte) bool {
 	if len(raw) < 120 {
