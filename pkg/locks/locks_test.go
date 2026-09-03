@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ func runSuite(t *testing.T, name string, factory lockerFactory) {
 		t.Run("Counter", func(t *testing.T) { testCounter(t, factory) })
 		t.Run("SharedConcurrentReaders", func(t *testing.T) { testSharedConcurrentReaders(t, factory) })
 		t.Run("SharedBlocksExclusive", func(t *testing.T) { testSharedBlocksExclusive(t, factory) })
+		t.Run("SharedBusyNamesAHolder", func(t *testing.T) { testSharedBusyNamesAHolder(t, factory) })
 		t.Run("ExclusiveBlocksShared", func(t *testing.T) { testExclusiveBlocksShared(t, factory) })
 		t.Run("SharedReleaseUnblocksExclusive", func(t *testing.T) { testSharedReleaseUnblocksExclusive(t, factory) })
 	})
@@ -520,5 +522,44 @@ func TestConcurrentAcquire(t *testing.T) {
 	wg.Wait()
 	if maxHeld != 1 {
 		t.Fatalf("mutual exclusion violated: maxHeld=%d", maxHeld)
+	}
+}
+
+// A refusal caused by readers says who one of them is, and how many there are.
+//
+// It used to say nothing: the exclusive path named its holder and the shared
+// path returned an empty string, so 17% of the refusals in a measured window
+// carried no holder at all -- a third of what held_by is for (#1652).
+func testSharedBusyNamesAHolder(t *testing.T, factory lockerFactory) {
+	l, cleanup := factory(t)
+	defer cleanup()
+	ctx := context.Background()
+	const res = "mbox:u@example.com:INBOX"
+
+	a, err := l.LockShared(ctx, res, "reader-one", time.Minute)
+	if err != nil {
+		t.Fatalf("first shared: %v", err)
+	}
+	defer l.Unlock(ctx, a.ID) //nolint:errcheck
+	b, err := l.LockShared(ctx, res, "reader-two", time.Minute)
+	if err != nil {
+		t.Fatalf("second shared: %v", err)
+	}
+	defer l.Unlock(ctx, b.ID) //nolint:errcheck
+
+	busy, err := l.Lock(ctx, res, "writer", time.Minute)
+	if !errors.Is(err, locks.ErrBusy) {
+		t.Fatalf("exclusive against two readers: %v", err)
+	}
+	if busy.Owner == "" {
+		t.Fatal("the refusal named nobody, and the readers were both in hand")
+	}
+	if !strings.Contains(busy.Owner, "reader-") {
+		t.Errorf("the refusal names %q, which is not one of the readers holding it", busy.Owner)
+	}
+	// Which one is not the only question an operator has: two readers and one
+	// are different situations, and the count is the difference.
+	if !strings.Contains(busy.Owner, "+1") {
+		t.Errorf("the refusal names %q and does not say a second reader is there", busy.Owner)
 	}
 }

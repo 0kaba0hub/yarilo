@@ -43,6 +43,9 @@ func NamespaceUserInfo(base *UserInfo, loc Location, separator string) (*UserInf
 	}
 	if base != nil {
 		ui.Username = base.Username
+		// The session travels with the username: both are the lock owner's
+		// identity, and dropping it spells one holder two ways (#1652).
+		ui.SessionID = base.SessionID
 		// Storage-name form is a deployment-wide property, not a per-namespace
 		// one: a namespace that escaped or normalised differently from the rest
 		// would name the same mailbox differently on disk (#1078, #1092).

@@ -85,7 +85,11 @@ func (b *MemoryBackend) Acquire(_ context.Context, resource, owner string, ttl t
 	}
 	if shared := b.sharedRes[resource]; len(shared) > 0 {
 		for id := range shared {
-			return "", b.locks[id].Owner, ErrBusy
+			who := b.locks[id].Owner
+			if n := len(shared) - 1; n > 0 {
+				who = fmt.Sprintf("%s +%d", who, n)
+			}
+			return "", who, ErrBusy
 		}
 	}
 	id, err := randID()
