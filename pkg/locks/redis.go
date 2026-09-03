@@ -158,7 +158,6 @@ return {"OK"}
 //	ARGV[1] = lockID
 //	ARGV[2] = lockValue (resource|owner|s)
 //	ARGV[3] = ttl_ms
-//	ARGV[4] = key prefix (to reach a shared holder's id key)
 //
 //	returns {"OK"} on success, or {"BUSY", <current_owner>} on contention.
 var acquireSharedScript = redis.NewScript(luaParseValue + `
