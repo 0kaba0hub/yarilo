@@ -212,8 +212,10 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 			// spelling of a path rule is what misplaced our map (#1579).
 			controlRoot: mailbox.ControlRoot(u),
 			username:    u.Username,
-			owner:       locks.Owner(u.Username, u.SessionID),
-			open:        make(map[uint64]*folderState),
+			// The shared index keeps one for the paths that have no handle in hand;
+			// a locked call made through a handle stamps its own (#1664).
+			owner: locks.Owner(u.Username, u.SessionID),
+			open:  make(map[uint64]*folderState),
 		}
 		ui.uidValidity = uidvalidity.New(ui.controlRoot, ui.username, ui.owner, b.locker)
 		ui.folders = folders.New(ui.controlRoot, ui.username, ui.owner, b.locker)
@@ -224,7 +226,11 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 	b.usersMu.Unlock()
 	// u.SessionID is the IMAP/POP3 login-proxy correlation ID (empty for LMTP
 	// and other non-session contexts) — see folderState.traceID.
-	return &userHandle{ui: ref.ui, b: b, cacheKey: key, traceID: u.SessionID}
+	return &userHandle{
+		ui: ref.ui, b: b, cacheKey: key,
+		traceID: u.SessionID,
+		owner:   locks.Owner(u.Username, u.SessionID),
+	}
 }
 
 // userHandle is the per-session view into a shared userIndex, forwarding every
@@ -233,14 +239,29 @@ type userHandle struct {
 	ui       *userIndex
 	b        *Backend
 	cacheKey string
+	// owner is this session's lock-owner string; the shared userIndex keeps the
+	// one its creator minted, which is what held_by reported for every session
+	// after the first (#1664).
+	owner string
 	// traceID is this session's correlation ID (see folderState.traceID).
 	traceID string
+}
+
+// lockOwner is what this folder's next acquisition announces: the session that
+// touched it last, or the shared index's for a path with no handle.
+func (fs *folderState) lockOwner(fallback string) string {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	if fs.owner != "" {
+		return fs.owner
+	}
+	return fallback
 }
 
 // stampTrace records this handle's traceID on the folderState so log lines name
 // this session, not whichever opened the folder. No-op when it is empty.
 func (h *userHandle) stampTrace(folderID uint64) {
-	if h.traceID == "" {
+	if h.traceID == "" && h.owner == "" {
 		return
 	}
 	h.ui.mu.Lock()
@@ -248,7 +269,12 @@ func (h *userHandle) stampTrace(folderID uint64) {
 	h.ui.mu.Unlock()
 	if ok {
 		fs.mu.Lock()
-		fs.traceID = h.traceID
+		if h.traceID != "" {
+			fs.traceID = h.traceID
+		}
+		if h.owner != "" {
+			fs.owner = h.owner
+		}
 		fs.mu.Unlock()
 	}
 }
@@ -490,6 +516,10 @@ type folderState struct {
 	// traceID is the calling session's correlation ID. The index is shared, so
 	// it names whichever session touched the folder last.
 	traceID string
+
+	// owner is the lock owner of the session that touched this folder last,
+	// stamped beside traceID, so a BUSY names the holder (#1664).
+	owner string
 }
 
 // closeFDs closes logFD and namesFD. Must run before anything replaces those
@@ -774,10 +804,11 @@ func (u *userIndex) withDistLock(fs *folderState, shared bool, site string, fn f
 			t0 := time.Now()
 			var lk locks.Lock
 			var err error
+			owner := fs.lockOwner(u.owner)
 			if shared {
-				lk, err = locks.AcquireShared(ctx, u.b.locker, key, u.owner, 30*time.Second)
+				lk, err = locks.AcquireShared(ctx, u.b.locker, key, owner, 30*time.Second)
 			} else {
-				lk, err = locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
+				lk, err = locks.Acquire(ctx, u.b.locker, key, owner, 30*time.Second)
 			}
 			metricLockWait.WithLabelValues(mode, site).Observe(time.Since(t0).Seconds())
 			metricLockAcquired.WithLabelValues(mode, site).Inc()
