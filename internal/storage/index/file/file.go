@@ -214,7 +214,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 			username:    u.Username,
 			// The shared index keeps one for the paths that have no handle in hand;
 			// a locked call made through a handle stamps its own (#1664).
-			owner: locks.Owner(u.Username, u.SessionID),
+			owner: locks.Owner(u.Username, u.LockID()),
 			open:  make(map[uint64]*folderState),
 		}
 		ui.uidValidity = uidvalidity.New(ui.controlRoot, ui.username, ui.owner, b.locker)
@@ -229,7 +229,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserIndex {
 	return &userHandle{
 		ui: ref.ui, b: b, cacheKey: key,
 		traceID: u.SessionID,
-		owner:   locks.Owner(u.Username, u.SessionID),
+		owner:   locks.Owner(u.Username, u.LockID()),
 	}
 }
 

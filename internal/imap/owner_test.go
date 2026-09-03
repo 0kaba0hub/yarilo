@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -174,5 +175,83 @@ func TestASessionTakesEveryLockUnderOneName(t *testing.T) {
 	}
 	if len(seen) != 1 {
 		t.Errorf("one session reached the lock service under %d names:\n  %v", len(seen), seen)
+	}
+}
+
+// A connection the proxy handed no session id still holds its locks under an id.
+//
+// The id arrives in the login proxy's preamble, and for three rounds every path
+// that lost it was repaired one at a time -- the frozen cache owner (#1664), the
+// namespace producer (#1655), the owner-templated handle (#1661). What none of
+// them fixed is that an empty id was a legal argument: locks.Owner spelled a
+// three-segment name and the holder became unattributable. The session mints its
+// own now, so there is nothing left to lose (#1670).
+func TestASessionWithoutAPreambleIDStillNamesItself(t *testing.T) {
+	dir := t.TempDir()
+	rec := &recordingLocker{}
+	// No SetTestSessionID: this is the production shape of a connection whose
+	// proxy carried no id, which is what the field showed 942 times.
+	opts := imapserver.Options{
+		Mailbox:  maildir.New(maildir.WithLocker(rec)),
+		Index:    file.New(file.WithLocker(rec)),
+		Resolver: &mailbox.Resolver{Root: dir, HomeTemplate: "%d/%n"},
+		Auth:     &quotaAuthStub{user: "user@test.com", pass: "testpass", rule: "*:bytes=1000000"},
+		Locker:   rec,
+	}
+	srv := imapserver.New(opts)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	defer ln.Close() //nolint:errcheck
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close() //nolint:errcheck
+	c := imapclient.New(conn, nil)
+	if err := c.WaitGreeting(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Login("user@test.com", "testpass").Wait(); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	body := []byte("From: a@b.test\r\nSubject: one\r\n\r\nbody\r\n")
+	ac := c.Append("INBOX", int64(len(body)), nil)
+	if _, err := ac.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := ac.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ac.Wait(); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	store := &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagSeen}}
+	if err := c.Store(imap.SeqSetNum(1), store, nil).Close(); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	if err := c.Logout().Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := rec.seen()
+	if len(seen) == 0 {
+		t.Fatal("no lock was taken, so this measures nothing")
+	}
+	for _, o := range seen {
+		if n := len(strings.Split(o, "/")); n != 4 {
+			t.Errorf("a lock was announced as %q (%d segments, want 4) -- "+
+				"a connection with no id from the proxy is holding locks anonymously", o, n)
+		}
+	}
+	// One id for the connection, not one per acquisition: an id that changes
+	// under a session tells an operator as little as no id at all.
+	if len(seen) != 1 {
+		t.Errorf("one connection reached the lock service under %d names:\n  %v", len(seen), seen)
 	}
 }

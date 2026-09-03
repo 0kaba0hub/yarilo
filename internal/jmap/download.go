@@ -38,7 +38,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request, id ident
 		jmapcore.WriteProblem(w, http.StatusServiceUnavailable, "Mail store unavailable")
 		return
 	}
-	h, err := s.opts.Storage.open(id.user)
+	h, err := s.opts.Storage.open(id.user, id.sessionID)
 	if err != nil {
 		slog.Warn("jmap: download store open failed", "user", id.user, "err", err)
 		jmapcore.WriteProblem(w, http.StatusServiceUnavailable, "Mail store unavailable")

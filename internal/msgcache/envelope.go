@@ -257,11 +257,22 @@ func (p pendingField) UID() uint32 { return p.meta.UID }
 // derived data, absence is its recovery mode.
 // Options carries what the cache needs from its caller: the lock identity
 // and a trace id for logs.
+// lockID: a caller that supplied none still names a holder (#1670).
+func (o Options) lockID() string {
+	if o.SessionID != "" {
+		return o.SessionID
+	}
+	if o.TraceID != "" {
+		return o.TraceID
+	}
+	return locks.NewID()
+}
+
 type Options struct {
 	Locker locks.Locker
 	User   string
-	// SessionID names the session for the lock owner string. Empty is legal and
-	// spells the owner without it; what is not legal is a different spelling.
+	// SessionID names the session in the lock owner. Required: a cache write
+	// holds the mailbox key, and an anonymous holder is unattributable (#1670).
 	SessionID string
 	Folder    string
 	TraceID   string
@@ -312,7 +323,7 @@ func Open(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle {
 	if lkr := opts.Locker; lkr != nil && opts.User != "" && opts.Folder != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 		lk, lerr := locks.Acquire(ctx, lkr, locks.MailboxKey(opts.User, opts.Folder),
-			locks.Owner(opts.User, opts.SessionID), 30*time.Second)
+			locks.Owner(opts.User, opts.lockID()), 30*time.Second)
 		cancel()
 		if lerr != nil {
 			slog.Debug("msgcache: cache lock unavailable; serving uncached", "trace_id", opts.TraceID, "err", lerr)

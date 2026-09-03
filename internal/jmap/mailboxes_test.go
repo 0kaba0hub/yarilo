@@ -346,6 +346,8 @@ type testLocker struct {
 	// taken counts acquisitions, so a caller that opens per message instead of
 	// per folder is visible rather than merely slower.
 	taken int
+	// owners is every name the caller announced itself under.
+	owners map[string]struct{}
 }
 
 func (l *testLocker) acquisitions() int {
@@ -362,6 +364,10 @@ func (l *testLocker) Lock(_ context.Context, resource, owner string, _ time.Dura
 	}
 	l.holds[resource]++
 	l.taken++
+	if l.owners == nil {
+		l.owners = map[string]struct{}{}
+	}
+	l.owners[owner] = struct{}{}
 	return locks.Lock{ID: resource, Resource: resource, Owner: owner}, nil
 }
 

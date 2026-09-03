@@ -219,9 +219,9 @@ func lockMailbox(locker locks.Locker) func(user, folder string, fn func() error)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		t0 := time.Now()
-		// Per call: the key is one user's index, and "some fts" answers nothing
-		// an operator reading held_by is asking (#1647).
-		lk, err := locker.Lock(ctx, key, locks.Owner(user, ""), 5*time.Minute)
+		// One id per pass: "some fts" answers nothing an operator reading
+		// held_by is asking (#1647, #1670).
+		lk, err := locker.Lock(ctx, key, locks.Owner(user, locks.NewID()), 5*time.Minute)
 		ftsservice.ObserveLockWait(time.Since(t0))
 		if err != nil {
 			return fmt.Errorf("fts: lock %s: %w", key, err)

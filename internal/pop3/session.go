@@ -544,6 +544,10 @@ func (s *session) setupSession(res *protocol.AuthResponse) bool {
 	userInfo := resolver.UserInfo(res.Username, res.Home)
 	userInfo.Groups = res.Groups
 	userInfo.QuotaRules = res.QuotaRules
+	if s.sid == "" {
+		// No id from the proxy: mint one rather than lock anonymously (#1670).
+		s.sid = locks.NewID()
+	}
 	userInfo.SessionID = s.sid
 	locErr, drvErr := mailbox.ApplyUserdb(userInfo, mailbox.UserdbOverrides{
 		VolatileDir:  res.VolatileDir,
@@ -1102,7 +1106,7 @@ func (s *session) expungeDeleted() int {
 	if s.srv.opts.Locker != nil && s.userInfo != nil {
 		var errCount int
 		key := locks.MailboxKey(s.userInfo.Username, "INBOX")
-		owner := locks.Owner(s.userInfo.Username, s.userInfo.SessionID)
+		owner := locks.Owner(s.userInfo.Username, s.userInfo.LockID())
 		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 		defer cancel()
 		lk, err := locks.Acquire(ctx, s.srv.opts.Locker, key, owner, 30*time.Second)

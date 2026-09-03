@@ -48,7 +48,7 @@ func TestJMAP_RequestsShareTheMemoisedBackend(t *testing.T) {
 	New(Options{Storage: st}) // wraps st.MailboxByDriver once
 
 	for _, u := range []string{"alice@test.com", "bob@test.com"} {
-		h, err := st.open(u)
+		h, err := st.open(u, "test-session")
 		if err != nil {
 			t.Fatalf("open(%s): %v", u, err)
 		}
