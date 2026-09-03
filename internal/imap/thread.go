@@ -122,10 +122,11 @@ func (s *session) scanForOrdering(kind imapserver.NumKind, criteria *imaplib.Sea
 	var envCache *msgcache.Handle
 	if needs.envelope || needs.refs {
 		envCache = msgcache.Open(s.folderIdx(), s.folder.ID, msgcache.Options{
-			Locker:  s.srv.opts.Locker,
-			User:    s.userInfo.Username,
-			Folder:  s.folder.Name,
-			TraceID: s.sid,
+			Locker:    s.srv.opts.Locker,
+			User:      s.userInfo.Username,
+			SessionID: s.userInfo.SessionID,
+			Folder:    s.folder.Name,
+			TraceID:   s.sid,
 		})
 		// This command walks every matched message, so the cache is read in
 		// one pass rather than a record at a time: per-record reads put 30% of

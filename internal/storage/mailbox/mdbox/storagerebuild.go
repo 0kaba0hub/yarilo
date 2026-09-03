@@ -37,50 +37,29 @@ func (u *userMailbox) withMapLock(fn func() error) error {
 	return fn()
 }
 
-// RebuildStorage rebuilds the whole mdbox storage for the user, implementing
-// mailbox.StorageWideRebuilder. Under the storage (map) X-lock it reconciles the
-// shared map against the physical m.<N> files, resets every folder index to the
-// messages that still exist, recomputes each map record's refcount from the
-// actual folder references, and drops map records whose message vanished, then
-// bumps the persisted rebuild generation counter.
+// RebuildStorage rebuilds the whole mdbox storage under the map X-lock:
+// reconciles the map against the physical m.<N> files, resets every folder index
+// to what still exists, recomputes each record's refcount from actual folder
+// references, drops records whose message vanished, and bumps the rebuild
+// generation.
 //
-// Refcount recompute: after the folder indexes are reconciled, every live map
-// record's refcount is set to the number of folders that reference it. A message
-// referenced by no folder becomes zero-ref so the next purge reclaims it, and no
-// stale refcount>0 lingers. Such a record is NOT re-filed: without an
-// orig-mailbox tag the rebuild cannot tell genuinely-lost mail from
-// churn/refcount-leak garbage, and blind adoption mass-resurrects deleted mail.
-// Unreferenced-but-present records are reported (UnreferencedZeroref) and
-// logged, never resurrected.
+// An unreferenced record becomes zero-ref for the next purge and is never
+// re-filed: without an orig-mailbox tag the rebuild cannot tell lost mail from
+// refcount-leak garbage, and blind adoption mass-resurrects deleted mail.
 //
-// Lock order: the map X-lock (MdboxMapKey) is outer, the per-folder mailbox lock
-// (MailboxKey, taken inside idx.ResetFolder/GetMessages) is inner — the same
-// order every delivery takes (box.Save's map lock before idx append's folder
-// lock), so there is no inversion. Holding the map lock blocks new deliveries; a
-// delivery past box.Save but not yet past its folder append is counted by the
-// phase-2 re-read, so its refcount stays >0.
+// Lock order: map (MdboxMapKey) outer, per-folder inner -- the order every
+// delivery takes, so there is no inversion.
 //
-// QUIESCENCE REQUIRED. This operator repair tool must run with the user's
-// mailboxes quiesced: no concurrent delivery and no concurrent folder operation
-// (CREATE/DELETE/RENAME). The rebuild holds only the map lock, not each folder's
-// mailbox lock, so:
-//   - a delivery whose box.Save committed just before this rebuild took the lock
-//     and whose folder append lands after that folder's phase-2 count would have
-//     its refcount recomputed to 0 while a folder references it, and a later
-//     purge could reclaim live mail; and
-//   - with --restore-orphans, a concurrent DELETE of an orphan's orig-mailbox
-//     folder can race openOrCreateFolder.
+// QUIESCENCE REQUIRED. Only the map lock is held, not each folder's, so a
+// delivery that commits its Save before this takes the lock and appends to its
+// folder after that folder's phase-2 count would be recomputed to zero refs
+// while a folder references it, and a later purge could reclaim live mail. With
+// --restore-orphans, a concurrent DELETE of an orphan's orig-mailbox can race
+// openOrCreateFolder. The windows are small, not closed.
 //
-// The windows are small (the phase-2 re-read shrinks the delivery one) but not
-// eliminated; closing them fully needs the delivery folder-append and the
-// restore to serialise on the map lock too.
-//
-// modseq/QRESYNC: ResetFolder preserves each surviving record's own modseq (no
-// modseq storm for QRESYNC clients); it still loses per-UID VANISHED fidelity
-// for dropped records, since the reset rewrites the whole set. The dropped UIDs
-// are returned per folder in StorageRebuildStats.ExpungedUIDs so the caller
-// invalidates their FTS documents instead of leaving ghosts until the next
-// rescan.
+// ResetFolder keeps each surviving record's modseq, but loses per-UID VANISHED
+// fidelity for dropped ones; those UIDs come back in ExpungedUIDs so the caller
+// invalidates their FTS documents rather than leaving ghosts.
 func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool) (mailbox.StorageRebuildStats, error) {
 	var stats mailbox.StorageRebuildStats
 

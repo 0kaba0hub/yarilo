@@ -258,10 +258,13 @@ func (p pendingField) UID() uint32 { return p.meta.UID }
 // Options carries what the cache needs from its caller: the lock identity
 // and a trace id for logs.
 type Options struct {
-	Locker  locks.Locker
-	User    string
-	Folder  string
-	TraceID string
+	Locker locks.Locker
+	User   string
+	// SessionID names the session for the lock owner string. Empty is legal and
+	// spells the owner without it; what is not legal is a different spelling.
+	SessionID string
+	Folder    string
+	TraceID   string
 	// DeferWrites releases the cache locks as soon as the file has been read
 	// into memory, and takes them again in Close to append what the request
 	// parsed.
@@ -308,7 +311,8 @@ func Open(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle {
 	fc.unlock = append(fc.unlock, lockCachePath(path))
 	if lkr := opts.Locker; lkr != nil && opts.User != "" && opts.Folder != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-		lk, lerr := locks.Acquire(ctx, lkr, locks.MailboxKey(opts.User, opts.Folder), opts.User, 30*time.Second)
+		lk, lerr := locks.Acquire(ctx, lkr, locks.MailboxKey(opts.User, opts.Folder),
+			locks.Owner(opts.User, opts.SessionID), 30*time.Second)
 		cancel()
 		if lerr != nil {
 			slog.Debug("msgcache: cache lock unavailable; serving uncached", "trace_id", opts.TraceID, "err", lerr)

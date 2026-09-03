@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"sort"
 	"strings"
 
@@ -12,6 +11,7 @@ import (
 
 	"github.com/yarilomail/yarilo/internal/userstate/acl"
 	"github.com/yarilomail/yarilo/internal/userstate/subs"
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -608,5 +608,13 @@ func closeHandle(h *nsHandle) {
 
 // owner builds the yarilo-locks owner string for diagnostics.
 func (s *session) owner(username string) string {
-	return fmt.Sprintf("yarilo-imap/%d/%s", os.Getpid(), username)
+	return locks.Owner(username, s.sessionID())
+}
+
+// sessionID is the session part of a lock owner, empty before login.
+func (s *session) sessionID() string {
+	if s.userInfo == nil {
+		return ""
+	}
+	return s.userInfo.SessionID
 }

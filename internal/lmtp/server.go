@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -568,7 +567,7 @@ func (s *session) postAllowed(ui *mailbox.UserInfo, ns *config.NamespaceConfig, 
 	}
 	// acl_defaults_from_inbox applies to private / shared namespaces only.
 	defaultsFromInbox := s.opts.ACLDefaultsFromInbox && ns.Type != "public"
-	lockOwner := fmt.Sprintf("yarilo-lmtp/%d/%s", os.Getpid(), ui.Username)
+	lockOwner := locks.Owner(ui.Username, "")
 	store := acl.New(ui.Home, ui.MailPath, ui.Driver, ui.Separator, ui.StorageEscapeChar, ui.Username, lockOwner, acl.Policy{
 		DefaultsFromInbox: defaultsFromInbox,
 		GlobalsOnly:       s.opts.ACLGlobalsOnly,
@@ -854,7 +853,7 @@ func (s *session) recordThread(ui *mailbox.UserInfo, username string, guid [16]b
 	var err error
 	if s.opts.Locker != nil {
 		err = locks.WithLock(ctx, s.opts.Locker, locks.ThreadsKey(username),
-			fmt.Sprintf("yarilo-lmtp/%d", os.Getpid()), threadLockTTL, threadLockRenew, rec)
+			locks.Owner(username, ""), threadLockTTL, threadLockRenew, rec)
 	} else {
 		// No lock service wired (single-process dev runs), as the other stores
 		// do: the file is still consistent, only uncoordinated across pods.
