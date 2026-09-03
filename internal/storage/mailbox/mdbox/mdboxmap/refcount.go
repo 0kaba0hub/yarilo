@@ -6,21 +6,9 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
-// UpdateRefcounts applies a signed delta to the refcount of every
-// listed map_uid. Used for IMAP COPY (+1) and EXPUNGE (-1).
-//
-// All UIDs are updated under a single cross-process lock hop, so
-// the operation is atomic from a sibling process's point of view:
-// either every update is visible or none.
-//
-// Missing UIDs are reported as an error — a refcount update for a
-// non-existent map_uid is always a caller bug (stale folder
-// record pointing at a purged map entry).
-//
-// A refcount that would go negative is clamped at 0 to prevent
-// underflow on double-expunge from sloppy callers. Callers
-// should not rely on the clamp; audit the call site if it
-// triggers.
+// UpdateRefcounts applies a delta to every listed map_uid under one lock hop. A
+// missing uid is an error; a negative result is clamped, and reaching the clamp
+// is a bug at the call site.
 func (m *Map) UpdateRefcounts(mapUIDs []uint32, delta int16) error {
 	if len(mapUIDs) == 0 {
 		return nil
@@ -40,16 +28,12 @@ func (m *Map) UpdateRefcounts(mapUIDs []uint32, delta int16) error {
 			m.st.setAt(i, e)
 			deltas = append(deltas, mailindex.TxExtAtomicInc{UID: uid, Diff: int32(delta)})
 		}
-		// Appended, not rewritten. Every save and every delete changes a
-		// refcount, so rewriting the whole base index here made a full file
-		// rewrite the price of one operation -- and every sibling process then
-		// had to re-open the base it invalidated (#1205).
+		// Appended, not rewritten: every save and delete changes a refcount, so
+		// a base rewrite here priced one operation at a full file (#1205).
 		if err := m.appendRefcountLogLocked(deltas); err != nil {
-			// The records above are already changed, and the write that would
-			// have made them durable did not happen: neither the base mtime
-			// nor the log size moved, so the next reload would take the fast
-			// path and keep the phantom value. For a decrement that value is
-			// below the truth, and the purge scan reads exactly this state.
+			// The records changed but the write did not happen, and nothing on
+			// disk moved -- so the next reload fast-paths and keeps the phantom
+			// value, which for a decrement is what the purge scan reads.
 			m.invalidateLocked()
 			return err
 		}
@@ -57,15 +41,8 @@ func (m *Map) UpdateRefcounts(mapUIDs []uint32, delta int16) error {
 	})
 }
 
-// SetRefcountsFromReferences rewrites every live map record's refcount to the
-// number of folder references reported in refs (map_uid → reference count),
-// defaulting to 0 for any record not present in refs. This is the map-side of a
-// storage-wide rebuild's "recompute refcounts from actual references" step:
-// after the folder indexes are reconciled, a record
-// referenced by no folder gets refcount 0 so the next purge reclaims it — no
-// stale refcount>0 lingers to trip the next rebuild, and no unreferenced message
-// is silently resurrected. Returns the number of records set to 0 (the
-// unreferenced-but-still-present count) for reporting. Runs under the map X-lock.
+// SetRefcountsFromReferences rewrites every refcount from refs, zero for a record
+// it does not name, so an unreferenced one is reclaimed rather than resurrected.
 func (m *Map) SetRefcountsFromReferences(refs map[uint32]int) (int, error) {
 	zeroed := 0
 	err := m.withMapLock(func() error {
@@ -96,16 +73,9 @@ func (m *Map) SetRefcountsFromReferences(refs map[uint32]int) (int, error) {
 	return zeroed, nil
 }
 
-// SetGUIDs stamps a GUID onto records that carry none, and reports how many it
-// wrote.
-//
-// For a converted store. Their map does not carry GUIDs, so the records an
-// import appends have none; their folder index does carry one per message, and
-// the conversion reads it there. So the value arrives on the folder that
-// converts, not from a walk over every storage file to parse every trailer.
-//
-// A record that already has one is left alone: the GUID is the message's
-// identity and a second opinion about it is not an update.
+// SetGUIDs stamps a GUID onto records carrying none, taking it from the folder
+// index of a converted store rather than from a walk over every storage file. A
+// record that already has one is left alone.
 func (m *Map) SetGUIDs(guids map[uint32][16]byte) (int, error) {
 	if len(guids) == 0 {
 		return 0, nil
@@ -138,11 +108,8 @@ func (m *Map) SetGUIDs(guids map[uint32][16]byte) (int, error) {
 	return written, nil
 }
 
-// GetZeroRefFiles returns the set of distinct file_ids that
-// contain at least one record with refcount == 0. These are the
-// candidate files for purge; the caller picks one (or several)
-// and feeds the AppendMove primitive to compact live records
-// into a fresh file_id.
+// GetZeroRefFiles returns the file_ids holding at least one zero-refcount
+// record -- purge candidates, which the caller compacts through AppendMove.
 func (m *Map) GetZeroRefFiles() ([]uint32, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -168,10 +135,8 @@ func (m *Map) GetZeroRefFiles() ([]uint32, error) {
 	return out, nil
 }
 
-// RecordsInFile returns every MapEntry whose data lives in the
-// given physical m.<file_id>. Used by the purge driver to decide
-// which records to copy forward (refcount > 0) and which to
-// expunge (refcount == 0). Read-only.
+// RecordsInFile returns every entry living in one physical file, for purge to
+// split into what it copies forward and what it expunges.
 func (m *Map) RecordsInFile(fileID uint32) ([]MapEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

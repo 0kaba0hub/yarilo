@@ -5,10 +5,8 @@ import (
 	"fmt"
 )
 
-// Base index format v2: a fixed-size header followed by fixed-width records
-// sorted by map_uid. A record is reachable by offset arithmetic and findable by
-// binary search over the file bytes, so opening the map costs a read and no
-// per-record parsing, and lookup needs no heap-built index.
+// Base index format v2: a fixed header and fixed-width records sorted by map_uid,
+// so an open costs a read with no parsing and lookup needs no built index.
 const (
 	baseMagic     = "YMAP"
 	baseVersion2  = 2
@@ -29,21 +27,18 @@ type baseHeader struct {
 	CreateFileID  uint32
 	CreateTime    uint64
 
-	// Lineage names the log this base is the root of: a log carrying it holds
-	// only transactions written after this base, so it is replayed whole. Every
-	// base rewrite mints a new one, which is what lets a reader tell "the file
-	// was replaced" from "the file was touched" without anyone declaring it.
+	// Lineage names the log this base is the root of, and every rewrite mints a
+	// new one -- which is how a reader tells a replaced file from a touched one
+	// without anyone declaring it.
 	Lineage uint32
 	// FoldedLineage / FoldedOffset name the log this base absorbed and how far
 	// into it. A reader that still has that log replays only past the offset;
 	// replaying from the start would apply every refcount delta a second time.
 	FoldedLineage uint32
 	FoldedOffset  uint64
-	// RecordsDigest is taken over the record area. It is how a reader proves,
-	// rather than assumes, that a rewritten base holds the records it already
-	// has: a rewrite that also changed them (purge, expunge, a refcount
-	// recompute) cannot match it, and neither can one added later that nobody
-	// remembered to declare.
+	// RecordsDigest is how a reader proves rather than assumes that a rewritten
+	// base holds the records it already has: a rewrite that changed them cannot
+	// match, including one added later that nobody declared.
 	RecordsDigest uint64
 
 	IndexID uint32

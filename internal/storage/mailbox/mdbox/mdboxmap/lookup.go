@@ -15,12 +15,9 @@ func lockRead(mu *sync.Mutex) {
 	metricMapReadBlocked.Observe(time.Since(start).Seconds())
 }
 
-// Lookup resolves one map_uid to its on-disk location and current
-// refcount. Returns (entry, true, nil) on success, (_, false, nil)
-// when the UID is not present. Reads under m.mu only — no
-// cross-process lock — the caller may see a brief stale view
-// when a sibling process appends concurrently, but never a torn
-// record (the base is replaced atomically by .tmp+rename).
+// Lookup resolves one map_uid to its location and refcount, under m.mu only: a
+// sibling's concurrent append can leave the view briefly stale, never torn,
+// since the base is replaced atomically.
 func (m *Map) Lookup(mapUID uint32) (MapEntry, bool, error) {
 	lockRead(&m.mu)
 	defer m.mu.Unlock()
@@ -44,11 +41,8 @@ func (m *Map) lookupLocked(mapUID uint32) (MapEntry, bool) {
 	return m.st.at(i), true
 }
 
-// Records returns every record the map currently holds, in map order.
-//
-// For pairing a whole map against another one, where a lookup per record would
-// take the lock once per record and still have to be told what to look for. The
-// slice is a copy; the caller may keep it.
+// Records returns every record in map order, for pairing a whole map against
+// another one. The slice is a copy; the caller may keep it.
 func (m *Map) Records() []MapEntry {
 	lockRead(&m.mu)
 	defer m.mu.Unlock()
@@ -84,13 +78,9 @@ func (m *Map) LookupMany(mapUIDs []uint32) ([]MapEntry, error) {
 	return out, nil
 }
 
-// LookupByGUID finds the map_uid for a 128-bit message GUID. Used
-// by the rebuild path as the preferred matching strategy: more
-// robust than offset matching because GUIDs survive file compaction.
-// Returns (entry, true, nil) on success; (_, false, nil) when no
-// record carries that GUID (e.g. pre-GUID records have zero GUIDs).
-// A zero GUID argument always returns false to prevent accidental
-// mass-matches against pre-GUID records.
+// LookupByGUID finds the map_uid for a message GUID -- the rebuild's preferred
+// match, since a GUID survives compaction where an offset does not. A zero GUID
+// always returns false, or it would mass-match every pre-GUID record.
 func (m *Map) LookupByGUID(guid [16]byte) (MapEntry, bool, error) {
 	if guid == ([16]byte{}) {
 		return MapEntry{}, false, nil

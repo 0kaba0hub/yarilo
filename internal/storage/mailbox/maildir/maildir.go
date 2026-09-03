@@ -302,6 +302,8 @@ func (u *userMailbox) adoptFolderNames() error {
 // adoptedDirName returns the directory name this deployment would write for a
 // maildir++ directory currently named name, and whether it could tell.
 func (u *userMailbox) adoptedDirName(name string) (string, bool) {
+	// Level by level, and safe rather than lucky: modified base64 is A-Z a-z 0-9
+	// '+' ',', so a '.' never falls inside an encoded run.
 	levels := strings.Split(strings.TrimPrefix(name, "."), ".")
 	changed := false
 	for i, level := range levels {

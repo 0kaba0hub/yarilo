@@ -7,19 +7,9 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
-// Format v1 is the mailindex-backed base: a standard index header, three
-// per-record extensions, and a record stream that has to be parsed into objects
-// before anything can be looked up. It is kept behind mdbox_map_format so a
-// deployment can go back to it — the format on disk decides what a rollback of
-// the binary can still read, which is not a decision this code gets to make for
-// an operator.
-//
-// It carries none of v2's freshness bookkeeping: there is no lineage to compare
-// and no digest to check, so a v1 map re-reads its base whenever the file moves
-// and replays its log from the start. Appends deduplicate by map_uid, but a
-// refcount delta replayed a second time does not — the window between writing
-// the base and removing the log is unprotected here. That is the cost of the
-// choice, and it is why v2 is the default.
+// Format v1 is the mailindex-backed base, kept because the format on disk decides
+// what a rolled-back binary can read. It replays from the start, and a replayed
+// refcount delta does not dedupe.
 
 // readBaseV1Locked loads a v1 base into the record area.
 func (m *Map) readBaseV1Locked() error {
