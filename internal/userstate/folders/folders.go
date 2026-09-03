@@ -47,8 +47,10 @@ const foldThreshold = 4096
 
 // Store is one user's folder-identity record.
 type Store struct {
-	path   string
-	user   string
+	path string
+	user string
+	// owner is fixed at construction, so a BUSY names the builder, not the
+	// holder: the key is user-wide, with no folder to stamp (#1664).
 	owner  string
 	locker locks.Locker
 }
