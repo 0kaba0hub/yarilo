@@ -5,13 +5,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// The driver's half of the folder lock, by the call that took it.
-//
-// The index publishes the same count under fileindex_lock_acquired_total, and
-// both take locks.MailboxKey -- the same resource. Read alone, either half
-// describes a fraction of the contention on that key and reads as the whole of
-// it (#1630). Named by role rather than by function, so a call moving to
-// another function does not rename the number.
+// The driver's half of the folder lock, by the call that took it. The index
+// publishes the other half on the same resource, so either alone reads as the
+// whole (#1630). Sites are named by role, so moving a call keeps the number.
 var metricLockAcquired = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "maildir_lock_acquired_total",
 	Help: "Cross-process folder locks the maildir driver acquired, by the call that took it. Shares the resource with fileindex_lock_acquired_total; the sum of the two is what contends on one folder.",
