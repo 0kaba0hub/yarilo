@@ -54,6 +54,8 @@ var anonID = sync.OnceValue(func() string { return "noid-" + NewID() })
 // package variables run, so a var here reads nil and never fires.
 func underTest() bool { return flag.Lookup("test.v") != nil }
 
+// Reached only by a caller that built its own identity: dropping the seed in
+// Resolver.UserInfo or LockID puts this back on live paths (#1670).
 func reportMissingID(user string) string {
 	_, file, line, _ := runtime.Caller(2)
 	if underTest() {
