@@ -673,6 +673,8 @@ func (s *session) writeFlagsBatch(multi mailbox.FlagWriterMulti, folder string, 
 	s.storeRenameMS = time.Since(renameStart).Milliseconds()
 	nameStart := time.Now()
 	renamed := 0
+	batch, batched := idx.(mailbox.FilenameWriterMulti)
+	names := map[uint32]string{}
 	for i, res := range results {
 		if res.Err != nil {
 			slog.Warn("imap: could not record flags in storage", "folder", folder,
@@ -683,9 +685,19 @@ func (s *session) writeFlagsBatch(multi mailbox.FlagWriterMulti, folder string, 
 			continue
 		}
 		renamed++
+		if batched {
+			names[res.UID] = res.Filename
+			continue
+		}
 		if err := idx.UpdateFilename(s.folder.ID, res.UID, res.Filename); err != nil {
 			slog.Warn("imap: could not record the new filename", "folder", folder,
 				"uid", res.UID, "name", res.Filename, "err", err)
+		}
+	}
+	if batched && len(names) > 0 {
+		if err := batch.UpdateFilenames(s.folder.ID, names); err != nil {
+			slog.Warn("imap: could not record the new filenames", "folder", folder,
+				"count", len(names), "err", err)
 		}
 	}
 	s.storeNameMS = time.Since(nameStart).Milliseconds()

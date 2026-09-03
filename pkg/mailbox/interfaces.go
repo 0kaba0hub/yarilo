@@ -556,6 +556,15 @@ type FlagWriteResult struct {
 	Err      error
 }
 
+// FilenameWriterMulti records a whole command's new names at once.
+//
+// Optional, like FlagWriterMulti and for the same reason: the single form takes
+// the index's exclusive lock per message, and on maildir a flag change renames
+// nearly every message in a batch. A caller without it falls back.
+type FilenameWriterMulti interface {
+	UpdateFilenames(folderID uint64, names map[uint32]string) error
+}
+
 // FlagWriterMulti records a whole command's flag writes at once.
 //
 // Separate from FlagWriter rather than replacing it: dbox keeps flags in the
