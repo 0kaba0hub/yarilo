@@ -172,6 +172,10 @@ say it.
 - Cover: happy path, edge cases (empty input, not-found, concurrent access where relevant).
 - Use `t.TempDir()` for filesystem tests — never leave temp files behind.
 - Forbidden in unit tests: network connections, real IMAP/SMTP ports, sleep.
+- **A trap that does not go red on the mutation is not proven — it is
+  unexplained.** Until it is named *why* the mutation did nothing, "the path is
+  not reachable in a test" is a guess, not a fact. Twice that guess hid a blind
+  test (#1652). See the "blind trap" entry in docs-internal/benchmark-method.md.
 
 ### Post-deploy smoke tests (`app/smoketest`)
 - **Every new protocol port gets a smoke check** added to `app/smoketest/main.go`.
