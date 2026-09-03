@@ -35,9 +35,6 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// Backend is the per-process factory for fileindex handles. It
-// holds only process-wide state; per-user state lives in
-// userIndex (created by OpenUser).
 // The fold thresholds live in one place for both logs; see internal/storage/logrotate.
 var (
 	defaultLogCompactMinBytes = logrotate.MinSize
@@ -111,6 +108,8 @@ func copySidecarTmp(src, dst string) error {
 	return out.Close()
 }
 
+// Backend is the per-process factory for fileindex handles. It holds only
+// process-wide state; per-user state lives in userIndex (created by OpenUser).
 type Backend struct {
 	locker locks.Locker
 
@@ -164,17 +163,10 @@ func WithNoCreate() Option {
 	return func(b *Backend) { b.noCreate = true }
 }
 
-// WithLogCompaction configures automatic log compaction thresholds.
-// minBytes / maxBytes control when rotation fires; minAge prevents rotation
-// before the log reaches a minimum age.
-//
-// A zero for any of the three keeps that arm's built-in default, so the arms
-// are independent: setting the age alone changes the age and leaves the size
-// thresholds where they were. It used to mean "disable" for minBytes, which is
-// the opposite reading -- and an operator who sets one knob is asking for that
-// knob, not for rotation to stop. There is deliberately no way to disable
-// rotation through this option; nobody has asked for one, and a value that
-// means "never fold" wants to be explicit rather than to be a zero.
+// WithLogCompaction sets the compaction thresholds. A zero for any of the three
+// keeps that arm's built-in default, so setting one leaves the others alone --
+// zero used to mean "disable" for minBytes, the opposite of what a caller
+// setting one knob wants. No way to disable rotation through this option.
 func WithLogCompaction(minBytes, maxBytes int64, minAge time.Duration) Option {
 	return func(b *Backend) {
 		if minBytes != 0 {
@@ -204,15 +196,12 @@ func New(opts ...Option) *Backend {
 	return b
 }
 
-// OpenUser returns a per-session handle bound to u. All sessions for
-// the same username share one underlying userIndex so they serialise
-// on the per-folder in-process mutex rather than competing for the
-// cross-process Redis mailbox lock.
-// cacheKey identifies a shared userIndex. It is the username combined
-// with every field that determines the on-disk index root, so the same
-// user accessing distinct storage roots (personal vs shared/public
-// namespaces at different locations) gets separate index state instead
-// of colliding on username alone.
+// OpenUser returns a per-session handle bound to u. All sessions for the same
+// username share one userIndex, serialising on the in-process mutex rather
+// than competing for the cross-process lock.
+// cacheKey identifies a shared userIndex: username plus every field that
+// determines the on-disk index root, so distinct storage roots for one user
+// get separate index state instead of colliding.
 func cacheKey(u *mailbox.UserInfo) string {
 	return strings.Join([]string{u.Username, u.IndexDir, u.MailPath, u.Home, u.Driver}, "\x00")
 }
@@ -264,12 +253,10 @@ type userHandle struct {
 	traceID string
 }
 
-// stampTrace records this handle's traceID on folderID's folderState (when
-// open) before a call that will log against it, so the resulting log lines
-// attribute to this session instead of whichever session opened the folder.
-// No-op when traceID is empty (e.g. LMTP, or a test backend with no SessionID)
-// or the folder isn't in the open cache (shouldn't happen — the caller already
-// holds a live folderID).
+// stampTrace records this handle's traceID on folderID's folderState before a
+// call that will log against it, so log lines attribute to this session rather
+// than whichever session opened the folder. No-op when traceID is empty (LMTP,
+// or a test backend with no SessionID).
 func (h *userHandle) stampTrace(folderID uint64) {
 	if h.traceID == "" {
 		return
@@ -476,17 +463,10 @@ type userIndex struct {
 	byDir map[string]uint64       // index dir path → folderID (dedup OpenFolder)
 }
 
-// folderState is the live in-memory snapshot of one folder's
-// fileindex. Mutations append a transaction record to .index.log
-// and update fs.file in-memory. The base .index file is only
-// rewritten by flush() (OptimizeIndex / SaveFolder / ResetFolder /
-// createFresh).
-//
-// logSize is the log file byte count after the last write or reload;
-// reload() compares it against a fresh stat so it can skip the
-// expensive mailindex.Open when nothing has changed (common case
-// within a single pod). baseMod is the base .index mtime at the last
-// full reload — it changes only when another writer calls flush().
+// folderState is the live in-memory snapshot of one folder's fileindex.
+// Mutations append to .index.log and update fs.file in memory; the base .index
+// is rewritten only by flush(). logSize and baseMod let reload() skip a
+// re-parse when a fresh stat shows nothing changed since the last one.
 type folderState struct {
 	mu sync.RWMutex
 
@@ -576,17 +556,12 @@ func shouldRotate(logSize, minBytes, maxBytes int64, sinceLastFold, minAge time.
 	return sinceLastFold >= minAge
 }
 
-// sinceLastFold reports how long the log has been accumulating, taken from the
-// base .index mtime: the base is rewritten exactly when the log is folded, so
-// its mtime is the time of the last fold — a fact shared by every process over
-// the folder, and one a freshly opened descriptor reads correctly.
-//
-// A per-descriptor stamp cannot do this job: it is zero on every fresh open, so
-// a workload that reconnects per cycle (imaptest, a phone) would fold on its
-// first write past the floor and lose the hysteresis the age arm exists for.
-//
-// An unstattable base reads as infinitely old, so a folder whose base cannot be
-// examined folds on size alone rather than never.
+// sinceLastFold takes the base .index mtime as the time of the last fold --
+// the base is rewritten exactly then, so every process reads it the same, where
+// a per-descriptor stamp would be zero on each fresh open and fold a
+// reconnect-per-cycle workload on its first write. Unstattable reads as
+// infinitely old, so an unexaminable base folds on size alone rather than
+// never.
 func (fs *folderState) sinceLastFold() time.Duration {
 	mod := fs.baseMod
 	if mod.IsZero() {
@@ -599,17 +574,9 @@ func (fs *folderState) sinceLastFold() time.Duration {
 	return time.Since(mod)
 }
 
-// compactLogIfNeeded checks whether fs.logSize has crossed the compaction
-// thresholds configured on the Backend and, if so, flushes the base index
-// and resets the log. Errors are non-fatal — the log simply stays larger
-// until the next successful compaction attempt.
-//
-// Rotation logic:
-//
-//	rotate if logSize > maxBytes
-//	     OR (logSize >= minBytes AND age since the last fold >= minAge)
-//
-// Caller must hold fs.mu.
+// compactLogIfNeeded flushes and resets the log once fs.logSize crosses maxBytes,
+// or minBytes and minAge together. Errors are non-fatal -- the log stays larger
+// until the next attempt. Caller must hold fs.mu.
 func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 	min := u.b.logCompactMinBytes
 	if min == 0 {
@@ -618,11 +585,10 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 	if !shouldRotate(fs.logSize, min, u.b.logCompactMaxBytes, fs.sinceLastFold(), u.b.logCompactMinAge) {
 		return
 	}
-	// Never flush our in-memory header if the shared log was replaced by another
-	// process's compaction since our last reload: that header could carry a
-	// stale (lower) NextUID and regress the folder's UID counter. Under the
-	// distributed lock this cannot happen; if it ever does, bail and let the
-	// next reload reconcile from the rewritten base.
+	// Never flush our in-memory header if the log was replaced by another
+	// process's compaction since our last reload: it could carry a stale
+	// NextUID and regress the counter. Cannot happen under the distributed
+	// lock; if it ever does, bail and let the next reload reconcile.
 	if fs.logFileReplaced() {
 		slog.Warn("fileindex: skipping compaction, .log replaced since reload", "folder", fs.folder)
 		fs.closeFDs()
@@ -637,11 +603,10 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 		return
 	}
 	if err := fs.flush(false); err != nil {
-		// Non-fatal on purpose -- a folder that cannot fold its log still
-		// serves mail -- but not silent: rotation being off is invisible from
-		// the outside, and the log then grows until every open replays it
-		// (#1258/#1270 measured what that costs). The counter is what an
-		// operator can alert on without reading logs (#1285).
+		// Non-fatal -- a folder that cannot fold still serves mail -- but not
+		// silent: rotation being off is invisible otherwise, and the log grows
+		// until every open replays it (#1258/#1270). The counter is what an
+		// operator alerts on (#1285).
 		metricCompactionRefused.Inc()
 		slog.Warn("fileindex: log compaction flush failed; rotation is not happening for this folder",
 			"folder", fs.folder, "log_size", fs.logSize, "err", err)
@@ -655,11 +620,9 @@ func (u *userIndex) compactLogIfNeeded(fs *folderState) {
 	fs.logSize = 0
 }
 
-// fdMatchesFile reports whether f still refers to the same on-disk file
-// (device + inode, via os.SameFile) as fi. Returns false when f is nil or
-// either stat is unavailable — an unprovable identity is treated as "not the
-// same file". Single source of the inode-identity comparison used by reload()
-// and logFileReplaced().
+// fdMatchesFile reports whether f still refers to fi's on-disk file, by
+// device+inode. False when f is nil or a stat fails -- unprovable identity is
+// "not the same file". Shared by reload() and logFileReplaced().
 func fdMatchesFile(f *os.File, fi os.FileInfo) bool {
 	if f == nil || fi == nil {
 		return false
@@ -671,11 +634,9 @@ func fdMatchesFile(f *os.File, fi os.FileInfo) bool {
 	return os.SameFile(fi, st)
 }
 
-// logFileReplaced reports whether the on-disk .log is a different file
-// (inode+device) than the one fs.logFD currently holds open — i.e. another
-// process replaced it through truncateLog's rename. Returns false when we hold
-// no fd yet or the path stat fails (treat as "not proven replaced"). Caller
-// must hold fs.mu.
+// logFileReplaced reports whether the on-disk .log differs by inode+device
+// from the one fs.logFD holds open -- another process replaced it via
+// rename. False when no fd is held yet or the stat fails. Caller holds fs.mu.
 func (fs *folderState) logFileReplaced() bool {
 	if fs.logFD == nil {
 		return false
@@ -701,8 +662,6 @@ func (u *userIndex) indexRootDir() string {
 	return root
 }
 
-// indexDir is the per-folder index directory: the index root joined with the
-// driver's folder sub-layout, so the index mirrors the mailbox tree.
 // diskName is the folder name as it appears on disk: modified UTF-7 unless the
 // deployment writes UTF-8 names. The mailbox driver applies the same rule, and
 // the two trees have to agree -- an index written under one spelling and mail
@@ -714,6 +673,8 @@ func (u *userIndex) diskName(folder string) string {
 	return mboxenc.ToModUTF7(folder)
 }
 
+// indexDir is the per-folder index directory: the index root joined with the
+// driver's folder sub-layout, so the index mirrors the mailbox tree.
 func (u *userIndex) indexDir(folder string) string {
 	return filepath.Join(u.indexRootDir(), mailbox.FolderSubpathEscaped(u.driver, folder, u.diskName(folder), u.separator, u.escapeChar))
 }
@@ -727,15 +688,6 @@ func (u *userIndex) folderVolatileDir(folder string) string {
 	return filepath.Join(u.volatileDir, mailbox.FolderSubpathEscaped(u.driver, folder, u.diskName(folder), u.separator, u.escapeChar))
 }
 
-// withFolderRO reloads the folder state, then runs read-only fn against the
-// settled in-memory snapshot.
-//
-// The reload takes a SHARED distributed lock so it cannot interleave with
-// another process's lock-holding compaction (flush + truncateLog) and load a
-// torn view into the shared folderState — which every later locked write would
-// then trust as a baseline, regressing NextUID. Shared holders run
-// concurrently and only block against an in-flight exclusive writer; fn then
-// reads under fs.mu.RLock without holding the distributed lock at all.
 // withFolderROUnlocked serves a read without the cross-process lock, when the
 // state on disk can prove its own consistency: the base names the log it
 // absorbed and how far, and the log names the base it belongs to (see
@@ -787,6 +739,12 @@ func (fs *folderState) canReadUnlocked() bool {
 	return fs.lineage.Lineage != lineageUnknown
 }
 
+// withFolderRO reloads the folder state under a SHARED distributed lock, then
+// runs read-only fn against the settled in-memory snapshot. The lock keeps it
+// from interleaving with another process's lock-holding compaction and loading
+// a torn view into the shared folderState, which every later locked write would
+// then trust as a baseline, regressing NextUID. Shared holders run concurrently
+// and block only against an in-flight exclusive writer.
 func (u *userIndex) withFolderRO(folderID uint64, fn func(*folderState) error) error {
 	return u.withFolderROSite(folderID, lockSiteRead, fn)
 }
@@ -804,14 +762,10 @@ func (u *userIndex) withFolderROSite(folderID uint64, site string, fn func(*fold
 	if !ok {
 		return fmt.Errorf("fileindex: folder %d not open", folderID)
 	}
-	// The lock part is the whole locked span minus the work done inside it, so
-	// it covers every trip to the lock service: the acquisition, the
-	// already-ours check, and the release, which runs in a defer as
-	// withDistLock returns. Timing only the acquisition would leave the release
-	// -- about as expensive as the acquisition, measured -- in the remainder,
-	// where a reader would have to remember to subtract a cost that already has
-	// a name. Then the remainder would name nothing, which is the only reason
-	// the split exists.
+	// The lock part covers every trip to the lock service -- acquisition,
+	// already-ours check, and the release that runs as withDistLock returns.
+	// Timing only the acquisition would leave the release, measured at about
+	// the same cost, sitting unnamed in the remainder.
 	var reloadDur time.Duration
 	lockStart := time.Now()
 	err := u.withDistLock(fs, true, site, func() error {
@@ -837,14 +791,10 @@ func (u *userIndex) withFolderROSite(folderID uint64, site string, fn func(*fold
 	return ferr
 }
 
-// withFolderLock runs fn under the cross-process index lock for
-// the supplied folder state. When no locker is wired (tests),
-// fn runs unguarded.
-//
-// The HoldsResource() shortcut is preserved here so the POP3 QUIT
-// pattern (outer caller takes the lock then drives per-message
-// storage calls that touch the same key) does not deadlock against
-// itself.
+// withFolderLock runs fn under the cross-process index lock; unguarded when no
+// locker is wired (tests). The HoldsResource() shortcut is preserved so the
+// POP3 QUIT pattern -- an outer caller holding the lock while driving
+// per-message calls on the same key -- does not deadlock against itself.
 func (u *userIndex) withFolderLock(fs *folderState, fn func() error) error {
 	return u.withDistLock(fs, false, lockSiteWrite, func() error {
 		fs.mu.Lock()
@@ -995,11 +945,9 @@ func (u *userIndex) RenameFolder(oldName, newName string) error {
 	})
 }
 
-// folderTreeDir is the index subtree owned solely by folder. For dbox
-// drivers indexDir() points at the dbox-Mails leaf, so its parent is the
-// folder dir; other drivers already return the folder dir. Delete/Rename
-// operate on this so the whole subtree is reclaimed/moved, leaving no
-// empty mailboxes/<name> shell behind.
+// folderTreeDir is the index subtree owned solely by folder: for dbox
+// indexDir() points at the dbox-Mails leaf, so its parent is the folder dir.
+// Delete/Rename operate on this to reclaim the whole subtree.
 func (u *userIndex) folderTreeDir(dir string) string {
 	switch u.driver {
 	case "mdbox", "sdbox", "dbox":
@@ -1154,31 +1102,18 @@ func fileExists(path string) bool {
 func indexPathFor(indexDir string) string { return filepath.Join(indexDir, IndexFileName) }
 func namesPath(indexDir string) string    { return filepath.Join(indexDir, IndexNamesFileName) }
 
-// migrateLegacyFilenames promotes legacy canonical filenames in
-// indexDir to their yarilo-native equivalents. Atomic per-file
-// rename. Idempotent: skips files whose yarilo-native counterpart
-// already exists (the operator may have run a previous migration).
-// Returns an error only on a partial rename — never on absence of
-// the legacy file.
 // errForeignIndexPresent says the legacy-named index in this directory belongs
 // to another implementation. Not a failure: the caller decides what that means
 // for its driver, and for most of them the answer is to leave it alone.
 var errForeignIndexPresent = errors.New("the legacy-named index is another implementation's")
 
-// removeForeignIndexFiles unlinks the index files another implementation left
-// in a maildir folder.
-//
-// Only the derived ones. A maildir is served from its files -- the message is
-// the file and the flags are in its name -- so their index says nothing we need,
-// and leaving it means a tool of theirs finds it and reads it as current.
-//
-// Their keyword file is deliberately not in this list: it is the only record of
-// what the letters in a filename mean, and until we write one of our own,
-// removing it would leave those keywords unnameable (#1600, #1601).
-//
-// Failures are logged and not returned: the folder is readable either way, and
-// refusing to open it because a leftover could not be unlinked turns tidying
-// into an outage.
+// removeForeignIndexFiles unlinks the derived index files another
+// implementation left in a maildir folder -- a maildir is served from its own
+// files, so their index says nothing we need, and leaving it lets their tools
+// read it as current. Their keyword file stays: it is the only record of what
+// the letters in a filename mean until we write our own (#1600, #1601).
+// Failures are logged, not returned -- a leftover that cannot be unlinked must
+// not turn tidying into an outage.
 func removeForeignIndexFiles(indexDir string) {
 	for _, name := range []string{
 		LegacyIndexFileName,
@@ -1197,12 +1132,14 @@ func removeForeignIndexFiles(indexDir string) {
 	}
 }
 
+// migrateLegacyFilenames promotes legacy canonical filenames in indexDir to
+// their yarilo-native equivalents, atomically per file and idempotently:
+// skips a file whose yarilo-native counterpart already exists. Errors only on
+// a partial rename, never on absence of the legacy file.
 func migrateLegacyFilenames(indexDir string) error {
-	// Only ours. The legacy names are another implementation's current names,
-	// so renaming on the name alone moves their index into our namespace, where
-	// it does not parse and where they can no longer find it (#1574). Their
-	// store is read by the conversion path instead, which leaves their files
-	// alone until ours is durable.
+	// Only ours: the legacy names are another implementation's current names,
+	// and renaming on the name alone would move their index into our
+	// namespace, unparseable and unfindable by them (#1574).
 	if legacyIndex := filepath.Join(indexDir, LegacyIndexFileName); fileExists(legacyIndex) &&
 		looksForeign(legacyIndex) {
 		return errForeignIndexPresent
@@ -1240,12 +1177,9 @@ func migrateLegacyFilenames(indexDir string) error {
 	return nil
 }
 
-// loadNames reads the .names sidecar into UID→filename and
-// UID→size maps. Missing file = empty maps (not an error).
-// Format is TSV with 2 or 3 columns:
-//
-//	<uid>\t<filename>\n               (legacy — size treated as 0)
-//	<uid>\t<filename>\t<size_bytes>\n (current)
+// loadNames reads the .names sidecar (TSV, 2 or 3 columns, legacy rows
+// treated as size 0) into UID->filename and UID->size maps. A missing file
+// is empty maps, not an error.
 func loadNames(indexDir string) (map[uint32]string, map[uint32]uint32) {
 	names := map[uint32]string{}
 	sizes := map[uint32]uint32{}
@@ -1347,12 +1281,10 @@ func saveNames(indexDir, volatileDir string, names map[uint32]string, sizes map[
 	return nil
 }
 
-// ensureLogStub writes an empty .log file (just LogHeader) if
-// none exists. Required because the canonical reader fails
-// hard when .index is present but its .log sibling is missing.
-// Pure-Recreate mode never appends to the log, but the file
-// must exist for compat. volatileDir routes the scratch write to the fast
-// local volume when configured, matching every other sidecar/base rewrite.
+// ensureLogStub writes an empty .log file (just LogHeader) if none exists: the
+// canonical reader fails hard when .index is present but its .log sibling is
+// missing. Pure-Recreate never appends to the log, but the file must exist for
+// compat.
 func ensureLogStub(indexPath, volatileDir string, indexID, lineage uint32) error {
 	logPath := indexPath + ".log"
 	if _, err := os.Stat(logPath); err == nil {
