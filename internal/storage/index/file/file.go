@@ -239,9 +239,8 @@ type userHandle struct {
 	ui       *userIndex
 	b        *Backend
 	cacheKey string
-	// owner is this session's lock-owner string; the shared userIndex keeps the
-	// one its creator minted, which is what held_by reported for every session
-	// after the first (#1664).
+	// owner is this session's own; the shared userIndex keeps its creator's,
+	// which is the name held_by used to report for everyone else (#1664).
 	owner string
 	// traceID is this session's correlation ID (see folderState.traceID).
 	traceID string
@@ -258,11 +257,9 @@ func (fs *folderState) lockOwner(fallback string) string {
 	return fallback
 }
 
-// stamped is how a handle reaches the shared index: it records this session's
-// trace id and lock owner on the folder state first, so the log line and the
-// held_by of whatever the call does next name this session rather than
-// whichever one opened the folder. Every folder verb goes through it, so a verb
-// added later cannot quietly announce somebody else's name (#1664).
+// stamped records this session's trace id and lock owner on the folder state and
+// returns the index: every folder verb goes through it, so none can announce the
+// name of whichever session opened the folder (#1664).
 func (h *userHandle) stamped(folderID uint64) *userIndex {
 	if h.traceID == "" && h.owner == "" {
 		return h.ui
