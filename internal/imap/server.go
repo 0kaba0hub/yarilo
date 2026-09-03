@@ -561,6 +561,13 @@ type session struct {
 	// so a burst of GETQUOTA / APPEND checks does not re-enumerate every folder.
 	quotaCacheUsage quota.Usage
 	quotaCacheAt    time.Time
+
+	// What the tail of a STORE cost, filled by writeFlagsBatch and read by the
+	// timing line Store defers. Split because the two halves have different
+	// cures: one lock for every rename, one lock per name recorded (#1646).
+	storeRenameMS int64
+	storeNameMS   int64
+	storeRenamed  int
 	// quotaSnap is the usage captured before the last quota-changing operation,
 	// used as the "before" side of quota_warning crossing detection.
 	quotaSnap    quota.Usage
@@ -661,7 +668,12 @@ func (s *session) writeFlagsBatch(multi mailbox.FlagWriterMulti, folder string, 
 	if len(writes) == 0 {
 		return
 	}
-	for i, res := range multi.WriteFlagsMulti(folder, writes) {
+	renameStart := time.Now()
+	results := multi.WriteFlagsMulti(folder, writes)
+	s.storeRenameMS = time.Since(renameStart).Milliseconds()
+	nameStart := time.Now()
+	renamed := 0
+	for i, res := range results {
 		if res.Err != nil {
 			slog.Warn("imap: could not record flags in storage", "folder", folder,
 				"uid", res.UID, "err", res.Err)
@@ -670,11 +682,14 @@ func (s *session) writeFlagsBatch(multi mailbox.FlagWriterMulti, folder string, 
 		if res.Filename == writes[i].Filename {
 			continue
 		}
+		renamed++
 		if err := idx.UpdateFilename(s.folder.ID, res.UID, res.Filename); err != nil {
 			slog.Warn("imap: could not record the new filename", "folder", folder,
 				"uid", res.UID, "name", res.Filename, "err", err)
 		}
 	}
+	s.storeNameMS = time.Since(nameStart).Milliseconds()
+	s.storeRenamed = renamed
 }
 
 // writeFlagsToStorage hands the settled flag set to a driver that records it
@@ -3482,12 +3497,22 @@ func (s *session) Store(w *imapserver.FetchWriter, numSet imaplib.NumSet, storeF
 		}
 		s.emitMailboxChange(s.folder, locks.EventChanged, 0)
 	}
-	slog.Debug("imap: store timing",
-		"user", s.userInfo.Username, "folder", s.folder.Name, "count", len(batchUpdates),
-		"getmsgs_ms", tUpdate.Sub(tStore).Milliseconds(),
-		"update_ms", time.Since(tUpdate).Milliseconds(),
-		"total_ms", time.Since(tStore).Milliseconds(),
-	)
+	// Registered before the storage write below, so LIFO runs it after: the
+	// window has to contain the rename pass, which is where the measured part
+	// of a slow STORE stopped short of the stall it was meant to explain.
+	getMS, updMS := tUpdate.Sub(tStore).Milliseconds(), time.Since(tUpdate).Milliseconds()
+	s.storeRenameMS, s.storeNameMS, s.storeRenamed = 0, 0, 0
+	defer func() {
+		slog.Debug("imap: store timing",
+			"user", s.userInfo.Username, "folder", s.folder.Name, "count", len(batchUpdates),
+			"getmsgs_ms", getMS,
+			"update_ms", updMS,
+			"rename_ms", s.storeRenameMS,
+			"names_ms", s.storeNameMS,
+			"renamed", s.storeRenamed,
+			"total_ms", time.Since(tStore).Milliseconds(),
+		)
+	}()
 
 	// Pass 3: send FETCH responses using modseqs returned from the batch.
 	// Also update knownMsgs.modseq so the post-command Poll skips these
