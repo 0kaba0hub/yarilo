@@ -80,6 +80,9 @@ say so plainly rather than padding the review to look thorough.
   wall-clock timing or execution order.
 - If a guarantee cannot be exercised where it runs, test it at the level where it
   can be.
+- A mutation described in a PR body is a claim. A mutation that is proven quotes
+  its red message verbatim. Ask for the output, not the account of it: a trap
+  that watched a third of what it named was approved on a description (#1652).
 
 ### Interfaces and compatibility
 
