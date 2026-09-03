@@ -11,12 +11,9 @@ import (
 	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
-// LockID is the id part of every lock owner this UserInfo takes. It is
-// SessionID when something upstream supplied one; otherwise one is minted here
-// and kept, because a holder with no name is what three rounds of diagnosis
-// were spent on (#1670).
-// It mints into SessionID rather than beside it: a UserInfo that took a lock
-// under an id has that id, and every later reader agrees with the first.
+// LockID is SessionID, or a minted one when nothing upstream supplied it. It
+// mints into SessionID rather than beside it, so every later reader agrees with
+// the first about who holds the lock (#1670).
 func (u *UserInfo) LockID() string {
 	if u.SessionID == "" {
 		u.SessionID = locks.NewID()
@@ -84,11 +81,9 @@ type UserInfo struct {
 	// quota_over_status check reconciles against actual usage at login.
 	QuotaOverFlag string
 
-	// SessionID is the identifier this piece of work announces in the
-	// yarilo-locks owner string: the login proxy's session for IMAP and POP3,
-	// the connection's own id for a delivery, the request's for an admin call.
-	// Read it through LockID, never directly, so a UserInfo built by hand
-	// cannot take a lock anonymously (#1670).
+	// SessionID is what this work announces in the lock owner: the proxy's
+	// session, a delivery's connection id, an admin request's. Read it through
+	// LockID, so a hand-built UserInfo cannot lock anonymously (#1670).
 	SessionID string
 
 	// MailPath, when non-empty, is the mail storage root, separated from Home
@@ -229,10 +224,8 @@ func (r *Resolver) UserInfo(username, homeOverride string) *UserInfo {
 	ui := &UserInfo{
 		Username: username,
 		Home:     home,
-		// Every UserInfo is built by something doing one piece of work, and that
-		// work owns whatever locks it takes. An entry point with a real id (a
-		// login proxy's session, a delivery, an admin request) overwrites this;
-		// one without still announces a holder rather than nothing (#1670).
+		// An entry point with a real id overwrites this; one without still
+		// announces a holder rather than nothing (#1670).
 		SessionID:  locks.NewID(),
 		QuotaRules: r.DefaultQuotaRules,
 		Separator:  r.DefaultSeparator,

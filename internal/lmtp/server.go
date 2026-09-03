@@ -242,9 +242,8 @@ type session struct {
 	// connID identifies this LMTP connection (see nextConnID).
 	connID uint64
 
-	// deliveryID is what this connection announces as the id part of a lock
-	// owner. A delivery has no IMAP session, which is not the same as having no
-	// identity: an anonymous holder is unattributable in held_by (#1670).
+	// deliveryID is the id part of every lock owner this connection takes: a
+	// delivery has no session, which is not the same as having no name (#1670).
 	deliveryID string
 }
 
@@ -601,8 +600,7 @@ func (s *session) postAllowed(ui *mailbox.UserInfo, ns *config.NamespaceConfig, 
 // recipient must not fall through to the global (maildir) store. Only when there
 // is no userdb to consult does it fall back to the bare resolver (no per-user
 // driver, so the global backend is correct).
-// stampDeliveryID gives a recipient's UserInfo this connection's id, which is
-// what every lock it takes announces (#1670).
+// stampDeliveryID gives a recipient's UserInfo this connection's id (#1670).
 func (s *session) stampDeliveryID(ui *mailbox.UserInfo) *mailbox.UserInfo {
 	if ui != nil && ui.SessionID == "" {
 		ui.SessionID = s.deliveryID
