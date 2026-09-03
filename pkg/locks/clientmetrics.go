@@ -89,3 +89,11 @@ func attemptBucket(n int) string {
 	}
 	return "64+"
 }
+
+// Where an acquisition's time goes inside the call that hides it: queueing for a
+// pool connection, against the exchange with the service (#1650).
+var clientPart = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	Name:    "yarilo_locks_client_part_seconds",
+	Help:    "Time in one part of a command: waiting for a pool connection, or the exchange with the lock service on it.",
+	Buckets: prometheus.ExponentialBuckets(0.0001, 4, 10),
+}, []string{"part"})
