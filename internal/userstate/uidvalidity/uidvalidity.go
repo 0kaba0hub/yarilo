@@ -41,8 +41,10 @@ const (
 
 // Allocator is one user's UIDVALIDITY source.
 type Allocator struct {
-	dir    string
-	user   string
+	dir  string
+	user string
+	// owner is fixed at construction, so a BUSY names the builder, not the
+	// holder: the key is user-wide, with no folder to stamp (#1664).
 	owner  string
 	locker locks.Locker
 }
