@@ -37,8 +37,9 @@ func (u *userMailbox) withMapLock(fn func() error) error {
 
 // RebuildStorage reconciles the map against the m.<N> files and recomputes every
 // refcount from folder references. An unreferenced record goes to zero and is
-// never re-filed: untagged, lost mail and leak garbage look alike. QUIESCENCE
-// REQUIRED -- only the map lock is held.
+// never re-filed: untagged, lost mail and leak garbage look alike. Lock order is
+// map outer, folder inner -- the same order delivery takes, so there is no
+// inversion. QUIESCENCE REQUIRED -- only the map lock is held.
 func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool) (mailbox.StorageRebuildStats, error) {
 	var stats mailbox.StorageRebuildStats
 

@@ -7,7 +7,9 @@ import (
 
 // HealCorruptFolder expunges the records whose message is gone and clears the
 // FSCKD marker in the same locked scope. An incomplete scan ABORTS it, or a
-// message purge just compacted would read as vanished.
+// message purge just compacted would read as vanished. The vanished message's
+// map refcount is not decremented here; the leak is reclaimed by the next
+// rebuild and purge.
 func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.Folder) ([]uint32, error) {
 	var expunged []uint32
 	err := u.withMailboxLock(folder.Name, func() error {

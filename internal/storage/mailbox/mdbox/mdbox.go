@@ -984,7 +984,8 @@ func buildDboxFileHeader() []byte {
 
 // buildDboxMessageRecord packs body into one dbox v2 record without the file
 // header line. Compaction must pass the source trailer's guid and origMailbox,
-// or identity and the orphan's way home do not survive the move.
+// or identity and the orphan's way home do not survive the move. origMailbox is
+// framed as a line, safe because a folder name never contains a newline.
 func buildDboxMessageRecord(body []byte, guid [16]byte, origMailbox string, hdrSize int) []byte {
 	size := uint64(len(body))
 	now := uint32(time.Now().Unix())
