@@ -24,19 +24,10 @@ func (u *userIndex) mailRootDir() string {
 }
 
 // foreignRoots are the roots another implementation may have kept its index
-// under, most specific first.
-//
-// Their index follows their own INDEX= setting, exactly as ours follows ours:
-// with one set, both a folder's index and the map live under it and only the
-// message files stay with the mail. A store written that way has nothing at all
-// under the mail root except payloads, so looking there alone finds no foreign
-// folder and converts nothing -- silently, since a store with no foreign index
-// is indistinguishable from a store already converted (#1583).
-//
-// Which root is theirs cannot be read off their config, which is not here. Ours
-// is the one candidate worth trying, because an in-place conversion happens on
-// a deployment pointed at the store the other implementation left, laid out the
-// way it left it.
+// under, most specific first: their INDEX= moves both a folder's index and the
+// map off the mail root, leaving only payloads there, so looking at the mail
+// root alone silently converts nothing (#1583). Their setting is not readable
+// from here, so ours is the one candidate worth trying.
 func (u *userIndex) foreignRoots() []string {
 	if u.indexRoot != "" && u.indexRoot != u.mailRootDir() {
 		return []string{u.indexRoot, u.mailRootDir()}
@@ -44,21 +35,11 @@ func (u *userIndex) foreignRoots() []string {
 	return []string{u.mailRootDir()}
 }
 
-// foreignFolderDir returns the directory holding this folder's foreign index,
-// and the root it was found under, or false when there is none.
-//
-// Two shapes per root, because the reference writes two. Beside the messages
-// the index sits inside the dbox-Mails leaf; under a separate index root it can
-// sit in the mailbox directory itself, with no leaf at all:
-//
-//	index/mailboxes/INBOX/dovecot.index.log
-//	index/mailboxes/Archive/2026/dovecot.index.log
-//
-// Both were taken from live stores rather than derived -- the first from the
-// local install, the flat one from the field (#1583). Which one appears depends
-// on a setting of theirs that is not in reach from here, so both are looked for
-// and the first that exists wins. Trying only one leaves a store looking
-// already converted, which is the silent outcome this path exists to avoid.
+// foreignFolderDir returns the directory holding this folder's foreign index and
+// the root it was found under. Two shapes per root, since the reference writes
+// two -- inside the dbox-Mails leaf beside the messages, or flat in the mailbox
+// directory under a separate index root -- both taken from live stores (#1583),
+// and trying only one leaves a store looking already converted.
 func (u *userIndex) foreignFolderDir(folder string) (dir, root string, ok bool) {
 	sub := mailbox.FolderSubpathEscaped(u.driver, folder, folder, u.separator, u.escapeChar)
 	// The mailbox directory itself: the same path without the driver's leaf.
@@ -84,19 +65,12 @@ func (u *userIndex) foreignMapDir(root string) (string, bool) {
 	return "", false
 }
 
-// convertForeignFolder builds this folder's index from another implementation's,
-// in place, and reports whether it did.
-//
-// Called where a fresh empty index would otherwise be created, and under the
-// same lock, so the whole conversion -- read theirs, write ours, remove theirs
-// -- is one critical section. Two sessions opening a folder at once convert it
-// once, and no session can observe a half-removed pair (#1524).
-//
-// Both dbox drivers. What differs is where a message is: mdbox addresses one
-// through a store-wide map, which has to be whole before any folder reads
-// through it, and sdbox does not -- a single-message file sits in its folder's
-// own directory, so its position is its path. The sdbox half is
-// convertForeignSdboxFolder.
+// convertForeignFolder builds this folder's index from another implementation's
+// in place, under the same lock a fresh empty index would use -- one critical
+// section, so two sessions opening at once convert it once and neither observes
+// a half-removed pair (#1524). Both dbox drivers: mdbox addresses a message
+// through a store-wide map that must be whole first, sdbox through its own
+// path. The sdbox half is convertForeignSdboxFolder.
 func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	switch u.driver {
 	case "mdbox", "sdbox", "dbox":
@@ -105,15 +79,9 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	}
 	dir, foreignRoot, ok := u.foreignFolderDir(fs.folder)
 	if !ok {
-		// Their names are spelled the way their configuration said, ours the
-		// way this one does, and where the two differ nothing matches by name:
-		// the folder is not found, so nothing is converted, and every non-ASCII
-		// folder in the store is invisible (#1586).
-		//
-		// So a miss is not yet an answer. If anything of theirs is still in the
-		// tree, the disk is brought to this deployment's encoding once, and the
-		// lookup is asked again. The walk costs a store with foreign leftovers
-		// in it, which is exactly the window this runs in.
+		// A miss is not yet an answer: their names may be spelled by their
+		// encoding, ours by this deployment's, and every non-ASCII folder is
+		// invisible until the disk is brought to our encoding once (#1586).
 		adopted, aerr := u.adoptForeignNames()
 		if aerr != nil {
 			return false, aerr
@@ -128,42 +96,26 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	if u.driver != "mdbox" {
 		return u.convertForeignSdboxFolder(fs, dir)
 	}
-	// Before any of the work: a conversion writes our index, imports their map
-	// and unlinks their files, so a store that cannot be written to fails
-	// partway having paid for every step before it -- and pays again on the
-	// next open, and the one after that. Refusing up front turns repeated
-	// silent work into one loud answer (#1571).
+	// Refused up front rather than failing partway: a conversion writes our
+	// index, imports their map and unlinks their files, so an unwritable store
+	// would pay for every step and pay again on the next open (#1571). Nothing
+	// is remembered about the attempt -- the next open says the same thing
+	// until the mount changes.
 	//
-	// A read-only store is often deliberate -- a snapshot, a replica -- so the
-	// refusal names the offline path rather than inventing a way to half-serve
-	// the folder. Nothing is remembered about the attempt: a "we tried" marker
-	// would be another silent state, and the next open should say the same
-	// thing until somebody changes the mount.
-	//
-	// Four directories, because the section writes to four. Two of them are
-	// storage directories rather than one: their map is where they left it,
-	// under the mail root, and it is read and finally deleted there; ours is
-	// opened and written where the driver will look for it, which INDEX= moves
-	// out of the mail tree. Writing ours beside theirs left the driver opening
-	// an empty map of its own -- the folder index pointed at map uids nothing
-	// could resolve, every body came back unreadable, and the rebuild that
-	// follows dropped the records (#1579).
-	// Resolving the paths is stat and nothing else, so it happens before the
-	// probe without breaking the probe's rule. What it must not do is act on
-	// what it finds: a missing map of theirs is refused below, after the probe,
-	// so a store that is both unwritable and incomplete answers with the fault
-	// an operator can do something about.
+	// Four directories: theirs and ours are separate storage dirs, since
+	// INDEX= moves ours out of the mail tree. Writing ours beside theirs once
+	// left the driver opening an empty map of its own, unresolvable map uids,
+	// and a rebuild that dropped the records (#1579). Resolving the paths is
+	// stat only, so it happens before the writability probe; a missing map of
+	// theirs is still refused after the probe, not acted on before it.
 	theirStorage, haveTheirMap := u.foreignMapDir(foreignRoot)
 	if !haveTheirMap {
 		theirStorage = filepath.Join(foreignRoot, "storage")
 	}
-	// ourStorage mirrors the mdbox driver's mapStoragePath(). It is a different
-	// layer and cannot be called from here, so the rule is written twice on
-	// purpose -- and writing it twice is what produced #1579 in the first
-	// place. The pair is held by a test rather than by care:
-	// TestConversionBodiesReadableWithASeparateIndexTree reads bodies through
-	// the driver after converting with INDEX= set, so the two halves drifting
-	// apart again fails there.
+	// ourStorage mirrors the mdbox driver's mapStoragePath(), a different layer
+	// this cannot call -- writing the rule twice is what produced #1579.
+	// TestConversionBodiesReadableWithASeparateIndexTree is what keeps the two
+	// from drifting apart again.
 	ourStorage := theirStorage
 	if u.indexRoot != "" {
 		ourStorage = filepath.Join(u.indexRoot, "storage")
@@ -180,9 +132,8 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
 	}
 	if !haveTheirMap {
-		// A folder of theirs with no map of theirs: the messages it names
-		// cannot be located at all. Refused rather than converted into an empty
-		// folder, which is the one outcome nobody checks.
+		// A folder of theirs with no map of theirs cannot locate its messages
+		// at all. Refused rather than converted into an empty folder.
 		return false, fmt.Errorf("fileindex/convert: folder %q has a foreign index and no foreign map under %s",
 			fs.folder, foreignRoot)
 	}
@@ -197,14 +148,11 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	}
 	defer m.Close() //nolint:errcheck
 
-	// The map is store-wide and has to be whole before any folder reads through
-	// it. Converting it here, on the first folder that needs it, keeps the
-	// store's shape correct without a separate pass.
-	//
-	// The folder lock this runs under is per folder, so it does not order two
-	// sessions opening two different folders. The map's own lock does, and
-	// ConvertMap decides whether to import inside it: without that both
-	// sessions find an empty map and import their whole store twice.
+	// The map is store-wide and must be whole before any folder reads through
+	// it; converted here, on the first folder that needs it. The folder lock
+	// this runs under does not order two sessions opening different folders --
+	// the map's own lock does, and ConvertMap decides whether to import inside
+	// it, or both sessions find an empty map and import twice.
 	n, err := dboxconv.ConvertMap(theirStorage, m)
 	if err != nil {
 		return false, fmt.Errorf("fileindex/convert: map: %w", err)
@@ -214,15 +162,10 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 			"from", theirStorage, "to", ourStorage)
 	}
 
-	// Subscriptions are store-wide like the map, and they are the one piece of
-	// this conversion a user sees the moment it happens: a folder list that
-	// changed under them. Carried on the first folder that converts, which is
-	// also the first moment anything of ours exists to carry them into.
-	//
-	// Adding is idempotent, so running it per folder costs a few names and
-	// needs no marker of its own. Union rather than replace: a store being
-	// converted may already carry subscriptions of ours, and dropping either
-	// side loses a user's own choice.
+	// Subscriptions are store-wide like the map, and the one piece a user sees
+	// the moment it happens: a folder list changed under them. Carried on the
+	// first folder that converts. Adding is idempotent and a union, not a
+	// replace -- a store being converted may already carry ours.
 	if dboxconv.HasForeignSubscriptions(u.mailRootDir()) {
 		if err := u.carryForeignSubscriptions(); err != nil {
 			return false, err
@@ -238,11 +181,9 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 		return false, fmt.Errorf("fileindex/convert: folder %q: %w", fs.folder, err)
 	}
 
-	// Their map carries no GUIDs, so the records the import appended have none;
-	// their folder index does carry one per message, and it is in hand right
-	// now. Stamping here is what makes the storage rebuild able to pair a
-	// physical record with its map entry on a converted store, and it costs a
-	// map write rather than a walk over every storage file (#1573).
+	// Their map carries no GUIDs; their folder index does, and it is in hand
+	// right now. Stamping it lets a later rebuild pair records by GUID at the
+	// cost of a map write, not a walk over every storage file (#1573).
 	guids := make(map[uint32][16]byte, len(metas))
 	for _, meta := range metas {
 		mapUID, perr := strconv.ParseUint(meta.Filename, 10, 32)
@@ -259,13 +200,9 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 			"user", u.username, "folder", fs.folder, "records", n)
 	}
 
-	// Their UID space, kept whole: the same UIDVALIDITY, the same UIDs, and
-	// their next_uid rather than one past the highest surviving message. A
-	// client reconnecting over this mailbox then finds what it left (#1568).
-	//
-	// The uidValidity the opener asked for plays no part, which is why it is
-	// not a parameter here: a folder that exists in their store is not a new
-	// folder, and the only right answer is the one their index carries.
+	// Their UID space kept whole -- same UIDVALIDITY, same UIDs, their next_uid
+	// -- so a reconnecting client finds what it left (#1568). The uidValidity
+	// the opener asked for plays no part: a folder that exists is not new.
 	if hdr.UIDValidity == 0 {
 		return false, fmt.Errorf("fileindex/convert: folder %q: their index carries no uid_validity", fs.folder)
 	}
@@ -278,22 +215,16 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 			return false, fmt.Errorf("fileindex/convert: folder %q uid %d: %w", fs.folder, meta.UID, err)
 		}
 	}
-	// next_uid after the appends, which raise it to the highest uid plus one.
-	// Theirs can be higher -- a message appended and then expunged moved their
-	// counter and left nothing behind -- and reusing that number would hand a
-	// client a uid it has already seen carrying different mail.
+	// Theirs can be higher than the appends leave it: an appended-then-expunged
+	// message moved their counter and left nothing behind, and reusing that
+	// number reissues a uid a client has already seen under different mail.
 	if hdr.NextUID > fs.file.Header.NextUID {
 		fs.file.Header.NextUID = hdr.NextUID
 	}
-	// Ours durable before theirs is unlinked. The lock orders sessions; this
-	// orders the disk, and a crash between the two has to leave a folder one of
-	// the two servers can still open.
-	//
-	// Both halves are needed and neither substitutes for the other: the file's
-	// own bytes have to reach the disk before the rename, and the directory
-	// entry has to reach it before the unlink. An index flush is not durable by
-	// default anywhere else, because everywhere else the state still exists
-	// somewhere if the tail is lost.
+	// Ours durable before theirs is unlinked, so a crash between the two leaves
+	// a folder one of the two servers can still open. Both halves are needed:
+	// the file's bytes before the rename, the directory entry before the
+	// unlink -- a flush is not durable by default anywhere else.
 	fs.fsyncOnFlush = true
 	defer func() { fs.fsyncOnFlush = false }()
 	if err := fs.flush(true); err != nil {
@@ -308,15 +239,9 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 	slog.Info("fileindex: converted a foreign folder", "user", u.username, "folder", fs.folder,
 		"messages", len(metas), "from", dir)
 
-	// The store's conversion ends when its last folder does. Their map has to
-	// outlive every folder that still reads through it, so what decides is not
-	// this folder but whether any of theirs is left anywhere in the tree
-	// (#1569). A store with a folder nobody ever opens keeps their map, which
-	// is correct: that folder still needs it.
-	//
-	// A failure here is logged and not returned. The folder in hand is
-	// converted and readable; refusing to open it because a file elsewhere
-	// could not be unlinked would turn a tidying step into an outage.
+	// The store's conversion ends when its last folder does: their map outlives
+	// any folder still reading through it (#1569). Logged, not returned -- the
+	// folder in hand is converted and readable regardless.
 	dropped, derr := dboxconv.DropForeignMapIfDone(theirStorage, filepath.Join(foreignRoot, "mailboxes"), u.mailRootDir(), m)
 	switch {
 	case derr != nil:
@@ -343,21 +268,16 @@ func fsyncDir(dir string) error {
 	return nil
 }
 
-// carryForeignSubscriptions copies their subscribed folder list into ours.
-//
-// Their file lives with the mail; ours lives in the control root, which is a
-// different directory whenever a deployment sets one. The rule for that comes
-// from mailbox.ControlRoot, called where this index was opened -- the same
-// function the sessions and the admin API call, rather than a second spelling
-// of it (#1579).
+// carryForeignSubscriptions copies their subscribed folder list into ours,
+// theirs beside the mail and ours in the control root -- via
+// mailbox.ControlRoot, the same call sessions and the admin API make (#1579).
 func (u *userIndex) carryForeignSubscriptions() error {
 	names, err := subs.ReadForeign(filepath.Join(u.mailRootDir(), "subscriptions"), u.separator)
 	if err != nil {
 		return fmt.Errorf("fileindex/convert: subscriptions: %w", err)
 	}
-	// The personal namespace's file, by the same helper every caller uses. A
-	// foreign store has one subscription file and it is the personal one; the
-	// per-namespace siblings have no counterpart there.
+	// The personal namespace's file: a foreign store has one subscription file
+	// and per-namespace siblings have no counterpart there.
 	store := subs.New(u.controlRoot, mailbox.NamespaceSubsFile("", u.separator, "personal"),
 		u.username, u.owner, u.b.locker)
 	for _, name := range names {
@@ -395,9 +315,8 @@ func (u *userIndex) adoptForeignNames() (bool, error) {
 	}
 
 	total := 0
-	// The mail tree as well as the index roots: a store with INDEX= set has its
-	// folders named in both, and only one of them is in foreignRoots when the
-	// two differ.
+	// The mail tree as well as the index roots: with INDEX= set only one of
+	// them is in foreignRoots, and folders are named in both.
 	for _, r := range append(roots, u.mailRootDir()) {
 		n, err := dboxconv.AdoptNames(filepath.Join(r, "mailboxes"), u.listUTF8)
 		if err != nil {
@@ -413,30 +332,20 @@ func (u *userIndex) adoptForeignNames() (bool, error) {
 	return true, nil
 }
 
-// convertForeignSdboxFolder is the same conversion for a store that keeps one
-// message per file: their folder index becomes ours, and the mail is already
-// where our driver looks for it (#1592).
-//
-// Everything store-wide falls away. There is no map to import first, no
-// correspondence to pair uids through, and no map guids to stamp. What is left
-// is their folder index and the two pieces that belong to any store being taken
-// over: the name encoding, done by the caller before this is reached, and the
-// subscriptions.
-//
-// The critical section is the one the mdbox path uses and for the same reason:
-// ours is written and fsynced, then theirs is unlinked, all under the folder
-// lock the caller holds.
+// convertForeignSdboxFolder is the mdbox conversion for a store that keeps one
+// message per file: their folder index becomes ours, the mail is already where
+// our driver looks (#1592). Nothing store-wide -- no map, no correspondence, no
+// guids to stamp. Same critical section as the mdbox path: ours written and
+// fsynced, then theirs unlinked, under the folder lock the caller holds.
 func (u *userIndex) convertForeignSdboxFolder(fs *folderState, dir string) (bool, error) {
 	// Their index and their mail are two directories whenever their INDEX= is
-	// set, and the reference store this was checked against has exactly that
-	// shape: index/mailboxes/INBOX holds the log, sdbox/mailboxes/INBOX/
-	// dbox-Mails holds u.1 to u.4. Reading the file names from the index
-	// directory finds none, and the folder converts to nothing at all.
+	// set; reading file names from the index directory finds none and converts
+	// nothing.
 	mailDir := filepath.Join(u.mailRootDir(),
 		mailbox.FolderSubpathEscaped(u.driver, fs.folder, fs.folder, u.separator, u.escapeChar))
 
-	// Two directories rather than four: ours to write the index into, theirs to
-	// unlink from. Neither of the storage directories exists in this shape.
+	// Two directories, not four: ours to write, theirs to unlink. Neither
+	// storage directory exists in this shape.
 	if err := os.MkdirAll(fs.indexDir, 0o700); err != nil {
 		return false, fmt.Errorf("fileindex/convert: folder %q: %w (%v)", fs.folder, dboxconv.ErrReadOnly, err)
 	}
@@ -464,16 +373,12 @@ func (u *userIndex) convertForeignSdboxFolder(fs *folderState, dir string) (bool
 	if err := fs.createFresh(hdr.UIDValidity); err != nil {
 		return false, err
 	}
-	// Their number, recorded before their index is unlinked below. After that
-	// unlink it exists nowhere else, so a crash between the two would lose the
-	// identity the whole adoption is built to keep (#1611).
+	// Recorded before their index is unlinked below, or it exists nowhere and a
+	// crash between the two loses the identity adoption exists to keep (#1611).
 	u.rememberIdentity(fs.folder, hdr.UIDValidity)
-	// Their sdbox index carries no guid, so the records appended below have
-	// none. A fresh index is marked guid-complete, which would mean nothing
-	// ever comes back to fill them and every adopted message loses its EMAILID
-	// for good; marked pending, the backfill that already runs on every select
-	// stamps them from the message files through the driver's own scan -- the
-	// one place that knows how to read them (#1592).
+	// Their sdbox index carries no guid, and marking a fresh index complete
+	// would mean nothing ever fills them; marked pending, the backfill on
+	// every select stamps them from the message files instead (#1592).
 	if ext := findExt(fs.file.Extensions, extNameGUID); ext != nil {
 		ext.HdrData = encodeGUIDHdr(guidStatePending)
 	}
@@ -502,18 +407,12 @@ func (u *userIndex) convertForeignSdboxFolder(fs *folderState, dir string) (bool
 }
 
 // AdoptForeignNames brings a foreign store's folder directories to this
-// deployment's name encoding, before anything lists them.
+// deployment's name encoding, before anything lists them -- running it only
+// from a folder conversion left the first listing after a takeover serving
+// their encoding, with subscribed folders coming back \NonExistent (#1609).
 //
-// It used to run only from a folder conversion, which begins when a folder is
-// opened -- and a client lists before it opens anything. So the first listing
-// after a takeover served their encoding, and the subscribed folders in it came
-// back \NonExistent: their names had been read from their subscriptions file
-// and converted, and no directory of those names existed yet. Three of four
-// folders were unreachable until the connection after (#1609).
-//
-// Under the per-user index lock, because two connections on one login is
-// ordinary and this renames directories in two trees with no folder lock held.
-// The second holder finds nothing left to rename.
+// Under the per-user index lock: two connections on one login is ordinary, and
+// this renames directories in two trees with no folder lock held.
 func (u *userIndex) AdoptForeignNames() error {
 	run := func() error {
 		_, err := u.adoptForeignNames()
@@ -536,17 +435,11 @@ func (u *userIndex) AdoptForeignNames() error {
 	return run()
 }
 
-// freshUIDValidity is the value a folder that has no past is created with.
-//
-// The caller's number is a wall-clock stamp, and a stamp repeats: two folders
-// created in one second share it, and so does a folder recreated in the same
-// second as its own delete -- which RFC 3501 §6.3.4 forbids because a client's
-// cached UIDs would still look valid for different mail (#1614). The allocator
-// takes the stamp as a floor and never returns a number twice.
-//
-// A failure here falls back to the caller's stamp. The allocator is a
-// correctness improvement over that, not a precondition for opening a mailbox,
-// and refusing the folder would be the larger harm.
+// freshUIDValidity is the value a folder with no past is created with. The
+// caller's number is a wall-clock stamp that repeats -- two folders in one
+// second, or a folder recreated in its own delete's second, which RFC 3501
+// §6.3.4 forbids -- so the allocator takes it as a floor and never repeats
+// (#1614). A failure falls back to the caller's stamp rather than refusing.
 func (u *userIndex) freshUIDValidity(requested uint32) uint32 {
 	if u.uidValidity == nil {
 		return requested
@@ -560,17 +453,11 @@ func (u *userIndex) freshUIDValidity(requested uint32) uint32 {
 	return v
 }
 
-// identityFor is the UIDVALIDITY a folder is opened with when it has no index.
-//
-// Two different situations arrive here as one: a folder that is new, and a
-// folder whose index was lost. They must not get the same answer. A folder the
-// record knows is not new -- its identity is what it was created with, and
-// handing it a fresh number makes every client resynchronise and lose the very
-// thing adoption spends effort keeping (#1611).
-//
-// Recorded on the way out, so the next loss has something to read. A record
-// that cannot be written is logged and not fatal: the folder opens with the
-// value it would have had before this existed.
+// identityFor is the UIDVALIDITY a folder is opened with when it has no index:
+// a new folder and one whose index was lost arrive here as one case, and must
+// not get the same answer -- a folder the record knows keeps its identity, or
+// every client resynchronises (#1611). Recorded on the way out for the next
+// loss to read; an unwritable record is logged and not fatal.
 func (u *userIndex) identityFor(folder string, requested uint32) uint32 {
 	if u.folders != nil {
 		if v, ok, err := u.folders.UIDValidity(folder); err != nil {
@@ -596,38 +483,30 @@ func (u *userIndex) rememberIdentity(folder string, uidValidity uint32) {
 	}
 }
 
-// newFolderUIDValidity is the value a folder being created is given: always a
-// fresh one. A create must not inherit an identity, even under a name the
-// record still knows -- that is a folder deleted and made again, and RFC 3501
-// §6.3.4 requires it to look new to a client.
+// newFolderUIDValidity is always fresh: a create must not inherit an identity
+// even under a known name, since that folder was deleted and made again and
+// RFC 3501 §6.3.4 requires it to look new.
 func (u *userIndex) newFolderUIDValidity(folder string, requested uint32) uint32 {
 	v := u.freshUIDValidity(requested)
 	u.rememberIdentity(folder, v)
 	return v
 }
 
-// refuseIfIndexLost stops an mdbox folder that the identity record knows from
-// being served as a new empty one when our index is gone.
+// refuseIfIndexLost stops an mdbox folder the identity record knows from being
+// served as a new empty one when our index is gone. Undetectable before the
+// record existed: an mdbox folder directory holds no message files, so one
+// without an index is byte-for-byte a folder just created (#1608, #1611).
 //
-// Until the record existed this could not be detected at all: an mdbox folder
-// directory holds no message files -- the mail is in the shared storage -- so a
-// directory without an index is byte-for-byte a folder that was just created.
-// The record is the witness the filesystem cannot be (#1608, #1611).
+// Refused, not repaired: mdbox's scan is storage-wide and files a message by
+// where it was FIRST saved, so it cannot refile a moved one. Only the
+// storage-wide rebuild does, and it requires quiescence -- run live, a
+// delivery that reached storage but has not yet appended to its folder counts
+// as referenced by nobody, its refcount goes to zero, and the next purge
+// reclaims live mail. Firing it from a folder open is exactly that race.
 //
-// Refused rather than repaired, because mdbox has no repair that can run here.
-// Its scan is storage-wide, and a message names the folder it was FIRST saved
-// to, so a moved message cannot be filed back by it. The repair that does it
-// correctly is the storage-wide rebuild, and that one requires the user's
-// mailboxes to be quiesced: it recomputes every map record's refcount from the
-// folder references it finds, so a delivery that reached storage but has not
-// yet appended to its folder counts as referenced by nobody, its refcount goes
-// to zero, and the next purge reclaims live mail. Firing it from a folder open
-// is exactly that race.
-//
-// A folder older than the record has no entry, and for it the ambiguity
-// remains: it opens as before. That is the honest edge of what the record can
-// prove, and widening it -- refusing on a weaker signal -- would refuse folders
-// that really are new.
+// A folder older than the record has no entry and opens as before -- the
+// honest edge of what the record can prove; refusing on a weaker signal would
+// refuse folders that really are new.
 func (u *userIndex) refuseIfIndexLost(fs *folderState) error {
 	if u.driver != "mdbox" || u.folders == nil {
 		return nil

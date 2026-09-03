@@ -8,38 +8,18 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
-// The base index and its log are paired by a lineage, so a reader can tell
-// "this log holds only what was written after the base I am holding" from
-// "this log belongs to a base that has already replaced mine".
-//
-// It is carried in a header extension rather than in a new file format. The
-// index is the compatible on-disk format, extensions are how it is extended,
-// and an unknown extension is skipped by a reader that does not know it — so
-// nothing is converted, nothing is refused, and the file stays readable by
-// anything else that reads this format. An index without the extension simply
-// has no lineage, which readers must treat as "cannot prove freshness without
-// the lock" rather than as an error; the next flush adds it.
-//
-// Why this is needed at all: a reader that drops the cross-process lock must
-// not load a torn view while another process is mid-compaction. The lock
-// prevented that by serialising. The pairing prevents it by making the state
-// self-describing: the log says which base it belongs to, and the base says how
-// far into the previous log it already reaches.
+// The base index and its log are paired by a lineage extension: wire layout
+// and the full freshness contract in INTERNALS.md §7. An index without it has
+// no lineage, which readers treat as "cannot prove freshness without the lock"
+// rather than as an error; the next flush adds it.
 const extNameLineage = "lineage"
 
-// lineage extension layout (16-byte header, no per-record bytes):
-//
-//	uint32 lineage        // the log written after this base carries this in its FileSeq
-//	uint32 folded_lineage // the lineage of the log this base absorbed
-//	uint64 folded_offset  // how far into that log the base already reaches
-//	uint64 records_digest // over the records the base holds
 const (
 	lineageHdrSize    = 24
 	lineageHdrMinSize = 16
 	lineageUnknown    = 0 // no extension, or a base written before it existed
-	// legacyLogLineage is the FileSeq every log written before this extension
-	// carries: the old code wrote the constant 1. Minted lineages start above
-	// it, so a base can never mistake such a log for one of its own.
+	// legacyLogLineage is the FileSeq every pre-extension log carries; minted
+	// lineages start above it (§7), so a base can never mistake one for its own.
 	legacyLogLineage   = 1
 	lineageRecordAlign = 4
 )
@@ -48,11 +28,8 @@ type lineageHdr struct {
 	Lineage       uint32
 	FoldedLineage uint32
 	FoldedOffset  uint64
-	// RecordsDigest is over the records the base holds. It is what lets a
-	// reader prove, rather than assume, that a rewritten base holds the records
-	// it already has: several paths rewrite the base while folding the same
-	// log, and offsets alone cannot tell those from a plain compaction. The
-	// same reasoning as the mdbox map (#1228), and the same trap avoided.
+	// RecordsDigest lets a reader prove, not assume, that a rewritten base holds
+	// what it already has -- same reasoning as the mdbox map (#1228).
 	RecordsDigest uint64
 }
 
@@ -110,17 +87,9 @@ func setLineage(f *mailindex.File, h lineageHdr) error {
 	return f.AddHeaderExtension(extNameLineage, data, lineageRecordAlign, 0)
 }
 
-// replayStart says where a reader should begin applying a log whose header
-// carries logLineage, against a base carrying h.
-//
-//   - the base's own lineage: the log holds only transactions written after the
-//     base, so it is replayed whole;
-//   - the lineage the base folded: replay resumes past the folded offset —
-//     replaying from the start would apply everything the base already contains
-//     a second time, which is survivable only as long as every transaction type
-//     happens to be idempotent;
-//   - anything else, or no lineage at all: the pairing proves nothing, so the
-//     caller falls back to what it did before.
+// replayStart says where to begin applying a log carrying logLineage against a
+// base carrying h, by the §7 lineage table: the base's own lineage replays
+// whole, the folded one resumes past folded_offset, anything else falls back.
 func replayStart(h lineageHdr, logLineage uint32) (offset int64, paired bool) {
 	if h.Lineage == lineageUnknown || logLineage == lineageUnknown {
 		return 0, false
@@ -138,12 +107,9 @@ func replayStart(h lineageHdr, logLineage uint32) (offset int64, paired bool) {
 	}
 }
 
-// digestRecords hashes what a reader would serve from the base: every record's
-// uid, flags and extension bytes, in file order. FNV-1a — a change detector for
-// a file we wrote ourselves, not a defence against a forged one.
-//
-// It runs over records already in memory, so proving "this rewritten base holds
-// what I hold" costs no I/O beyond the header peek.
+// digestRecords hashes what a reader would serve, in file order, with FNV-1a --
+// a change detector for our own file, not a defence against a forged one. Runs
+// over records already in memory, so the proof costs no I/O beyond the header.
 func digestRecords(f *mailindex.File) uint64 {
 	const (
 		offset64 = 14695981039346656037
@@ -169,11 +135,6 @@ func digestRecords(f *mailindex.File) uint64 {
 	return h
 }
 
-// peekLineage reads the pairing out of a base without reading its records: the
-// fixed header says how long the extended-header region is, and the lineage
-// lives there. A few hundred bytes instead of the whole index, which is the
-// point -- deciding whether a rewritten base needs reading at all must not cost
-// reading it.
 // peekExtHeaders reads only the base file's extension headers -- header plus
 // the extension header block, never the records. Used where a handle must
 // refresh what the extension HEADERS say without re-reading a base whose
@@ -202,6 +163,10 @@ func peekExtHeaders(path string) ([]mailindex.Extension, error) {
 	return mailindex.DecodeExtHeaders(extBuf)
 }
 
+// peekLineage reads the pairing out of a base without reading its records: the
+// fixed header says how long the extended-header region is, and the lineage
+// lives there -- a few hundred bytes instead of the whole index, since deciding
+// whether a rewritten base needs reading at all must not cost reading it.
 func peekLineage(path string) (lineageHdr, error) {
 	f, err := os.Open(path)
 	if err != nil {
