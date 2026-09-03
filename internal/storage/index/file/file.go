@@ -335,6 +335,12 @@ func (h *userHandle) UpdateFilename(folderID uint64, uid uint32, filename string
 	return h.ui.UpdateFilename(folderID, uid, filename)
 }
 
+// UpdateFilenames satisfies mailbox.FilenameWriterMulti. On the handle too:
+// callers hold it, and a method only on *userIndex fails the assertion silently.
+func (h *userHandle) UpdateFilenames(folderID uint64, names map[uint32]string) error {
+	return h.ui.UpdateFilenames(folderID, names)
+}
+
 func (h *userHandle) MarkFolderCorrupt(folderID uint64) error {
 	return h.ui.MarkFolderCorrupt(folderID)
 }
