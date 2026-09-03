@@ -7,18 +7,13 @@ import (
 	"github.com/yarilomail/yarilo/internal/storage/mailindex"
 )
 
-// logReader is one open descriptor on the log, and everything a refresh needs
-// read through it: identity, size, header, body.
+// logReader is one open descriptor on the log: identity, size, header and body
+// all read through it, where three separate opens left a torn view possible --
+// a sibling's compaction between them pairs one log's header with another's
+// body, replaying from an offset that means nothing in the file being read.
 //
-// It exists because those four used to come from three separate opens. Under
-// the cross-process lock that was invisible — no sibling could compact in
-// between. Without the lock it is a torn view with extra steps: the header says
-// "this log belongs to your base, replay it whole", the body belongs to the log
-// that replaced it, and the replay starts at an offset that means nothing in
-// the file it is reading.
-//
-// A nil file is a log that is not there, which is a normal state: a folder
-// whose base was just written has no log until the next append.
+// A nil file is a log that is not there: a folder whose base was just written
+// has no log until the next append.
 type logReader struct {
 	f    *os.File
 	stat os.FileInfo
