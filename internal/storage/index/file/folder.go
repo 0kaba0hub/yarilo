@@ -1353,9 +1353,6 @@ func (u *userIndex) writeFlags(folderID uint64, uid uint32, flags, keywords []st
 	})
 }
 
-// UpdateFilename repoints the stored on-disk filename for a UID. The
-// filename lives only in the .names sidecar; last write wins on reload.
-// No-op when uid is unknown.
 // UpdateFilenames records a whole command's new names under one acquisition. The
 // single form locks per message, and a 41-name STORE spent 17.7s of its 18.1s
 // here at 121ms a name (#1646).
@@ -1380,6 +1377,9 @@ func (u *userIndex) UpdateFilenames(folderID uint64, names map[uint32]string) er
 	})
 }
 
+// UpdateFilename repoints the stored on-disk filename for a UID. The
+// filename lives only in the .names sidecar; last write wins on reload.
+// No-op when uid is unknown.
 func (u *userIndex) UpdateFilename(folderID uint64, uid uint32, filename string) error {
 	return u.withFolder(folderID, func(fs *folderState) error {
 		if _, ok := fs.filenames[uid]; !ok {
