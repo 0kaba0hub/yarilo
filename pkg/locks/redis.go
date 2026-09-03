@@ -114,6 +114,7 @@ end
 //	ARGV[1] = lockID
 //	ARGV[2] = lockValue (resource|owner|x)
 //	ARGV[3] = ttl_ms
+//	ARGV[4] = key prefix (to reach a shared holder's id key)
 //
 //	returns {"OK"} on success, or {"BUSY", <current_owner>} on contention.
 var acquireScript = redis.NewScript(luaParseValue + `
@@ -125,8 +126,20 @@ if existing then
   return {"BUSY", owner or ""}
 end
 redis.call("ZREMRANGEBYSCORE", KEYS[3], "-inf", nowMs())
-if redis.call("ZCARD", KEYS[3]) > 0 then
-  return {"BUSY", ""}
+local sharedCount = redis.call("ZCARD", KEYS[3])
+if sharedCount > 0 then
+  -- Name one of the readers and say how many there are. The members are in
+  -- hand, and a refusal that names nobody was 17% of them (#1652).
+  local first = redis.call("ZRANGE", KEYS[3], 0, 0)
+  local who = ""
+  if first[1] then
+    local v = redis.call("GET", ARGV[4] .. "id:" .. first[1])
+    if v then local _, o = parseValue(v); who = o or "" end
+  end
+  if sharedCount > 1 then
+    who = who .. " +" .. tostring(sharedCount - 1)
+  end
+  return {"BUSY", who}
 end
 redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[3])
 redis.call("SET", KEYS[1] .. ":val", ARGV[2], "PX", ARGV[3])
@@ -145,6 +158,7 @@ return {"OK"}
 //	ARGV[1] = lockID
 //	ARGV[2] = lockValue (resource|owner|s)
 //	ARGV[3] = ttl_ms
+//	ARGV[4] = key prefix (to reach a shared holder's id key)
 //
 //	returns {"OK"} on success, or {"BUSY", <current_owner>} on contention.
 var acquireSharedScript = redis.NewScript(luaParseValue + `
@@ -231,7 +245,7 @@ func (b *RedisBackend) Acquire(ctx context.Context, resource, owner string, ttl 
 	}
 	res, err := acquireScript.Run(ctx, b.rdb,
 		[]string{b.resKey(resource), b.lockKey(id), b.sharedKey(resource)},
-		id, lockValue(resource, owner, "x"), ttl.Milliseconds(),
+		id, lockValue(resource, owner, "x"), ttl.Milliseconds(), b.keyPrefix,
 	).Result()
 	if err != nil {
 		return "", "", fmt.Errorf("locks/redis: acquire: %w", err)
