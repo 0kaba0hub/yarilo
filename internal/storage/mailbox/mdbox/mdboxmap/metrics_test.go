@@ -73,7 +73,7 @@ func (l *slowLocker) Close() error { return nil }
 func TestTheAcquisitionIsPaidWithNoOtherHolder(t *testing.T) {
 	const delay = 60 * time.Millisecond
 	dir := t.TempDir()
-	m, err := Open(dir, "alice@example.com", WithLocker(&slowLocker{delay: delay}), WithOwner("test"))
+	m, err := Open(dir, "alice@example.com", WithLocker(&slowLocker{delay: delay}), WithOwner("test.bin/1/alice@example.com/sess1"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestTheAcquisitionIsPaidWithNoOtherHolder(t *testing.T) {
 func TestLockWaitAndHoldAreCountedApart(t *testing.T) {
 	const delay = 60 * time.Millisecond
 	dir := t.TempDir()
-	m, err := Open(dir, "alice@example.com", WithLocker(&slowLocker{delay: delay}), WithOwner("test"))
+	m, err := Open(dir, "alice@example.com", WithLocker(&slowLocker{delay: delay}), WithOwner("test.bin/1/alice@example.com/sess1"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestLockWaitAndHoldAreCountedApart(t *testing.T) {
 func TestReadBlockedTimeIsRecordedWhileAWriterWaits(t *testing.T) {
 	const delay = 80 * time.Millisecond
 	dir := t.TempDir()
-	m, err := Open(dir, "alice@example.com", WithLocker(&slowLocker{delay: delay}), WithOwner("test"))
+	m, err := Open(dir, "alice@example.com", WithLocker(&slowLocker{delay: delay}), WithOwner("test.bin/1/alice@example.com/sess1"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestFlushIsCounted(t *testing.T) {
 func TestWriteBlockedTimeIsRecorded(t *testing.T) {
 	const delay = 80 * time.Millisecond
 	dir := t.TempDir()
-	m, err := Open(dir, "alice@example.com", WithLocker(&slowLocker{delay: delay}), WithOwner("test"))
+	m, err := Open(dir, "alice@example.com", WithLocker(&slowLocker{delay: delay}), WithOwner("test.bin/1/alice@example.com/sess1"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

@@ -28,6 +28,7 @@ const duplicateVersion = uint32(1)
 // operation is atomic across processes and pods. Records use the same binary
 // layout as the vacation dedup file.
 type FileDuplicateTracker struct {
+	username string
 	homeDir  string
 	fileName string
 	locker   locks.Locker
@@ -35,11 +36,11 @@ type FileDuplicateTracker struct {
 
 // NewFileDuplicateTracker binds a tracker to a user's home directory. An empty
 // fileName uses DefaultDuplicateFileName.
-func NewFileDuplicateTracker(homeDir, fileName string, locker locks.Locker) *FileDuplicateTracker {
+func NewFileDuplicateTracker(username, homeDir, fileName string, locker locks.Locker) *FileDuplicateTracker {
 	if fileName == "" {
 		fileName = DefaultDuplicateFileName
 	}
-	return &FileDuplicateTracker{homeDir: homeDir, fileName: fileName, locker: locker}
+	return &FileDuplicateTracker{username: username, homeDir: homeDir, fileName: fileName, locker: locker}
 }
 
 func (t *FileDuplicateTracker) path() string {
@@ -51,7 +52,7 @@ func (t *FileDuplicateTracker) path() string {
 // does not serialise against unrelated writes in the same home. Nil locker
 // (unit tests) runs fn directly.
 func (t *FileDuplicateTracker) withLock(ctx context.Context, fn func(context.Context) error) error {
-	return withSieveLock(ctx, t.locker, "sieve-duplicate:"+t.path(), fn)
+	return withSieveLock(ctx, t.locker, t.username, "sieve-duplicate:"+t.path(), fn)
 }
 
 // duplicateID is the record key: the handle plus a hash of the tracking id, so

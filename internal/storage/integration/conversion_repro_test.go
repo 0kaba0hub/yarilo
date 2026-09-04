@@ -176,7 +176,7 @@ func TestForeignSubscriptionsSurviveTheConversion(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 
-	store := subs.New(mailbox.ControlRoot(info), "subscriptions", info.Username, "test", dial())
+	store := subs.New(mailbox.ControlRoot(info), "subscriptions", info.Username, "test.bin/1/alice@example.com/sess1", dial())
 	snap, err := store.Snapshot()
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)

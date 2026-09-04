@@ -62,7 +62,7 @@ func TestMemoryBackendReleaseNotFound(t *testing.T) {
 func TestMemoryBackendRejectsEmptyArgs(t *testing.T) {
 	b := NewMemoryBackend()
 	defer b.Close()
-	if _, _, err := b.Acquire(context.Background(), "", "owner", time.Second); err == nil {
+	if _, _, err := b.Acquire(context.Background(), "", "test.bin/1/alice@example.com/sess1", time.Second); err == nil {
 		t.Fatal("expected error for empty resource")
 	}
 	if _, _, err := b.Acquire(context.Background(), "r", "", time.Second); err == nil {

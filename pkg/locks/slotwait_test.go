@@ -90,7 +90,7 @@ func TestTheSlotClockSpansTheWaitForAConnection(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = c.Lock(context.Background(), "mbox:u@x:INBOX", "owner", time.Minute)
+			_, _ = c.Lock(context.Background(), "mbox:u@x:INBOX", "test.bin/1/alice@example.com/sess1", time.Minute)
 		}()
 	}
 	wg.Wait()
