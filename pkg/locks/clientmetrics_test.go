@@ -20,7 +20,7 @@ func (b *busyThenFree) Lock(context.Context, string, string, time.Duration) (Loc
 	return Lock{ID: "granted"}, nil
 }
 func (b *busyThenFree) LockShared(ctx context.Context, r, o string, ttl time.Duration) (Lock, error) {
-	return b.Lock(ctx, r, o, ttl)
+	return b.Lock(WithSite(ctx, "write"), r, o, ttl)
 }
 func (b *busyThenFree) Unlock(context.Context, string) error               { return nil }
 func (b *busyThenFree) Renew(context.Context, string, time.Duration) error { return nil }
@@ -62,7 +62,7 @@ func TestBusyRetriesAreCountedInTheCaller(t *testing.T) {
 	before := counterValue(t, resource)
 
 	l := &busyThenFree{refusals: 2}
-	if _, err := Acquire(context.Background(), l, resource, "test.bin/1/alice@example.com/sess1", time.Second); err != nil {
+	if _, err := Acquire(WithSite(context.Background(), "write"), l, resource, "test.bin/1/alice@example.com/sess1", time.Second); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestAnUncontendedAcquisitionCountsNoRetry(t *testing.T) {
 	const resource = "idx:alice@example.com"
 	before := counterValue(t, resource)
 
-	if _, err := Acquire(context.Background(), &busyThenFree{}, resource, "test.bin/1/alice@example.com/sess1", time.Second); err != nil {
+	if _, err := Acquire(WithSite(context.Background(), "write"), &busyThenFree{}, resource, "test.bin/1/alice@example.com/sess1", time.Second); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
 

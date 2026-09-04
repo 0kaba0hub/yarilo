@@ -155,10 +155,26 @@ func WithSite(ctx context.Context, site string) context.Context {
 	return context.WithValue(ctx, ctxSiteKey{}, site)
 }
 
-// SiteFrom returns the site WithSite put in ctx, or SiteUnknown.
+// SiteFrom returns the site WithSite put in ctx, or "" when it carries none.
 func SiteFrom(ctx context.Context) string {
-	if s, _ := ctx.Value(ctxSiteKey{}).(string); s != "" {
+	s, _ := ctx.Value(ctxSiteKey{}).(string)
+	return s
+}
+
+// CheckSite is the guard on the caller's side of the boundary, the twin of
+// CheckOwner: a context with no site is a defect at the call site, not a
+// spelling to serve. The server's own unknown is different and stays -- it
+// belongs to an older client's four-field frame (#1676).
+func CheckSite(ctx context.Context) string {
+	if s := SiteFrom(ctx); s != "" {
 		return s
 	}
+	_, file, line, _ := runtime.Caller(2)
+	if underTest() {
+		panic(fmt.Sprintf("locks: no site in the context at %s:%d -- wrap it with "+
+			"locks.WithSite (#1676)", file, line))
+	}
+	slog.Error("locks: acquisition with no site; announcing unknown",
+		"caller", fmt.Sprintf("%s:%d", file, line))
 	return SiteUnknown
 }

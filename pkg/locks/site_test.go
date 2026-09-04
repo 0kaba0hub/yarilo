@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// siteTestServer runs the real service over a unix socket: the compatibility
-// row is about the wire, and a backend call cannot exercise a four-field frame.
+// siteTestServer runs the real service: the compatibility row is about the wire,
+// and a backend call cannot make a four-field frame.
 func siteTestServer(t *testing.T) func() *Client {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "yl-site")
@@ -61,10 +61,8 @@ func siteTestBackend(t *testing.T) *MemoryBackend {
 	return b
 }
 
-// A refusal names what the holder was doing.
-//
-// The site lived only as a counter label inside the backend, so three questions
-// in a row about who blocks a waiter were answered by inference (#1676).
+// A refusal names what the holder was doing: the site lived only as a counter
+// label, so three questions in a row were answered by inference (#1676).
 func TestARefusalNamesTheHoldersSite(t *testing.T) {
 	b := siteTestBackend(t)
 	ctx := context.Background()
@@ -125,10 +123,8 @@ func TestASharedHoldersSiteIsReported(t *testing.T) {
 	}
 }
 
-// The old request form still gets a lock, and its holder is unknown.
-//
-// The service is deployed before the clients, so a four-field LOCK must be
-// answered with a lock and never a refusal (#1676).
+// The old request form still gets a lock: the service is deployed before the
+// clients, so a four-field LOCK is answered, never refused (#1676).
 func TestTheOldRequestFormStillGetsALock(t *testing.T) {
 	dial := siteTestServer(t)
 	c := dial()
@@ -143,12 +139,26 @@ func TestTheOldRequestFormStillGetsALock(t *testing.T) {
 	}
 	// And what it holds is reported as unknown, not as an empty field.
 	blocked := dial()
-	_, err = blocked.Lock(context.Background(), "mbox:u:INBOX", "p/2/u/new", time.Minute)
+	bctx := WithSite(context.Background(), "write")
+	lk, err := blocked.Lock(bctx, "mbox:u:INBOX", "p/2/u/new", time.Minute)
 	if !errors.Is(err, ErrBusy) {
 		t.Fatalf("second client got %v, want ErrBusy", err)
 	}
-	lk, _ := blocked.Lock(context.Background(), "mbox:u:INBOX", "p/2/u/new", time.Minute)
 	if lk.Site != SiteUnknown {
 		t.Errorf("a holder that sent no site is reported as %q, want %q", lk.Site, SiteUnknown)
 	}
+}
+
+// A context with no site does not reach the service: the server's unknown is for
+// an older client's frame, ours setting none is a defect (#1670).
+func TestAnAcquisitionWithNoSitePanicsUnderTest(t *testing.T) {
+	dial := siteTestServer(t)
+	c := dial()
+	defer func() {
+		if recover() == nil {
+			t.Error("a bare context reached the lock service: a new call site would announce " +
+				"unknown and no test would redden")
+		}
+	}()
+	_, _ = c.Lock(context.Background(), "mbox:u:INBOX", "p/1/u/s", time.Minute)
 }

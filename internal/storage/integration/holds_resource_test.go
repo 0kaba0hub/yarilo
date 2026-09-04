@@ -60,7 +60,7 @@ func TestHoldsResourceSkipsInnerAcquire(t *testing.T) {
 	key := locks.MailboxKey("carol@example.com", "INBOX")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	outer, err := lk.Lock(ctx, key, "test-outer/0/carol@example.com/sess1", 30*time.Second)
+	outer, err := lk.Lock(locks.WithSite(ctx, "write"), key, "test-outer/0/carol@example.com/sess1", 30*time.Second)
 	if err != nil {
 		t.Fatalf("outer lock: %v", err)
 	}

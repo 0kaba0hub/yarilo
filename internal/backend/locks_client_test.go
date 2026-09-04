@@ -83,7 +83,7 @@ func TestBuildLocksClientEmbedded(t *testing.T) {
 	}
 	defer func() { _ = lk.Close() }()
 	// Sanity round-trip.
-	lock, err := lk.Lock(context.Background(), "mbox:t:INBOX", "test.bin/1/alice@example.com/sess1", 5*time.Second)
+	lock, err := lk.Lock(locks.WithSite(context.Background(), "write"), "mbox:t:INBOX", "test.bin/1/alice@example.com/sess1", 5*time.Second)
 	if err != nil {
 		t.Fatalf("lock: %v", err)
 	}
