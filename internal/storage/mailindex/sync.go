@@ -208,7 +208,7 @@ func WithSyncLock(ctx context.Context, l locks.Locker, path, owner string, ttl t
 		return fn()
 	}
 	key := SyncLockKey(path)
-	lk, err := locks.Acquire(ctx, l, key, owner, ttl)
+	lk, err := locks.Acquire(locks.WithSite(ctx, "mailindex-sync"), l, key, owner, ttl)
 	if err != nil {
 		return fmt.Errorf("mailindex/sync: acquire %s: %w", key, err)
 	}

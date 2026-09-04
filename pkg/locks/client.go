@@ -285,7 +285,7 @@ func (c *Client) Lock(ctx context.Context, resource, owner string, ttl time.Dura
 		return Lock{}, err
 	}
 	expires := time.Now().Add(ttl)
-	resp, err := c.roundtrip(ctx, cmdLock, resource, owner, ttlStr)
+	resp, err := c.roundtrip(ctx, cmdLock, resource, owner, ttlStr, CheckSite(ctx))
 	if err != nil {
 		return Lock{}, err
 	}
@@ -306,11 +306,14 @@ func (c *Client) Lock(ctx context.Context, resource, owner string, ttl time.Dura
 		c.holdsMu.Unlock()
 		return Lock{ID: resp[1], Resource: resource, Owner: owner, ExpiresAt: expires}, nil
 	case respBusy:
-		current := ""
+		current, site := "", SiteUnknown
 		if len(resp) > 1 {
 			current = resp[1]
 		}
-		return Lock{Resource: resource, Owner: current}, ErrBusy
+		if len(resp) > 2 && resp[2] != "" {
+			site = resp[2]
+		}
+		return Lock{Resource: resource, Owner: current, Site: site}, ErrBusy
 	case respError:
 		return Lock{}, fmt.Errorf("locks/client: server error: %s", strings.Join(resp[1:], " "))
 	}
@@ -325,7 +328,7 @@ func (c *Client) LockShared(ctx context.Context, resource, owner string, ttl tim
 		return Lock{}, err
 	}
 	expires := time.Now().Add(ttl)
-	resp, err := c.roundtrip(ctx, cmdLockShared, resource, owner, ttlStr)
+	resp, err := c.roundtrip(ctx, cmdLockShared, resource, owner, ttlStr, CheckSite(ctx))
 	if err != nil {
 		return Lock{}, err
 	}
@@ -346,11 +349,14 @@ func (c *Client) LockShared(ctx context.Context, resource, owner string, ttl tim
 		c.holdsMu.Unlock()
 		return Lock{ID: resp[1], Resource: resource, Owner: owner, ExpiresAt: expires}, nil
 	case respBusy:
-		current := ""
+		current, site := "", SiteUnknown
 		if len(resp) > 1 {
 			current = resp[1]
 		}
-		return Lock{Resource: resource, Owner: current}, ErrBusy
+		if len(resp) > 2 && resp[2] != "" {
+			site = resp[2]
+		}
+		return Lock{Resource: resource, Owner: current, Site: site}, ErrBusy
 	case respError:
 		return Lock{}, fmt.Errorf("locks/client: server error: %s", strings.Join(resp[1:], " "))
 	}
@@ -569,6 +575,7 @@ func (c *Client) Close() error {
 // taken. Returns the Lock on success, else the last underlying error.
 func Acquire(ctx context.Context, l Locker, resource, owner string, ttl time.Duration) (Lock, error) {
 	owner = CheckOwner(owner)
+	_ = CheckSite(ctx)
 	return acquireBlocking(ctx, resource, waitFailure, func() (Lock, error) {
 		return l.Lock(ctx, resource, owner, ttl)
 	})
@@ -582,6 +589,7 @@ func Acquire(ctx context.Context, l Locker, resource, owner string, ttl time.Dur
 // have always differed, and this is not the change that makes them agree.
 func AcquireShared(ctx context.Context, l Locker, resource, owner string, ttl time.Duration) (Lock, error) {
 	owner = CheckOwner(owner)
+	_ = CheckSite(ctx)
 	return acquireBlocking(ctx, resource, func(err error) error { return err }, func() (Lock, error) {
 		return l.LockShared(ctx, resource, owner, ttl)
 	})
@@ -644,6 +652,7 @@ func WithLock(ctx context.Context, l Locker, resource, owner string, ttl, renewE
 		return fmt.Errorf("locks/withlock: renewEvery %v must be in (0, ttl=%v)", renewEvery, ttl)
 	}
 	owner = CheckOwner(owner)
+	_ = CheckSite(ctx)
 	lock, err := l.Lock(ctx, resource, owner, ttl)
 	if err != nil {
 		return err

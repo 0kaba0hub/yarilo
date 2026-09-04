@@ -182,7 +182,7 @@ func (a *Allocator) withLock(fn func() error) error {
 	if a.locker.HoldsResource(key) {
 		return fn()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), "uidvalidity-write"), 35*time.Second)
 	defer cancel()
 	lk, err := locks.Acquire(ctx, a.locker, key, a.owner, 30*time.Second)
 	if err != nil {

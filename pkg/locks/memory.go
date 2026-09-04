@@ -27,9 +27,11 @@ type MemoryBackend struct {
 }
 
 type memLock struct {
-	ID        string
-	Resource  string
-	Owner     string
+	ID       string
+	Resource string
+	Owner    string
+	// Site is what the holder is doing, reported to whoever is refused (#1676).
+	Site      string
 	ExpiresAt time.Time
 	Shared    bool
 }
@@ -73,15 +75,15 @@ func NewMemoryBackend(opts ...MemoryBackendOption) *MemoryBackend {
 
 // Acquire implements Backend. Fails if the resource has an exclusive
 // holder OR any shared holder — exclusive is exclusive against everyone.
-func (b *MemoryBackend) Acquire(_ context.Context, resource, owner string, ttl time.Duration) (string, string, error) {
+func (b *MemoryBackend) Acquire(_ context.Context, resource, owner, site string, ttl time.Duration) (string, Holder, error) {
 	if resource == "" || owner == "" {
-		return "", "", fmt.Errorf("locks/memory: resource and owner must be non-empty")
+		return "", Holder{}, fmt.Errorf("locks/memory: resource and owner must be non-empty")
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.expireLocked()
 	if existing, held := b.byRes[resource]; held {
-		return "", b.locks[existing].Owner, ErrBusy
+		return "", Holder{Owner: b.locks[existing].Owner, Site: b.locks[existing].Site}, ErrBusy
 	}
 	if shared := b.sharedRes[resource]; len(shared) > 0 {
 		for id := range shared {
@@ -89,43 +91,45 @@ func (b *MemoryBackend) Acquire(_ context.Context, resource, owner string, ttl t
 			if n := len(shared) - 1; n > 0 {
 				who = fmt.Sprintf("%s +%d", who, n)
 			}
-			return "", who, ErrBusy
+			return "", Holder{Owner: who, Site: b.locks[id].Site}, ErrBusy
 		}
 	}
 	id, err := randID()
 	if err != nil {
-		return "", "", fmt.Errorf("locks/memory: generate id: %w", err)
+		return "", Holder{}, fmt.Errorf("locks/memory: generate id: %w", err)
 	}
 	b.locks[id] = &memLock{
 		ID:        id,
 		Resource:  resource,
 		Owner:     owner,
+		Site:      site,
 		ExpiresAt: b.now().Add(ttl),
 	}
 	b.byRes[resource] = id
-	return id, "", nil
+	return id, Holder{}, nil
 }
 
 // AcquireShared implements Backend. Multiple shared holders may coexist on
 // the same resource; only an exclusive holder blocks it.
-func (b *MemoryBackend) AcquireShared(_ context.Context, resource, owner string, ttl time.Duration) (string, string, error) {
+func (b *MemoryBackend) AcquireShared(_ context.Context, resource, owner, site string, ttl time.Duration) (string, Holder, error) {
 	if resource == "" || owner == "" {
-		return "", "", fmt.Errorf("locks/memory: resource and owner must be non-empty")
+		return "", Holder{}, fmt.Errorf("locks/memory: resource and owner must be non-empty")
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.expireLocked()
 	if existing, held := b.byRes[resource]; held {
-		return "", b.locks[existing].Owner, ErrBusy
+		return "", Holder{Owner: b.locks[existing].Owner, Site: b.locks[existing].Site}, ErrBusy
 	}
 	id, err := randID()
 	if err != nil {
-		return "", "", fmt.Errorf("locks/memory: generate id: %w", err)
+		return "", Holder{}, fmt.Errorf("locks/memory: generate id: %w", err)
 	}
 	b.locks[id] = &memLock{
 		ID:        id,
 		Resource:  resource,
 		Owner:     owner,
+		Site:      site,
 		ExpiresAt: b.now().Add(ttl),
 		Shared:    true,
 	}
@@ -133,7 +137,7 @@ func (b *MemoryBackend) AcquireShared(_ context.Context, resource, owner string,
 		b.sharedRes[resource] = make(map[string]struct{})
 	}
 	b.sharedRes[resource][id] = struct{}{}
-	return id, "", nil
+	return id, Holder{}, nil
 }
 
 // Release implements Backend.

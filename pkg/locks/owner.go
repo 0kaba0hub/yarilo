@@ -138,3 +138,41 @@ func IDFrom(ctx context.Context) string {
 	id, _ := ctx.Value(ctxIDKey{}).(string)
 	return id
 }
+
+// SiteUnknown is what a holder announces when nothing said what it was doing:
+// an older client, or a call site that has not been given a site yet.
+const SiteUnknown = "unknown"
+
+// ctxSiteKey carries what the work in flight is doing to the acquisition, the
+// way ctxIDKey carries who it is.
+type ctxSiteKey struct{}
+
+// WithSite returns a context whose acquisitions announce site.
+func WithSite(ctx context.Context, site string) context.Context {
+	if site == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxSiteKey{}, site)
+}
+
+// SiteFrom returns the site WithSite put in ctx, or "" when it carries none.
+func SiteFrom(ctx context.Context) string {
+	s, _ := ctx.Value(ctxSiteKey{}).(string)
+	return s
+}
+
+// CheckSite is CheckOwner's twin: a context with no site is a defect at the call
+// site. The server's own unknown is different and stays (#1676).
+func CheckSite(ctx context.Context) string {
+	if s := SiteFrom(ctx); s != "" {
+		return s
+	}
+	_, file, line, _ := runtime.Caller(2)
+	if underTest() {
+		panic(fmt.Sprintf("locks: no site in the context at %s:%d -- wrap it with "+
+			"locks.WithSite (#1676)", file, line))
+	}
+	slog.Error("locks: acquisition with no site; announcing unknown",
+		"caller", fmt.Sprintf("%s:%d", file, line))
+	return SiteUnknown
+}

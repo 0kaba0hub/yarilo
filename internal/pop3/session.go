@@ -1107,7 +1107,7 @@ func (s *session) expungeDeleted() int {
 		var errCount int
 		key := locks.MailboxKey(s.userInfo.Username, "INBOX")
 		owner := locks.Owner(s.userInfo.Username, s.userInfo.LockID())
-		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), "pop3-batch"), 35*time.Second)
 		defer cancel()
 		lk, err := locks.Acquire(ctx, s.srv.opts.Locker, key, owner, 30*time.Second)
 		if err != nil {

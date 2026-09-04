@@ -864,7 +864,7 @@ func (s *session) recordThread(ui *mailbox.UserInfo, username string, guid [16]b
 		_, err := s.opts.Threads.Record(username, path, mailbox.FormatObjectID(guid), raw)
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), threadLockTimeout)
+	ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), "lmtp-threads"), threadLockTimeout)
 	defer cancel()
 	var err error
 	if s.opts.Locker != nil {

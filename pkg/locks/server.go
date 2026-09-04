@@ -160,29 +160,36 @@ func (s *Server) handshake(r *reader, w io.Writer) error {
 }
 
 func (s *Server) handleLock(ctx context.Context, w io.Writer, fields []string, peer string) {
-	if len(fields) != 4 {
+	// Four fields is a client from before the site travelled: it gets a lock,
+	// never a refusal, and its holder is recorded as unknown (#1676).
+	if len(fields) != 4 && len(fields) != 5 {
 		_ = writeFields(w, respError, "bad_lock")
 		return
 	}
 	resource, owner := fields[1], fields[2]
+	site := SiteUnknown
+	if len(fields) == 5 && fields[4] != "" {
+		site = fields[4]
+	}
 	ttl, err := parseTTL(fields[3])
 	if err != nil {
 		_ = writeFields(w, respError, "bad_ttl")
 		return
 	}
 	start := time.Now()
-	id, current, err := s.backend.Acquire(ctx, resource, owner, ttl)
+	id, current, err := s.backend.Acquire(ctx, resource, owner, site, ttl)
 	dur := time.Since(start).Seconds()
 	switch {
 	case err == nil:
 		s.metrics.observeAcquire(dur, "ok")
-		s.logger.Debug("locks: acquired", "peer", peer, "resource", resource, "owner", owner, "id", id, "dur_ms", dur*1000)
+		s.logger.Debug("locks: acquired", "peer", peer, "resource", resource, "owner", owner, "site", site, "id", id, "dur_ms", dur*1000)
 		_ = writeFields(w, respOK, id)
 	case errors.Is(err, ErrBusy):
 		s.metrics.observeAcquire(dur, "busy")
 		s.metrics.incBusy()
-		s.logger.Debug("locks: busy", "peer", peer, "resource", resource, "owner", owner, "held_by", current)
-		_ = writeFields(w, respBusy, current)
+		s.logger.Debug("locks: busy", "peer", peer, "resource", resource, "owner", owner,
+			"held_by", current.Owner, "held_site", current.Site)
+		_ = writeFields(w, respBusy, current.Owner, current.Site)
 	default:
 		s.metrics.observeAcquire(dur, "error")
 		s.logger.Error("locks: acquire failed", "peer", peer, "resource", resource, "err", err)
@@ -191,29 +198,36 @@ func (s *Server) handleLock(ctx context.Context, w io.Writer, fields []string, p
 }
 
 func (s *Server) handleLockShared(ctx context.Context, w io.Writer, fields []string, peer string) {
-	if len(fields) != 4 {
+	// Four fields is a client from before the site travelled: it gets a lock,
+	// never a refusal, and its holder is recorded as unknown (#1676).
+	if len(fields) != 4 && len(fields) != 5 {
 		_ = writeFields(w, respError, "bad_lock")
 		return
 	}
 	resource, owner := fields[1], fields[2]
+	site := SiteUnknown
+	if len(fields) == 5 && fields[4] != "" {
+		site = fields[4]
+	}
 	ttl, err := parseTTL(fields[3])
 	if err != nil {
 		_ = writeFields(w, respError, "bad_ttl")
 		return
 	}
 	start := time.Now()
-	id, current, err := s.backend.AcquireShared(ctx, resource, owner, ttl)
+	id, current, err := s.backend.AcquireShared(ctx, resource, owner, site, ttl)
 	dur := time.Since(start).Seconds()
 	switch {
 	case err == nil:
 		s.metrics.observeAcquire(dur, "ok")
-		s.logger.Debug("locks: acquired shared", "peer", peer, "resource", resource, "owner", owner, "id", id, "dur_ms", dur*1000)
+		s.logger.Debug("locks: acquired shared", "peer", peer, "resource", resource, "owner", owner, "site", site, "id", id, "dur_ms", dur*1000)
 		_ = writeFields(w, respOK, id)
 	case errors.Is(err, ErrBusy):
 		s.metrics.observeAcquire(dur, "busy")
 		s.metrics.incBusy()
-		s.logger.Debug("locks: busy (shared)", "peer", peer, "resource", resource, "owner", owner, "held_by", current)
-		_ = writeFields(w, respBusy, current)
+		s.logger.Debug("locks: busy (shared)", "peer", peer, "resource", resource, "owner", owner,
+			"held_by", current.Owner, "held_site", current.Site)
+		_ = writeFields(w, respBusy, current.Owner, current.Site)
 	default:
 		s.metrics.observeAcquire(dur, "error")
 		s.logger.Error("locks: acquire shared failed", "peer", peer, "resource", resource, "err", err)

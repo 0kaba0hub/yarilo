@@ -46,7 +46,7 @@ func testAcquireRelease(t *testing.T, factory lockerFactory) {
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	lock, err := l.Lock(ctx, "mbox:alice:INBOX", "test.bin/1/alice@example.com/sess1", 5*time.Second)
+	lock, err := l.Lock(locks.WithSite(ctx, "write"), "mbox:alice:INBOX", "test.bin/1/alice@example.com/sess1", 5*time.Second)
 	if err != nil {
 		t.Fatalf("lock: %v", err)
 	}
@@ -57,7 +57,7 @@ func testAcquireRelease(t *testing.T, factory lockerFactory) {
 		t.Fatalf("unlock: %v", err)
 	}
 	// After release, the resource is free again.
-	lock2, err := l.Lock(ctx, "mbox:alice:INBOX", "test.bin/2/bob@example.com/sess2", 5*time.Second)
+	lock2, err := l.Lock(locks.WithSite(ctx, "write"), "mbox:alice:INBOX", "test.bin/2/bob@example.com/sess2", 5*time.Second)
 	if err != nil {
 		t.Fatalf("second lock: %v", err)
 	}
@@ -69,12 +69,12 @@ func testContention(t *testing.T, factory lockerFactory) {
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	a, err := l.Lock(ctx, "mbox:bob:INBOX", "test.bin/1/alice@example.com/sessA", 5*time.Second)
+	a, err := l.Lock(locks.WithSite(ctx, "write"), "mbox:bob:INBOX", "test.bin/1/alice@example.com/sessA", 5*time.Second)
 	if err != nil {
 		t.Fatalf("first lock: %v", err)
 	}
 	defer func() { _ = l.Unlock(context.Background(), a.ID) }()
-	_, err = l.Lock(ctx, "mbox:bob:INBOX", "test.bin/2/alice@example.com/sessB", 5*time.Second)
+	_, err = l.Lock(locks.WithSite(ctx, "write"), "mbox:bob:INBOX", "test.bin/2/alice@example.com/sessB", 5*time.Second)
 	if !errors.Is(err, locks.ErrBusy) {
 		t.Fatalf("expected ErrBusy, got %v", err)
 	}
@@ -85,7 +85,7 @@ func testRenew(t *testing.T, factory lockerFactory) {
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	lock, err := l.Lock(ctx, "idx:alice", "test.bin/1/alice@example.com/sess1", 500*time.Millisecond)
+	lock, err := l.Lock(locks.WithSite(ctx, "write"), "idx:alice", "test.bin/1/alice@example.com/sess1", 500*time.Millisecond)
 	if err != nil {
 		t.Fatalf("lock: %v", err)
 	}
@@ -142,17 +142,17 @@ func testResourceKeys(t *testing.T, factory lockerFactory) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	owner := "test.bin/1/dave@example.com/deadlock"
-	idx, err := l.Lock(ctx, locks.IndexKey("dave"), owner, 5*time.Second)
+	idx, err := l.Lock(locks.WithSite(ctx, "write"), locks.IndexKey("dave"), owner, 5*time.Second)
 	if err != nil {
 		t.Fatalf("idx lock: %v", err)
 	}
 	defer func() { _ = l.Unlock(context.Background(), idx.ID) }()
-	mb, err := l.Lock(ctx, locks.MailboxKey("dave", "INBOX"), owner, 5*time.Second)
+	mb, err := l.Lock(locks.WithSite(ctx, "write"), locks.MailboxKey("dave", "INBOX"), owner, 5*time.Second)
 	if err != nil {
 		t.Fatalf("mbox lock: %v", err)
 	}
 	defer func() { _ = l.Unlock(context.Background(), mb.ID) }()
-	dl, err := l.Lock(ctx, locks.DeliverKey("dave", "INBOX"), owner, 5*time.Second)
+	dl, err := l.Lock(locks.WithSite(ctx, "write"), locks.DeliverKey("dave", "INBOX"), owner, 5*time.Second)
 	if err != nil {
 		t.Fatalf("deliver lock: %v", err)
 	}
@@ -231,12 +231,12 @@ func testSharedConcurrentReaders(t *testing.T, factory lockerFactory) {
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	a, err := l.LockShared(ctx, "mbox:eve:INBOX", "test.bin/1/eve@example.com/readerA", 5*time.Second)
+	a, err := l.LockShared(locks.WithSite(ctx, "read"), "mbox:eve:INBOX", "test.bin/1/eve@example.com/readerA", 5*time.Second)
 	if err != nil {
 		t.Fatalf("shared lock A: %v", err)
 	}
 	defer func() { _ = l.Unlock(context.Background(), a.ID) }()
-	b, err := l.LockShared(ctx, "mbox:eve:INBOX", "test.bin/2/eve@example.com/readerB", 5*time.Second)
+	b, err := l.LockShared(locks.WithSite(ctx, "read"), "mbox:eve:INBOX", "test.bin/2/eve@example.com/readerB", 5*time.Second)
 	if err != nil {
 		t.Fatalf("shared lock B: %v", err)
 	}
@@ -253,12 +253,12 @@ func testSharedBlocksExclusive(t *testing.T, factory lockerFactory) {
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	shared, err := l.LockShared(ctx, "mbox:frank:INBOX", "test.bin/1/u@example.com/reader", 5*time.Second)
+	shared, err := l.LockShared(locks.WithSite(ctx, "read"), "mbox:frank:INBOX", "test.bin/1/u@example.com/reader", 5*time.Second)
 	if err != nil {
 		t.Fatalf("shared lock: %v", err)
 	}
 	defer func() { _ = l.Unlock(context.Background(), shared.ID) }()
-	_, err = l.Lock(ctx, "mbox:frank:INBOX", "test.bin/1/u@example.com/writer", 5*time.Second)
+	_, err = l.Lock(locks.WithSite(ctx, "write"), "mbox:frank:INBOX", "test.bin/1/u@example.com/writer", 5*time.Second)
 	if !errors.Is(err, locks.ErrBusy) {
 		t.Fatalf("expected exclusive Lock to be blocked by a live shared holder, got %v", err)
 	}
@@ -271,12 +271,12 @@ func testExclusiveBlocksShared(t *testing.T, factory lockerFactory) {
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	x, err := l.Lock(ctx, "mbox:grace:INBOX", "test.bin/1/u@example.com/writer", 5*time.Second)
+	x, err := l.Lock(locks.WithSite(ctx, "write"), "mbox:grace:INBOX", "test.bin/1/u@example.com/writer", 5*time.Second)
 	if err != nil {
 		t.Fatalf("exclusive lock: %v", err)
 	}
 	defer func() { _ = l.Unlock(context.Background(), x.ID) }()
-	_, err = l.LockShared(ctx, "mbox:grace:INBOX", "test.bin/1/u@example.com/reader", 5*time.Second)
+	_, err = l.LockShared(locks.WithSite(ctx, "read"), "mbox:grace:INBOX", "test.bin/1/u@example.com/reader", 5*time.Second)
 	if !errors.Is(err, locks.ErrBusy) {
 		t.Fatalf("expected LockShared to be blocked by a live exclusive holder, got %v", err)
 	}
@@ -290,27 +290,27 @@ func testSharedReleaseUnblocksExclusive(t *testing.T, factory lockerFactory) {
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	a, err := l.LockShared(ctx, "mbox:henry:INBOX", "test.bin/1/eve@example.com/readerA", 5*time.Second)
+	a, err := l.LockShared(locks.WithSite(ctx, "read"), "mbox:henry:INBOX", "test.bin/1/eve@example.com/readerA", 5*time.Second)
 	if err != nil {
 		t.Fatalf("shared lock A: %v", err)
 	}
-	b, err := l.LockShared(ctx, "mbox:henry:INBOX", "test.bin/2/eve@example.com/readerB", 5*time.Second)
+	b, err := l.LockShared(locks.WithSite(ctx, "read"), "mbox:henry:INBOX", "test.bin/2/eve@example.com/readerB", 5*time.Second)
 	if err != nil {
 		t.Fatalf("shared lock B: %v", err)
 	}
-	if _, err := l.Lock(ctx, "mbox:henry:INBOX", "test.bin/1/u@example.com/writer", 5*time.Second); !errors.Is(err, locks.ErrBusy) {
+	if _, err := l.Lock(locks.WithSite(ctx, "write"), "mbox:henry:INBOX", "test.bin/1/u@example.com/writer", 5*time.Second); !errors.Is(err, locks.ErrBusy) {
 		t.Fatalf("expected exclusive Lock busy while shared holders live, got %v", err)
 	}
 	if err := l.Unlock(ctx, a.ID); err != nil {
 		t.Fatalf("unlock A: %v", err)
 	}
-	if _, err := l.Lock(ctx, "mbox:henry:INBOX", "test.bin/1/u@example.com/writer", 5*time.Second); !errors.Is(err, locks.ErrBusy) {
+	if _, err := l.Lock(locks.WithSite(ctx, "write"), "mbox:henry:INBOX", "test.bin/1/u@example.com/writer", 5*time.Second); !errors.Is(err, locks.ErrBusy) {
 		t.Fatalf("expected exclusive Lock still busy with one shared holder remaining, got %v", err)
 	}
 	if err := l.Unlock(ctx, b.ID); err != nil {
 		t.Fatalf("unlock B: %v", err)
 	}
-	x, err := l.Lock(ctx, "mbox:henry:INBOX", "test.bin/1/u@example.com/writer", 5*time.Second)
+	x, err := l.Lock(locks.WithSite(ctx, "write"), "mbox:henry:INBOX", "test.bin/1/u@example.com/writer", 5*time.Second)
 	if err != nil {
 		t.Fatalf("expected exclusive Lock to succeed once all shared holders released, got %v", err)
 	}
@@ -402,7 +402,7 @@ func TestWithLock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var called bool
-	err := locks.WithLock(ctx, l, "mbox:test:INBOX", "test.bin/1/grace@example.com/withlock", 500*time.Millisecond, 100*time.Millisecond, func(ctx context.Context) error {
+	err := locks.WithLock(locks.WithSite(ctx, "write"), l, "mbox:test:INBOX", "test.bin/1/grace@example.com/withlock", 500*time.Millisecond, 100*time.Millisecond, func(ctx context.Context) error {
 		called = true
 		return nil
 	})
@@ -413,7 +413,7 @@ func TestWithLock(t *testing.T) {
 		t.Fatal("fn not called")
 	}
 	// Lock should be released after WithLock returns.
-	lock, err := l.Lock(ctx, "mbox:test:INBOX", "test.bin/1/u@example.com/secondowner", time.Second)
+	lock, err := l.Lock(locks.WithSite(ctx, "write"), "mbox:test:INBOX", "test.bin/1/u@example.com/secondowner", time.Second)
 	if err != nil {
 		t.Fatalf("relock: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestConcurrentAcquire(t *testing.T) {
 			for j := 0; j < iterations; j++ {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				for {
-					lock, err := l.Lock(ctx, "mbox:hot:INBOX", "test.bin/1/u@example.com/w", 200*time.Millisecond)
+					lock, err := l.Lock(locks.WithSite(ctx, "write"), "mbox:hot:INBOX", "test.bin/1/u@example.com/w", 200*time.Millisecond)
 					if err == nil {
 						mu.Lock()
 						held++
@@ -536,18 +536,18 @@ func testSharedBusyNamesAHolder(t *testing.T, factory lockerFactory) {
 	ctx := context.Background()
 	const res = "mbox:u@example.com:INBOX"
 
-	a, err := l.LockShared(ctx, res, "test.bin/1/frank@example.com/readerone", time.Minute)
+	a, err := l.LockShared(locks.WithSite(ctx, "read"), res, "test.bin/1/frank@example.com/readerone", time.Minute)
 	if err != nil {
 		t.Fatalf("first shared: %v", err)
 	}
 	defer l.Unlock(ctx, a.ID) //nolint:errcheck
-	b, err := l.LockShared(ctx, res, "test.bin/2/frank@example.com/readertwo", time.Minute)
+	b, err := l.LockShared(locks.WithSite(ctx, "read"), res, "test.bin/2/frank@example.com/readertwo", time.Minute)
 	if err != nil {
 		t.Fatalf("second shared: %v", err)
 	}
 	defer l.Unlock(ctx, b.ID) //nolint:errcheck
 
-	busy, err := l.Lock(ctx, res, "test.bin/3/frank@example.com/writer", time.Minute)
+	busy, err := l.Lock(locks.WithSite(ctx, "write"), res, "test.bin/3/frank@example.com/writer", time.Minute)
 	if !errors.Is(err, locks.ErrBusy) {
 		t.Fatalf("exclusive against two readers: %v", err)
 	}

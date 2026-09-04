@@ -348,7 +348,7 @@ func Open(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle {
 	// MailboxKey -- the same two tiers every shared write path uses.
 	fc.unlock = append(fc.unlock, lockCachePath(path, opts.Shared))
 	if lkr := opts.Locker; lkr != nil && opts.User != "" && opts.Folder != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), "msgcache"), 35*time.Second)
 		key := locks.MailboxKey(opts.User, opts.Folder)
 		owner := locks.Owner(opts.User, opts.lockID())
 		var lk locks.Lock
