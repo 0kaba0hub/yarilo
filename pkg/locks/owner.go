@@ -161,10 +161,8 @@ func SiteFrom(ctx context.Context) string {
 	return s
 }
 
-// CheckSite is the guard on the caller's side of the boundary, the twin of
-// CheckOwner: a context with no site is a defect at the call site, not a
-// spelling to serve. The server's own unknown is different and stays -- it
-// belongs to an older client's four-field frame (#1676).
+// CheckSite is CheckOwner's twin: a context with no site is a defect at the call
+// site. The server's own unknown is different and stays (#1676).
 func CheckSite(ctx context.Context) string {
 	if s := SiteFrom(ctx); s != "" {
 		return s

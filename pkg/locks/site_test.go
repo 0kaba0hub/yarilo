@@ -82,9 +82,8 @@ func TestARefusalNamesTheHoldersSite(t *testing.T) {
 	}
 }
 
-// Each refusal names its own holder's site.
-//
-// One holder is not enough: a hard-coded field passes that, and would have.
+// Each refusal names its own holder's site: one holder is not enough, a
+// hard-coded field passes that, and would have.
 func TestTwoHoldersInTurnEachNameTheirOwnSite(t *testing.T) {
 	b := siteTestBackend(t)
 	ctx := context.Background()
