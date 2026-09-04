@@ -794,7 +794,7 @@ func (u *userIndex) withDistLock(fs *folderState, shared bool, site string, fn f
 		mode := lockMode(shared)
 		key := locks.MailboxKey(u.username, fs.folder)
 		if !u.b.locker.HoldsResource(key) {
-			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+			ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), site), 35*time.Second)
 			defer cancel()
 			t0 := time.Now()
 			var lk locks.Lock

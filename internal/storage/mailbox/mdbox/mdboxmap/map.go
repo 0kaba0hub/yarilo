@@ -461,7 +461,7 @@ func (m *Map) withMapLock(fn func() error) error {
 		// Already ours: no round trip, so nothing waited.
 		return timed(metricMapLockHold, fn)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), "mdbox-map"), 35*time.Second)
 	defer cancel()
 	start := time.Now()
 	lk, err := locks.Acquire(ctx, m.locker, key, m.owner, 30*time.Second)

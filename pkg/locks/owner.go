@@ -138,3 +138,27 @@ func IDFrom(ctx context.Context) string {
 	id, _ := ctx.Value(ctxIDKey{}).(string)
 	return id
 }
+
+// SiteUnknown is what a holder announces when nothing said what it was doing:
+// an older client, or a call site that has not been given a site yet.
+const SiteUnknown = "unknown"
+
+// ctxSiteKey carries what the work in flight is doing to the acquisition, the
+// way ctxIDKey carries who it is.
+type ctxSiteKey struct{}
+
+// WithSite returns a context whose acquisitions announce site.
+func WithSite(ctx context.Context, site string) context.Context {
+	if site == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxSiteKey{}, site)
+}
+
+// SiteFrom returns the site WithSite put in ctx, or SiteUnknown.
+func SiteFrom(ctx context.Context) string {
+	if s, _ := ctx.Value(ctxSiteKey{}).(string); s != "" {
+		return s
+	}
+	return SiteUnknown
+}

@@ -129,7 +129,7 @@ func threadUser(boxBE mailbox.MailboxBackend, byDriver func(string) mailbox.Mail
 	if locker == nil {
 		return threadUserLocked(boxBE, byDriver, idxBE, resolveUser, o, user, st)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), backfillLockTimeout)
+	ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), "migrate-threads"), backfillLockTimeout)
 	defer cancel()
 	return locks.WithLock(ctx, locker, locks.ThreadsKey(user),
 		locks.Owner(user, locks.NewID()), backfillLockTTL, backfillLockRenew,

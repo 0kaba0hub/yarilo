@@ -285,7 +285,7 @@ func (c *Client) Lock(ctx context.Context, resource, owner string, ttl time.Dura
 		return Lock{}, err
 	}
 	expires := time.Now().Add(ttl)
-	resp, err := c.roundtrip(ctx, cmdLock, resource, owner, ttlStr)
+	resp, err := c.roundtrip(ctx, cmdLock, resource, owner, ttlStr, SiteFrom(ctx))
 	if err != nil {
 		return Lock{}, err
 	}
@@ -306,11 +306,14 @@ func (c *Client) Lock(ctx context.Context, resource, owner string, ttl time.Dura
 		c.holdsMu.Unlock()
 		return Lock{ID: resp[1], Resource: resource, Owner: owner, ExpiresAt: expires}, nil
 	case respBusy:
-		current := ""
+		current, site := "", SiteUnknown
 		if len(resp) > 1 {
 			current = resp[1]
 		}
-		return Lock{Resource: resource, Owner: current}, ErrBusy
+		if len(resp) > 2 && resp[2] != "" {
+			site = resp[2]
+		}
+		return Lock{Resource: resource, Owner: current, Site: site}, ErrBusy
 	case respError:
 		return Lock{}, fmt.Errorf("locks/client: server error: %s", strings.Join(resp[1:], " "))
 	}
@@ -325,7 +328,7 @@ func (c *Client) LockShared(ctx context.Context, resource, owner string, ttl tim
 		return Lock{}, err
 	}
 	expires := time.Now().Add(ttl)
-	resp, err := c.roundtrip(ctx, cmdLockShared, resource, owner, ttlStr)
+	resp, err := c.roundtrip(ctx, cmdLockShared, resource, owner, ttlStr, SiteFrom(ctx))
 	if err != nil {
 		return Lock{}, err
 	}
@@ -346,11 +349,14 @@ func (c *Client) LockShared(ctx context.Context, resource, owner string, ttl tim
 		c.holdsMu.Unlock()
 		return Lock{ID: resp[1], Resource: resource, Owner: owner, ExpiresAt: expires}, nil
 	case respBusy:
-		current := ""
+		current, site := "", SiteUnknown
 		if len(resp) > 1 {
 			current = resp[1]
 		}
-		return Lock{Resource: resource, Owner: current}, ErrBusy
+		if len(resp) > 2 && resp[2] != "" {
+			site = resp[2]
+		}
+		return Lock{Resource: resource, Owner: current, Site: site}, ErrBusy
 	case respError:
 		return Lock{}, fmt.Errorf("locks/client: server error: %s", strings.Join(resp[1:], " "))
 	}

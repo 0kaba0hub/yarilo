@@ -425,7 +425,7 @@ func (u *userIndex) AdoptForeignNames() error {
 	if u.b.locker.HoldsResource(key) {
 		return run()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), "index-adopt"), 35*time.Second)
 	defer cancel()
 	lk, err := locks.Acquire(ctx, u.b.locker, key, u.owner, 30*time.Second)
 	if err != nil {
