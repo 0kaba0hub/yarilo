@@ -86,7 +86,7 @@ func TestAReaderOpensWhileAnotherReaderHoldsTheFolder(t *testing.T) {
 	lockA, lockB := newLocker(), newLocker()
 	idx, fid := sharedFolder(t, lockA)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), "read"), 5*time.Second)
 	defer cancel()
 	held, err := locks.AcquireShared(ctx, lockB, locks.MailboxKey("u@example.com", "INBOX"),
 		locks.Owner("u@example.com", "other-reader"), 30*time.Second)

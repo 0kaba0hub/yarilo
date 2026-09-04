@@ -18,6 +18,16 @@ type Lock struct {
 	Resource  string
 	Owner     string
 	ExpiresAt time.Time
+	// Site is what the holder was doing, on a BUSY answer. Reading it off the
+	// refusal is the point: three questions in a row had to infer it (#1676).
+	Site string
+}
+
+// Holder is who holds a lock and what they are doing with it. The two travel
+// together because every question about a refusal needs both.
+type Holder struct {
+	Owner string
+	Site  string
 }
 
 // EventType classifies an EVENT emitted by the server.
@@ -143,14 +153,14 @@ type Backend interface {
 	// Acquire attempts to take the exclusive lock. Returns the new lock ID on
 	// success. On contention (an exclusive OR a shared holder already present),
 	// returns ErrBusy with currentOwner populated.
-	Acquire(ctx context.Context, resource, owner string, ttl time.Duration) (lockID string, currentOwner string, err error)
+	Acquire(ctx context.Context, resource, owner, site string, ttl time.Duration) (lockID string, current Holder, err error)
 
 	// AcquireShared attempts to take a shared (read) lock (#671). Multiple
 	// shared holders may coexist on the same resource; it fails with ErrBusy
 	// only when an exclusive lock is currently held. Release/Renew use the
 	// same lock-ID space as Acquire — implementations must track each lock
 	// ID's kind (exclusive/shared) internally so those calls stay symmetric.
-	AcquireShared(ctx context.Context, resource, owner string, ttl time.Duration) (lockID string, currentOwner string, err error)
+	AcquireShared(ctx context.Context, resource, owner, site string, ttl time.Duration) (lockID string, current Holder, err error)
 
 	// Release deletes the lock. Returns ErrNotFound if the lock does not
 	// exist anymore (expired or already released).

@@ -62,7 +62,7 @@ func TestLockCallSurvivesTheServiceVanishing(t *testing.T) {
 	// Force the pool to hold a live, handshaken connection.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, err := client.Lock(ctx, "warmup", "test.bin/1/alice@example.com/sess1", time.Second); err == nil {
+	if _, err := client.Lock(locks.WithSite(ctx, "write"), "warmup", "test.bin/1/alice@example.com/sess1", time.Second); err == nil {
 		// The stub answers nothing after the handshake, so the warm-up is
 		// expected to fail on read; what matters is that a connection exists.
 		t.Log("warm-up unexpectedly succeeded")
@@ -80,7 +80,7 @@ func TestLockCallSurvivesTheServiceVanishing(t *testing.T) {
 	defer cancel2()
 	// The assertion is that this returns at all. A panic here fails the test by
 	// killing it, which is the honest shape: the defect is not a wrong value.
-	if _, err := client.Lock(ctx2, "mailbox/u1", "test.bin/1/alice@example.com/sess1", time.Second); err == nil {
+	if _, err := client.Lock(locks.WithSite(ctx2, "write"), "mailbox/u1", "test.bin/1/alice@example.com/sess1", time.Second); err == nil {
 		t.Error("locking against a service that is gone reported success")
 	}
 }

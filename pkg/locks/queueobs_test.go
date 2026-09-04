@@ -50,7 +50,7 @@ func (b *busyLocker) Lock(context.Context, string, string, time.Duration) (Lock,
 	return Lock{ID: "l"}, nil
 }
 func (b *busyLocker) LockShared(ctx context.Context, r, o string, ttl time.Duration) (Lock, error) {
-	return b.Lock(ctx, r, o, ttl)
+	return b.Lock(WithSite(ctx, "write"), r, o, ttl)
 }
 func (b *busyLocker) Unlock(context.Context, string) error { return nil }
 func (b *busyLocker) Renew(context.Context, string, time.Duration) error {
@@ -74,7 +74,7 @@ func TestAWaitIsMeasuredOncePerAcquisitionNotPerAttempt(t *testing.T) {
 	attemptSum, attemptCount := histLabelled(t, clientAcquireAttempts, "mbox")
 
 	l := &busyLocker{busyFor: 4}
-	if _, err := Acquire(context.Background(), l, key, "test.bin/1/alice@example.com/sess1", time.Second); err != nil {
+	if _, err := Acquire(WithSite(context.Background(), "write"), l, key, "test.bin/1/alice@example.com/sess1", time.Second); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestAContenderThatRunsOutOfTimeIsCountedWithItsAttempts(t *testing.T) {
 	l := &busyLocker{busyFor: 1 << 30}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Millisecond)
 	defer cancel()
-	if _, err := Acquire(ctx, l, key, "test.bin/1/alice@example.com/sess1", time.Second); err == nil {
+	if _, err := Acquire(WithSite(ctx, "write"), l, key, "test.bin/1/alice@example.com/sess1", time.Second); err == nil {
 		t.Fatal("the acquisition succeeded against a locker that never yields")
 	}
 	if got := counterLabelled(t, clientGaveUp, "mbox", "2-3") - before; got != 1 {

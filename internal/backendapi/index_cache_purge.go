@@ -67,7 +67,7 @@ func (s *Server) handleIndexCachePurge(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	if s.opts.Locker != nil {
 		key := locks.MailboxKey(uc.info.Username, req.Folder)
-		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(locks.WithSite(r.Context(), "admin-cache-purge"), 60*time.Second)
 		defer cancel()
 		lk, lerr := locks.Acquire(ctx, s.opts.Locker, key, uc.lockOwner(), 90*time.Second)
 		if lerr != nil {

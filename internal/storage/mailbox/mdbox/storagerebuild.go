@@ -25,7 +25,7 @@ func (u *userMailbox) withMapLock(fn func() error) error {
 	if u.b.locker.HoldsResource(key) {
 		return fn()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 95*time.Second)
+	ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), "mdbox-rebuild"), 95*time.Second)
 	defer cancel()
 	lk, err := locks.Acquire(ctx, u.b.locker, key, u.owner, 90*time.Second)
 	if err != nil {

@@ -68,7 +68,7 @@ func withSieveLock(ctx context.Context, l locks.Locker, username, resource strin
 	}
 	// The id rides the context: the store interface has no place for one, and
 	// managesieve and delivery both set it at their entry (#1672).
-	return locks.WithLock(ctx, l, resource, locks.Owner(username, locks.IDFrom(ctx)),
+	return locks.WithLock(locks.WithSite(ctx, "sieve-write"), l, resource, locks.Owner(username, locks.IDFrom(ctx)),
 		sieveLockTTL, sieveLockRenew, fn)
 }
 

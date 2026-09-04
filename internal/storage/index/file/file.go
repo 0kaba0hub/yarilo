@@ -794,7 +794,7 @@ func (u *userIndex) withDistLock(fs *folderState, shared bool, site string, fn f
 		mode := lockMode(shared)
 		key := locks.MailboxKey(u.username, fs.folder)
 		if !u.b.locker.HoldsResource(key) {
-			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+			ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), site), 35*time.Second)
 			defer cancel()
 			t0 := time.Now()
 			var lk locks.Lock
@@ -838,7 +838,7 @@ func (u *userIndex) withTwoFolderLocks(folderA, folderB string, fn func() error)
 		a, b = b, a
 	}
 	keyA := locks.MailboxKey(u.username, a)
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), lockSiteWrite), 35*time.Second)
 	defer cancel()
 	if !u.b.locker.HoldsResource(keyA) {
 		lkA, err := locks.Acquire(ctx, u.b.locker, keyA, u.owner, 30*time.Second)

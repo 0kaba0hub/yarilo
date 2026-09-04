@@ -57,7 +57,11 @@ func NewRedisBackend(rdb redis.UniversalClient, opts ...RedisOption) *RedisBacke
 // correct secondary index (resKey vs sharedKey) without the caller having to
 // track kind itself. The reverse split is performed server-side in the Lua
 // scripts (string.find on '|').
-func lockValue(resource, owner, kind string) string { return resource + "|" + owner + "|" + kind }
+// lockValue is resource|owner|kind|site. The site was appended rather than
+// inserted so a value written before #1676 still parses, with an empty site.
+func lockValue(resource, owner, kind, site string) string {
+	return resource + "|" + owner + "|" + kind + "|" + site
+}
 
 // resKey for the secondary index "resource → lockID" — the exclusive holder,
 // at most one per resource at a time. Stored as a sibling key with the same TTL.
@@ -93,8 +97,10 @@ local function parseValue(v)
   local sep2 = string.find(rest, "|", 1, true)
   if not sep2 then return resource, rest, "x" end
   local owner = string.sub(rest, 1, sep2 - 1)
-  local kind = string.sub(rest, sep2 + 1)
-  return resource, owner, kind
+  local tail = string.sub(rest, sep2 + 1)
+  local sep3 = string.find(tail, "|", 1, true)
+  if not sep3 then return resource, owner, tail, "" end
+  return resource, owner, string.sub(tail, 1, sep3 - 1), string.sub(tail, sep3 + 1)
 end
 local function nowMs()
   local t = redis.call("TIME")
@@ -121,9 +127,9 @@ var acquireScript = redis.NewScript(luaParseValue + `
 local existing = redis.call("GET", KEYS[1])
 if existing then
   local v = redis.call("GET", KEYS[1] .. ":val")
-  local owner = ""
-  if v then local _, o = parseValue(v); owner = o end
-  return {"BUSY", owner or ""}
+  local owner, site = "", ""
+  if v then local _, o, _, st = parseValue(v); owner = o; site = st end
+  return {"BUSY", owner or "", site or ""}
 end
 redis.call("ZREMRANGEBYSCORE", KEYS[3], "-inf", nowMs())
 local sharedCount = redis.call("ZCARD", KEYS[3])
@@ -131,15 +137,15 @@ if sharedCount > 0 then
   -- Name one of the readers and say how many there are. The members are in
   -- hand, and a refusal that names nobody was 17% of them (#1652).
   local first = redis.call("ZRANGE", KEYS[3], 0, 0)
-  local who = ""
+  local who, site = "", ""
   if first[1] then
     local v = redis.call("GET", ARGV[4] .. "id:" .. first[1])
-    if v then local _, o = parseValue(v); who = o or "" end
+    if v then local _, o, _, st = parseValue(v); who = o or ""; site = st or "" end
   end
   if sharedCount > 1 then
     who = who .. " +" .. tostring(sharedCount - 1)
   end
-  return {"BUSY", who}
+  return {"BUSY", who, site}
 end
 redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[3])
 redis.call("SET", KEYS[1] .. ":val", ARGV[2], "PX", ARGV[3])
@@ -164,9 +170,9 @@ var acquireSharedScript = redis.NewScript(luaParseValue + `
 local existing = redis.call("GET", KEYS[1])
 if existing then
   local v = redis.call("GET", KEYS[1] .. ":val")
-  local owner = ""
-  if v then local _, o = parseValue(v); owner = o end
-  return {"BUSY", owner or ""}
+  local owner, site = "", ""
+  if v then local _, o, _, st = parseValue(v); owner = o; site = st end
+  return {"BUSY", owner or "", site or ""}
 end
 redis.call("ZADD", KEYS[3], nowMs() + tonumber(ARGV[3]), ARGV[1])
 redis.call("SET", KEYS[2], ARGV[2], "PX", ARGV[3])
@@ -234,59 +240,66 @@ return 1
 `)
 
 // Acquire implements Backend.
-func (b *RedisBackend) Acquire(ctx context.Context, resource, owner string, ttl time.Duration) (string, string, error) {
+func (b *RedisBackend) Acquire(ctx context.Context, resource, owner, site string, ttl time.Duration) (string, Holder, error) {
 	if resource == "" || owner == "" {
-		return "", "", fmt.Errorf("locks/redis: resource and owner must be non-empty")
+		return "", Holder{}, fmt.Errorf("locks/redis: resource and owner must be non-empty")
 	}
 	id, err := randID()
 	if err != nil {
-		return "", "", fmt.Errorf("locks/redis: generate id: %w", err)
+		return "", Holder{}, fmt.Errorf("locks/redis: generate id: %w", err)
 	}
 	res, err := acquireScript.Run(ctx, b.rdb,
 		[]string{b.resKey(resource), b.lockKey(id), b.sharedKey(resource)},
-		id, lockValue(resource, owner, "x"), ttl.Milliseconds(), b.keyPrefix,
+		id, lockValue(resource, owner, "x", site), ttl.Milliseconds(), b.keyPrefix,
 	).Result()
 	if err != nil {
-		return "", "", fmt.Errorf("locks/redis: acquire: %w", err)
+		return "", Holder{}, fmt.Errorf("locks/redis: acquire: %w", err)
 	}
 	return parseAcquireResult(res, id)
 }
 
 // AcquireShared implements Backend.
-func (b *RedisBackend) AcquireShared(ctx context.Context, resource, owner string, ttl time.Duration) (string, string, error) {
+func (b *RedisBackend) AcquireShared(ctx context.Context, resource, owner, site string, ttl time.Duration) (string, Holder, error) {
 	if resource == "" || owner == "" {
-		return "", "", fmt.Errorf("locks/redis: resource and owner must be non-empty")
+		return "", Holder{}, fmt.Errorf("locks/redis: resource and owner must be non-empty")
 	}
 	id, err := randID()
 	if err != nil {
-		return "", "", fmt.Errorf("locks/redis: generate id: %w", err)
+		return "", Holder{}, fmt.Errorf("locks/redis: generate id: %w", err)
 	}
 	res, err := acquireSharedScript.Run(ctx, b.rdb,
 		[]string{b.resKey(resource), b.lockKey(id), b.sharedKey(resource)},
-		id, lockValue(resource, owner, "s"), ttl.Milliseconds(),
+		id, lockValue(resource, owner, "s", site), ttl.Milliseconds(),
 	).Result()
 	if err != nil {
-		return "", "", fmt.Errorf("locks/redis: acquire shared: %w", err)
+		return "", Holder{}, fmt.Errorf("locks/redis: acquire shared: %w", err)
 	}
 	return parseAcquireResult(res, id)
 }
 
-func parseAcquireResult(res interface{}, id string) (string, string, error) {
+func parseAcquireResult(res interface{}, id string) (string, Holder, error) {
 	arr, ok := res.([]interface{})
 	if !ok || len(arr) == 0 {
-		return "", "", fmt.Errorf("locks/redis: malformed acquire response: %w", ErrProtocol)
+		return "", Holder{}, fmt.Errorf("locks/redis: malformed acquire response: %w", ErrProtocol)
 	}
 	switch arr[0] {
 	case "OK":
-		return id, "", nil
+		return id, Holder{}, nil
 	case "BUSY":
-		current := ""
+		var h Holder
 		if len(arr) > 1 {
-			current, _ = arr[1].(string)
+			h.Owner, _ = arr[1].(string)
 		}
-		return "", current, ErrBusy
+		if len(arr) > 2 {
+			h.Site, _ = arr[2].(string)
+		}
+		if h.Site == "" {
+			// Written before the site travelled, or by a client that sent none.
+			h.Site = SiteUnknown
+		}
+		return "", h, ErrBusy
 	}
-	return "", "", fmt.Errorf("locks/redis: unexpected acquire response %v", arr)
+	return "", Holder{}, fmt.Errorf("locks/redis: unexpected acquire response %v", arr)
 }
 
 // Release implements Backend.
