@@ -46,7 +46,7 @@ func TestReadPathSerializesAgainstConcurrentLockHolder(t *testing.T) {
 	key := locks.MailboxKey(username, "INBOX")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	held, err := clientB.Lock(ctx, key, "podB/0/"+username, 30*time.Second)
+	held, err := clientB.Lock(ctx, key, "podB/0/"+username+"/sess2", 30*time.Second)
 	if err != nil {
 		t.Fatalf("client B lock: %v", err)
 	}

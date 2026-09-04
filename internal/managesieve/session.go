@@ -14,6 +14,7 @@ import (
 	gosieve "github.com/foxcpp/go-sieve"
 
 	"github.com/yarilomail/yarilo/internal/sieve"
+	"github.com/yarilomail/yarilo/pkg/locks"
 )
 
 type session struct {
@@ -33,6 +34,11 @@ type session struct {
 
 func (s *session) serve(ctx context.Context) {
 	defer s.conn.Close()
+	// Every lock this session takes announces the session (#1672).
+	if s.sid == "" {
+		s.sid = locks.NewID()
+	}
+	ctx = locks.WithID(ctx, s.sid)
 
 	if err := writeCapabilities(s.w, sieve.EffectiveExtensions(s.allowedExtensions)); err != nil {
 		return

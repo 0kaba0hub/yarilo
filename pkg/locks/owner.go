@@ -1,6 +1,7 @@
 package locks
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -65,4 +68,69 @@ func reportMissingID(user string) string {
 	slog.Error("locks: lock owner built without a session id; announcing the process fallback",
 		"user", user, "caller", fmt.Sprintf("%s:%d", file, line), "id", anonID())
 	return anonID()
+}
+
+// ownerForm is what every acquisition must announce: proc/pid/user/id, the
+// string Owner builds.
+const ownerForm = "proc/pid/user/id"
+
+// CheckOwner is the guard on the boundary with the lock service. It returns the
+// owner to announce, repairing one that is not in Owner's form.
+//
+// The guard in Owner only ever watched callers who went through it; a caller
+// that built its own string bypassed both it and every audit that assumed
+// otherwise -- twice (#1670, #1672). Standing here instead, the check sees every
+// acquisition, whatever built the string, and a seventh spelling fails on its
+// first lock in the tests rather than in a window months later.
+func CheckOwner(owner string) string {
+	if ownerWellFormed(owner) {
+		return owner
+	}
+	_, file, line, _ := runtime.Caller(2)
+	if underTest() {
+		panic(fmt.Sprintf("locks: owner %q is not %s at %s:%d -- build it with locks.Owner (#1672)",
+			owner, ownerForm, file, line))
+	}
+	// The malformed string becomes the user segment rather than being dropped:
+	// held_by stays four-segment and still shows what the caller called itself.
+	repaired := fmt.Sprintf("%s/%d/%s/%s", procName(), os.Getpid(), owner, anonID())
+	slog.Error("locks: owner is not in the "+ownerForm+" form; announcing a repaired one",
+		"owner", owner, "caller", fmt.Sprintf("%s:%d", file, line), "announced", repaired)
+	return repaired
+}
+
+// ownerWellFormed reports whether owner is proc/pid/user/id with all four parts
+// present and the pid numeric.
+func ownerWellFormed(owner string) bool {
+	parts := strings.Split(owner, "/")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+	}
+	_, err := strconv.Atoi(parts[1])
+	return err == nil
+}
+
+// ctxIDKey carries the id of the work in flight -- a session, a delivery, a
+// request -- to a lock deep enough that passing it as an argument would mean
+// threading it through interfaces that have nothing to do with locking.
+type ctxIDKey struct{}
+
+// WithID returns a context carrying id as the lock identity of the work in it.
+func WithID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxIDKey{}, id)
+}
+
+// IDFrom returns the id WithID put in ctx, or "" -- which Owner then reports as
+// the defect it is, at the entry point that failed to set one.
+func IDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(ctxIDKey{}).(string)
+	return id
 }

@@ -52,3 +52,31 @@ func TestAnEmptyIDIsRejected(t *testing.T) {
 	}()
 	_ = Owner("u1@example.com", "")
 }
+
+// The boundary refuses an owner that did not come from Owner.
+//
+// The guard used to stand in Owner, which only ever saw callers who went
+// through it. sieve built "sieve:<pid>" by hand and reached the lock service
+// under it for as long as the code existed, past a sentinel and past two audits
+// that each declared themselves complete (#1672). Standing on the boundary, the
+// check sees every acquisition whatever built the string.
+func TestTheBoundaryRefusesAForeignOwnerSpelling(t *testing.T) {
+	for _, owner := range []string{
+		"sieve:7",                  // the spelling the field showed
+		"backendapi/folder.create", // an operation name, no user, no id
+		"proc/pid/user/id",         // four parts, but the pid is not a number
+		"yarilo-imap/7/u@x.com",    // the three-segment form
+	} {
+		func() {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("owner %q reached the lock service unchallenged", owner)
+				}
+			}()
+			_ = CheckOwner(owner)
+		}()
+	}
+	if got := CheckOwner(Owner("u@x.com", "sess1")); got == "" {
+		t.Error("a well-formed owner was not returned unchanged")
+	}
+}

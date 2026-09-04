@@ -279,6 +279,7 @@ func isTransport(err error) bool {
 
 // Lock implements Locker.
 func (c *Client) Lock(ctx context.Context, resource, owner string, ttl time.Duration) (Lock, error) {
+	owner = CheckOwner(owner)
 	ttlStr, err := formatTTL(ttl)
 	if err != nil {
 		return Lock{}, err
@@ -318,6 +319,7 @@ func (c *Client) Lock(ctx context.Context, resource, owner string, ttl time.Dura
 
 // LockShared implements Locker.
 func (c *Client) LockShared(ctx context.Context, resource, owner string, ttl time.Duration) (Lock, error) {
+	owner = CheckOwner(owner)
 	ttlStr, err := formatTTL(ttl)
 	if err != nil {
 		return Lock{}, err
@@ -566,6 +568,7 @@ func (c *Client) Close() error {
 // backoff (1ms → 100ms cap, small jitter) until ctx is cancelled or the lock is
 // taken. Returns the Lock on success, else the last underlying error.
 func Acquire(ctx context.Context, l Locker, resource, owner string, ttl time.Duration) (Lock, error) {
+	owner = CheckOwner(owner)
 	return acquireBlocking(ctx, resource, waitFailure, func() (Lock, error) {
 		return l.Lock(ctx, resource, owner, ttl)
 	})
@@ -578,6 +581,7 @@ func Acquire(ctx context.Context, l Locker, resource, owner string, ttl time.Dur
 // A cancelled wait comes back unwrapped here and wrapped in Acquire: the two
 // have always differed, and this is not the change that makes them agree.
 func AcquireShared(ctx context.Context, l Locker, resource, owner string, ttl time.Duration) (Lock, error) {
+	owner = CheckOwner(owner)
 	return acquireBlocking(ctx, resource, func(err error) error { return err }, func() (Lock, error) {
 		return l.LockShared(ctx, resource, owner, ttl)
 	})
@@ -639,6 +643,7 @@ func WithLock(ctx context.Context, l Locker, resource, owner string, ttl, renewE
 	if renewEvery <= 0 || renewEvery >= ttl {
 		return fmt.Errorf("locks/withlock: renewEvery %v must be in (0, ttl=%v)", renewEvery, ttl)
 	}
+	owner = CheckOwner(owner)
 	lock, err := l.Lock(ctx, resource, owner, ttl)
 	if err != nil {
 		return err
