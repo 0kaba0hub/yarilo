@@ -74,14 +74,9 @@ func reportMissingID(user string) string {
 // string Owner builds.
 const ownerForm = "proc/pid/user/id"
 
-// CheckOwner is the guard on the boundary with the lock service. It returns the
-// owner to announce, repairing one that is not in Owner's form.
-//
-// The guard in Owner only ever watched callers who went through it; a caller
-// that built its own string bypassed both it and every audit that assumed
-// otherwise -- twice (#1670, #1672). Standing here instead, the check sees every
-// acquisition, whatever built the string, and a seventh spelling fails on its
-// first lock in the tests rather than in a window months later.
+// CheckOwner guards the boundary with the lock service, returning the owner to
+// announce. It stands here, not in Owner, because a caller that builds its own
+// string never calls Owner (#1672).
 func CheckOwner(owner string) string {
 	if ownerWellFormed(owner) {
 		return owner
@@ -91,12 +86,21 @@ func CheckOwner(owner string) string {
 		panic(fmt.Sprintf("locks: owner %q is not %s at %s:%d -- build it with locks.Owner (#1672)",
 			owner, ownerForm, file, line))
 	}
-	// The malformed string becomes the user segment rather than being dropped:
-	// held_by stays four-segment and still shows what the caller called itself.
-	repaired := fmt.Sprintf("%s/%d/%s/%s", procName(), os.Getpid(), owner, anonID())
+	repaired := repairOwner(owner)
 	slog.Error("locks: owner is not in the "+ownerForm+" form; announcing a repaired one",
 		"owner", owner, "caller", fmt.Sprintf("%s:%d", file, line), "announced", repaired)
 	return repaired
+}
+
+// repairOwner puts a foreign string in the user segment rather than dropping it,
+// so held_by still shows what the caller called itself. Its separators become
+// colons: a reader splitting on "/" must find four fields whatever it carried.
+func repairOwner(owner string) string {
+	user := strings.ReplaceAll(owner, "/", ":")
+	if user == "" {
+		user = "unknown"
+	}
+	return fmt.Sprintf("%s/%d/%s/%s", procName(), os.Getpid(), user, anonID())
 }
 
 // ownerWellFormed reports whether owner is proc/pid/user/id with all four parts

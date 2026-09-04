@@ -66,9 +66,8 @@ func withSieveLock(ctx context.Context, l locks.Locker, username, resource strin
 	if l == nil {
 		return fn(ctx)
 	}
-	// The id comes from the context because the store's interface carries no
-	// place for one: managesieve puts its session there, delivery its
-	// connection's (#1672).
+	// The id rides the context: the store interface has no place for one, and
+	// managesieve and delivery both set it at their entry (#1672).
 	return locks.WithLock(ctx, l, resource, locks.Owner(username, locks.IDFrom(ctx)),
 		sieveLockTTL, sieveLockRenew, fn)
 }
