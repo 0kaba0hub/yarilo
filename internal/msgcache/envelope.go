@@ -27,13 +27,19 @@ import (
 // the set of open folders per process is small and bounded.
 var cachePathMu sync.Map // path -> *sync.Mutex
 
-func lockCachePath(path string) func() {
-	mu, _ := cachePathMu.LoadOrStore(path, &sync.Mutex{})
-	m, ok := mu.(*sync.Mutex)
+// shared takes the read side: without it, sharing the cross-process key buys
+// nothing for two sessions in one pod (#1673).
+func lockCachePath(path string, shared bool) func() {
+	mu, _ := cachePathMu.LoadOrStore(path, &sync.RWMutex{})
+	m, ok := mu.(*sync.RWMutex)
 	if !ok {
-		// Unreachable: this map only ever stores *sync.Mutex. Failing open
+		// Unreachable: this map only ever stores *sync.RWMutex. Failing open
 		// would silently drop the in-process tier, so fail loud instead.
 		panic("imap: cache mutex map holds a foreign type")
+	}
+	if shared {
+		m.RLock()
+		return m.RUnlock
 	}
 	m.Lock()
 	return m.Unlock
@@ -287,6 +293,18 @@ type Options struct {
 	// mailbox lock -- for as long as its transfer took. Every other session of
 	// that user on that folder waited (#1545).
 	DeferWrites bool
+
+	// Shared takes the mailbox key in shared mode, so readers of one folder do
+	// not refuse each other. A caller that changes flags must not set it; a
+	// step that writes the cache reopens exclusively (#1673).
+	Shared bool
+}
+
+// openExclusive retries a shared open that reached a step which writes. Once:
+// the second pass is not shared, so it cannot come back here.
+func openExclusive(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle {
+	opts.Shared = false
+	return Open(idx, folderID, opts)
 }
 
 // Open returns a handle on the folder's cache, or nil when none can be
@@ -319,11 +337,18 @@ func Open(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle {
 	// read-modify-write of the field table are only safe when nobody else
 	// is inside the pair. In-process mutex first, then the cross-process
 	// MailboxKey -- the same two tiers every shared write path uses.
-	fc.unlock = append(fc.unlock, lockCachePath(path))
+	fc.unlock = append(fc.unlock, lockCachePath(path, opts.Shared))
 	if lkr := opts.Locker; lkr != nil && opts.User != "" && opts.Folder != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-		lk, lerr := locks.Acquire(ctx, lkr, locks.MailboxKey(opts.User, opts.Folder),
-			locks.Owner(opts.User, opts.lockID()), 30*time.Second)
+		key := locks.MailboxKey(opts.User, opts.Folder)
+		owner := locks.Owner(opts.User, opts.lockID())
+		var lk locks.Lock
+		var lerr error
+		if opts.Shared {
+			lk, lerr = locks.AcquireShared(ctx, lkr, key, owner, 30*time.Second)
+		} else {
+			lk, lerr = locks.Acquire(ctx, lkr, key, owner, 30*time.Second)
+		}
 		cancel()
 		if lerr != nil {
 			slog.Debug("msgcache: cache lock unavailable; serving uncached", "trace_id", opts.TraceID, "err", lerr)
@@ -341,6 +366,12 @@ func Open(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle {
 	case err == nil:
 		fc.file = cf
 	case os.IsNotExist(err), errors.Is(err, mailindex.ErrCacheInvalid):
+		if opts.Shared {
+			// Creating or repairing the file is a write, and this handle holds
+			// the key in shared mode. Start again exclusively (#1673).
+			fc.release()
+			return openExclusive(idx, folderID, opts)
+		}
 		if errors.Is(err, mailindex.ErrCacheInvalid) {
 			// Garbage by definition -- but recreating under the SAME file_seq
 			// would leave the index's stamps pointing into a fresh file,
@@ -382,6 +413,12 @@ func Open(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle {
 	} {
 		id, ok := fc.file.FieldID(want.name)
 		if !ok {
+			if opts.Shared {
+				// AddFields is a read-modify-write of the in-file table.
+				fc.file.Close()
+				fc.release()
+				return openExclusive(idx, folderID, opts)
+			}
 			first, aerr := fc.file.AddFields([]mailindex.CacheField{{
 				Name: want.name, Type: mailindex.CacheFieldVariableSize, Decision: mailindex.CacheDecisionYes,
 			}})

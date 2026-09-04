@@ -3059,6 +3059,21 @@ func (s *session) substituteSearchRes(criteria *imaplib.SearchCriteria) *imaplib
 	return &clone
 }
 
+// setsSeen: RFC 3501 §6.4.5, BODY[] without .PEEK. It decides both the flag
+// write and the sharing, so the two cannot disagree (#1673).
+// openEnvCache is msgcache.Open behind a seam: the sharing decision is
+// otherwise reachable only through a live race (#1673).
+var openEnvCache = msgcache.Open
+
+func setsSeen(opts *imaplib.FetchOptions) bool {
+	for _, sec := range opts.BodySection {
+		if !sec.Peek {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *imaplib.FetchOptions) error {
 	slog.Debug("imap: command", "sid", s.sid, "cmd", "Fetch")
 	if s.folder == nil {
@@ -3138,15 +3153,8 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		}
 	}
 
-	// RFC 3501 §6.4.5 — BODY[] without .PEEK implicitly sets \Seen.
-	// Compute once per FETCH command (it's a property of the request, not each message).
-	markSeen := false
-	for _, sec := range opts.BodySection {
-		if !sec.Peek {
-			markSeen = true
-			break
-		}
-	}
+	// Once per command: it is a property of the request, not of each message.
+	markSeen := setsSeen(opts)
 	// The index cache serves the listing's hot path without opening message
 	// files (#1030): ENVELOPE and BODYSTRUCTURE alike, which is also what
 	// removes the SECOND open a FETCH (ENVELOPE BODYSTRUCTURE) used to pay.
@@ -3155,7 +3163,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 	// parsing, never to a client error.
 	var envCache *msgcache.Handle
 	if opts.Envelope || opts.BodyStructure != nil {
-		envCache = msgcache.Open(s.folderIdx(), s.folder.ID, msgcache.Options{
+		envCache = openEnvCache(s.folderIdx(), s.folder.ID, msgcache.Options{
 			Locker:    s.srv.opts.Locker,
 			User:      s.userInfo.Username,
 			SessionID: s.userInfo.SessionID,
@@ -3167,6 +3175,9 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			// folder (#1545). Deferred, they are held to read the file and
 			// again to write what was parsed, and not in between.
 			DeferWrites: true,
+			// A FETCH that does not set \Seen writes nothing the other
+			// sessions must be kept out of, so it shares the key (#1673).
+			Shared: !markSeen,
 		})
 		defer envCache.Close()
 	}
