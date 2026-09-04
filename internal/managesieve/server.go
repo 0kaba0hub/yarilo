@@ -104,8 +104,14 @@ func (srv *Server) handleConn(ctx context.Context, conn net.Conn) {
 
 	username := pc.Username
 	userInfo := srv.opts.Resolver.UserInfo(username, pc.Home)
+	// One id for the session, minted here when the proxy carried none, so the
+	// two log lines and every lock name the same session (#1672).
+	sid := pc.SessionID
+	if sid == "" {
+		sid = locks.NewID()
+	}
 
-	slog.Info("managesieve: session started", "user", username, "session", pc.SessionID)
+	slog.Info("managesieve: session started", "user", username, "session", sid)
 
 	maxSize := srv.opts.MaxScriptSize
 	if maxSize <= 0 {
@@ -125,8 +131,8 @@ func (srv *Server) handleConn(ctx context.Context, conn net.Conn) {
 		store:             sieve.NewScriptStore(srv.opts.ScriptsDriver, defaultName, srv.opts.Locker, srv.opts.ScriptsDict),
 		maxSize:           maxSize,
 		allowedExtensions: srv.opts.SieveExtensions,
-		sid:               pc.SessionID,
+		sid:               sid,
 	}
 	sess.serve(ctx)
-	slog.Info("managesieve: session ended", "sid", pc.SessionID, "user", username)
+	slog.Info("managesieve: session ended", "sid", sess.sid, "user", username)
 }

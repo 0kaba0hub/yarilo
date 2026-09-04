@@ -767,11 +767,14 @@ func (s *session) LMTPData(r io.Reader, status goSmtp.StatusCollector) error {
 					return s.serverMetadata(ctx, userInfo, rcptIdx, annotation)
 				},
 			}
-			result, ferr := s.opts.SieveEngine.Filter(context.Background(), fopts)
+			// Sieve takes this user's script and duplicate locks; they announce the
+			// delivery, not the process (#1672).
+			sieveCtx := locks.WithID(context.Background(), s.lockID)
+			result, ferr := s.opts.SieveEngine.Filter(sieveCtx, fopts)
 			if ferr != nil {
 				slog.Error("lmtp: sieve filter error, using implicit keep", "rcpt", rcpt, "err", ferr)
 			} else if result == nil {
-				if ierr := s.opts.SieveEngine.InitUser(context.Background(), username, userInfo.Home); ierr != nil {
+				if ierr := s.opts.SieveEngine.InitUser(sieveCtx, username, userInfo.Home); ierr != nil {
 					slog.Warn("lmtp: sieve init user", "user", username, "err", ierr)
 				}
 			} else if result.Reject != nil {

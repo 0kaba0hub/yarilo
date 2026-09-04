@@ -62,7 +62,7 @@ func TestBusyRetriesAreCountedInTheCaller(t *testing.T) {
 	before := counterValue(t, resource)
 
 	l := &busyThenFree{refusals: 2}
-	if _, err := Acquire(context.Background(), l, resource, "owner", time.Second); err != nil {
+	if _, err := Acquire(context.Background(), l, resource, "test.bin/1/alice@example.com/sess1", time.Second); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestAnUncontendedAcquisitionCountsNoRetry(t *testing.T) {
 	const resource = "idx:alice@example.com"
 	before := counterValue(t, resource)
 
-	if _, err := Acquire(context.Background(), &busyThenFree{}, resource, "owner", time.Second); err != nil {
+	if _, err := Acquire(context.Background(), &busyThenFree{}, resource, "test.bin/1/alice@example.com/sess1", time.Second); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
 

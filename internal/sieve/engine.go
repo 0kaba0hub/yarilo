@@ -547,7 +547,7 @@ func (e *Engine) dupTrackerBackend(username, homeDir string) interp.DuplicateTra
 		// handled by the shared fallback below
 	default: // "file" (and empty)
 		if homeDir != "" {
-			return NewFileDuplicateTracker(homeDir, e.cfg.DuplicateFile, e.locker)
+			return NewFileDuplicateTracker(username, homeDir, e.cfg.DuplicateFile, e.locker)
 		}
 	}
 	fresh := interp.NewMemoryDuplicateTracker()

@@ -53,7 +53,7 @@ func TestResolvingEveryFolderCostsOneRoundTrip(t *testing.T) {
 	for _, folders := range []int{1, 35, 200} {
 		t.Run(fmt.Sprintf("%d folders", folders), func(t *testing.T) {
 			lk := &countingLocker{}
-			store := New(t.TempDir(), "alice@example.com", "owner", lk,
+			store := New(t.TempDir(), "alice@example.com", "test.bin/1/alice@example.com/sess1", lk,
 				map[string]string{"Sent": `\Sent`, "Drafts": `\Drafts`})
 
 			attrs := store.Attrs()
@@ -77,7 +77,7 @@ func TestResolvingEveryFolderCostsOneRoundTrip(t *testing.T) {
 // wrong.
 func TestOneReadStillLayersOverridesOverDefaults(t *testing.T) {
 	lk := &countingLocker{}
-	store := New(t.TempDir(), "alice@example.com", "owner", lk,
+	store := New(t.TempDir(), "alice@example.com", "test.bin/1/alice@example.com/sess1", lk,
 		map[string]string{"Sent": `\Sent`, "Drafts": `\Drafts`})
 	if err := store.Set("Archive", `\Archive`); err != nil {
 		t.Fatalf("set: %v", err)
@@ -124,7 +124,7 @@ func TestUnreadableOverridesFallBackLoudly(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	defer slog.SetDefault(old)
 
-	store := New(t.TempDir(), "alice@example.com", "owner", failingLocker{},
+	store := New(t.TempDir(), "alice@example.com", "test.bin/1/alice@example.com/sess1", failingLocker{},
 		map[string]string{"Sent": `\Sent`})
 
 	attrs := store.Attrs()
