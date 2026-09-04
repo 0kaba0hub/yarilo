@@ -79,10 +79,8 @@ func sharedFolder(t *testing.T, lk locks.Locker) (mailbox.UserIndex, uint64) {
 	return idx, f.ID
 }
 
-// A reader opens the cache while another reader holds the folder (#1673).
-//
-// The holder is an independent client, not a second handle: a deferred handle
-// releases both tiers as soon as it has read, so two never overlap.
+// A reader opens while another reader holds the folder. The holder is an
+// independent client: a deferred handle releases too early to overlap (#1673).
 func TestAReaderOpensWhileAnotherReaderHoldsTheFolder(t *testing.T) {
 	newLocker := lockServer(t)
 	lockA, lockB := newLocker(), newLocker()
@@ -151,9 +149,8 @@ func TestAWriterStillExcludesAReader(t *testing.T) {
 	}
 }
 
-// Shared without DeferWrites is refused: storeField writes through a live
-// descriptor when the handle is not deferred, and a shared key excludes no
-// writer (#1673).
+// Shared without DeferWrites is refused: an undeferred handle writes through a
+// live descriptor, and a shared key excludes no writer (#1673).
 func TestSharedWithoutDeferredWritesIsRefused(t *testing.T) {
 	newLocker := lockServer(t)
 	lk := newLocker()

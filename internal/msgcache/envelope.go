@@ -295,9 +295,8 @@ type Options struct {
 	// that user on that folder waited (#1545).
 	DeferWrites bool
 
-	// Shared takes the mailbox key in shared mode, so readers of one folder do
-	// not refuse each other. Requires DeferWrites, and never for a caller that
-	// changes flags (#1673).
+	// Shared: readers of one folder do not refuse each other. Requires
+	// DeferWrites, and never for a caller that changes flags (#1673).
 	Shared bool
 }
 
