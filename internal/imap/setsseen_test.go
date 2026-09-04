@@ -6,10 +6,8 @@ import (
 	imaplib "github.com/emersion/go-imap/v2"
 )
 
-// What decides the \Seen write also decides whether the FETCH may share the
-// folder key, so it is asserted here rather than through either caller: a FETCH
-// that shares the key while setting a flag would let a reader run beside a
-// write (#1673).
+// What decides the \Seen write also decides the sharing, so it is asserted here
+// rather than through either caller (#1673).
 func TestSetsSeenDistinguishesPeek(t *testing.T) {
 	body := func(peek bool) *imaplib.FetchOptions {
 		return &imaplib.FetchOptions{

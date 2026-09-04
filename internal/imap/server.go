@@ -3059,12 +3059,12 @@ func (s *session) substituteSearchRes(criteria *imaplib.SearchCriteria) *imaplib
 	return &clone
 }
 
-// setsSeen: RFC 3501 §6.4.5, BODY[] without .PEEK. It decides both the flag
-// write and the sharing, so the two cannot disagree (#1673).
 // openEnvCache is msgcache.Open behind a seam: the sharing decision is
 // otherwise reachable only through a live race (#1673).
 var openEnvCache = msgcache.Open
 
+// setsSeen: RFC 3501 §6.4.5, BODY[] without .PEEK. It decides both the flag
+// write and the sharing, so the two cannot disagree (#1673).
 func setsSeen(opts *imaplib.FetchOptions) bool {
 	for _, sec := range opts.BodySection {
 		if !sec.Peek {

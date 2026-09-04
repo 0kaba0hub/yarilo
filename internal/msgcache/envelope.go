@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"flag"
 	"log/slog"
 	"os"
 	"strings"
@@ -295,8 +296,8 @@ type Options struct {
 	DeferWrites bool
 
 	// Shared takes the mailbox key in shared mode, so readers of one folder do
-	// not refuse each other. A caller that changes flags must not set it; a
-	// step that writes the cache reopens exclusively (#1673).
+	// not refuse each other. Requires DeferWrites, and never for a caller that
+	// changes flags (#1673).
 	Shared bool
 }
 
@@ -311,6 +312,15 @@ func openExclusive(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle
 // served -- a wrong pair, an unopenable file, a backend without a cache. The
 // caller parses as it would without one.
 func Open(idx mailbox.UserIndex, folderID uint64, opts Options) *Handle {
+	if opts.Shared && !opts.DeferWrites {
+		// storeField writes through a live descriptor when the handle is not
+		// deferred, and a shared key does not exclude the other writer (#1673).
+		if flag.Lookup("test.v") != nil {
+			panic("msgcache: Shared without DeferWrites writes the cache under a shared key (#1673)")
+		}
+		slog.Error("msgcache: Shared without DeferWrites; opening exclusively")
+		opts.Shared = false
+	}
 	ic, ok := idx.(Index)
 	if !ok {
 		return nil
@@ -463,8 +473,11 @@ func (fc *Handle) flush() {
 		return
 	}
 	r := fc.reopen
+	// The session travels: this window is the exclusive one every shared FETCH
+	// now pays, and held_by must name who holds it (#1670).
 	second := Open(r.idx, r.fid, Options{
-		Locker: r.opts.Locker, User: r.opts.User, Folder: r.opts.Folder, TraceID: r.opts.TraceID,
+		Locker: r.opts.Locker, User: r.opts.User, Folder: r.opts.Folder,
+		TraceID: r.opts.TraceID, SessionID: r.opts.SessionID,
 	})
 	if second == nil {
 		return

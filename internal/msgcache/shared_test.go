@@ -14,18 +14,21 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// lockServer starts a real lock service: shared and exclusive have to mean what
-// the service says they mean, and a recording double would only repeat this
-// test's own assumption back to it.
+// lockServer starts a real lock service: a recording double would only repeat
+// this test's own assumption about the modes back to it.
 func lockServer(t *testing.T) func() locks.Locker {
 	t.Helper()
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("", "yl-mc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "l.sock")
 	backend := locks.NewMemoryBackend(locks.WithSweepInterval(5 * time.Millisecond))
 	srv := locks.NewServer(backend, slog.New(slog.NewTextHandler(os.Stderr, nil)), nil)
-	ln, err := locks.ListenUnix(sock)
-	if err != nil {
-		t.Fatal(err)
+	ln, lerr := locks.ListenUnix(sock)
+	if lerr != nil {
+		t.Fatal(lerr)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -66,9 +69,8 @@ func sharedFolder(t *testing.T, lk locks.Locker) (mailbox.UserIndex, uint64) {
 	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1}); err != nil {
 		t.Fatal(err)
 	}
-	// Warm the cache file into existence: a shared open that has to create it
-	// reopens exclusively, and this test is about the warm path every FETCH
-	// after the first one takes.
+	// Warm the file into existence: a shared open that must create it reopens
+	// exclusively, and the warm path is what every later FETCH takes.
 	warm := Open(idx, f.ID, Options{Locker: lk, User: "u@example.com", SessionID: "warm", Folder: "INBOX"})
 	if warm == nil {
 		t.Fatal("no cache handle")
@@ -77,45 +79,45 @@ func sharedFolder(t *testing.T, lk locks.Locker) (mailbox.UserIndex, uint64) {
 	return idx, f.ID
 }
 
-// Two readers of one folder do not refuse each other.
+// A reader opens the cache while another reader holds the folder (#1673).
 //
-// A FETCH opened the cache with the mailbox key held exclusively, so two
-// sessions reading the same folder queued behind one another -- with holds of
-// 12 ms and waits reaching 46 s, because the loser of a draw simply draws again
-// (#1673). Reading takes the key shared now.
-func TestTwoReadersShareTheFolder(t *testing.T) {
+// The holder is an independent client, not a second handle: a deferred handle
+// releases both tiers as soon as it has read, so two never overlap.
+func TestAReaderOpensWhileAnotherReaderHoldsTheFolder(t *testing.T) {
 	newLocker := lockServer(t)
 	lockA, lockB := newLocker(), newLocker()
 	idx, fid := sharedFolder(t, lockA)
 
-	ro := Options{Locker: lockA, User: "u@example.com", SessionID: "one", Folder: "INBOX", Shared: true}
-	first := Open(idx, fid, ro)
-	if first == nil {
-		t.Fatal("no cache handle for the first reader")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	held, err := locks.AcquireShared(ctx, lockB, locks.MailboxKey("u@example.com", "INBOX"),
+		locks.Owner("u@example.com", "other-reader"), 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
 	}
-	defer first.Close()
+	defer lockB.Unlock(ctx, held.ID) //nolint:errcheck
 
-	second := make(chan *Handle, 1)
-	roB := ro
-	roB.Locker, roB.SessionID = lockB, "two"
-	go func() { second <- Open(idx, fid, roB) }()
+	opened := make(chan *Handle, 1)
+	go func() {
+		opened <- Open(idx, fid, Options{
+			Locker: lockA, User: "u@example.com", SessionID: "one", Folder: "INBOX",
+			Shared: true, DeferWrites: true,
+		})
+	}()
 	select {
-	case h := <-second:
+	case h := <-opened:
 		if h == nil {
-			t.Fatal("the second reader got no handle")
+			t.Fatal("the reader got no handle")
 		}
 		h.Close()
 	case <-time.After(3 * time.Second):
-		t.Fatal("a second reader waited on the first: the read path is holding the folder key " +
+		t.Fatal("a reader waited on another reader: the read path is taking the folder key " +
 			"exclusively, so concurrent FETCHes serialise")
 	}
 }
 
-// A FETCH that sets \Seen still excludes a reader.
-//
-// The sharing above must not reach the path that writes flags: BODY[] without
-// PEEK is a write, and a reader must not run beside it. Asserted from the other
-// direction so the change cannot be "share everything".
+// A FETCH that sets \Seen still excludes a reader: BODY[] without PEEK is a
+// write. Asserted from the other side so the change cannot be "share all".
 func TestAWriterStillExcludesAReader(t *testing.T) {
 	newLocker := lockServer(t)
 	lockA, lockB := newLocker(), newLocker()
@@ -128,7 +130,8 @@ func TestAWriterStillExcludesAReader(t *testing.T) {
 	reader := make(chan *Handle, 1)
 	go func() {
 		reader <- Open(idx, fid, Options{
-			Locker: lockB, User: "u@example.com", SessionID: "reader", Folder: "INBOX", Shared: true,
+			Locker: lockB, User: "u@example.com", SessionID: "reader", Folder: "INBOX",
+			Shared: true, DeferWrites: true,
 		})
 	}()
 	select {
@@ -145,5 +148,52 @@ func TestAWriterStillExcludesAReader(t *testing.T) {
 		h.Close()
 	case <-time.After(3 * time.Second):
 		t.Fatal("the reader never proceeded after the writer released")
+	}
+}
+
+// Shared without DeferWrites is refused: storeField writes through a live
+// descriptor when the handle is not deferred, and a shared key excludes no
+// writer (#1673).
+func TestSharedWithoutDeferredWritesIsRefused(t *testing.T) {
+	newLocker := lockServer(t)
+	lk := newLocker()
+	idx, fid := sharedFolder(t, lk)
+	defer func() {
+		if recover() == nil {
+			t.Error("Open accepted Shared without DeferWrites: the cache would be written under a shared key")
+		}
+	}()
+	_ = Open(idx, fid, Options{Locker: lk, User: "u@example.com", SessionID: "s", Folder: "INBOX", Shared: true})
+}
+
+// The in-process tier shares too: two sessions of one user usually share a pod,
+// and a mutex here serialises them before the service is asked (#1673).
+func TestTheInProcessTierSharesToo(t *testing.T) {
+	newLocker := lockServer(t)
+	lk := newLocker()
+	idx, fid := sharedFolder(t, lk)
+	path, err := idx.(Index).CachePath(fid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := lockCachePath(path, true) // another reader, mid-open
+	defer release()
+
+	opened := make(chan *Handle, 1)
+	go func() {
+		opened <- Open(idx, fid, Options{
+			Locker: lk, User: "u@example.com", SessionID: "one", Folder: "INBOX",
+			Shared: true, DeferWrites: true,
+		})
+	}()
+	select {
+	case h := <-opened:
+		if h == nil {
+			t.Fatal("the reader got no handle")
+		}
+		h.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("a reader waited on another reader inside one process: the cache path lock is " +
+			"exclusive, so two sessions in one pod serialise before the lock service is asked")
 	}
 }

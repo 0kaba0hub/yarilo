@@ -15,12 +15,8 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// A FETCH shares the folder key only when it writes no flag.
-//
-// The sharing itself is asserted against a real lock service in msgcache; what
-// is asserted here is the wiring, which is one line and otherwise reachable
-// only by racing two clients. A FETCH that sets \Seen and shares the key would
-// let a reader run beside a write (#1673).
+// A FETCH shares the folder key only when it writes no flag. The wiring is one
+// line, otherwise reachable only by racing two clients (#1673).
 func TestFetchSharesTheKeyOnlyWhenItWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	opts := imapserver.Options{
