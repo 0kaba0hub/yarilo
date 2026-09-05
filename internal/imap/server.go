@@ -2733,10 +2733,9 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 			seqNum--
 			continue
 		}
-		// Free storage before dropping the index record. Storage-first so a
-		// crash in the window leaves a dangling index record (reactive heal
-		// expunges it) rather than an unreclaimable orphan. Best-effort: on
-		// failure the index is still expunged, leak reclaimable by rebuild+purge.
+		// Index first: no reader may see a record whose file is already gone. A
+		// crash here leaves a file the next rebuild re-files with a new UID.
+		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		switch refs.fate(m.Filename) {
 		case bodyNameless:
 			slog.Warn("imap: expunge of a record with no filename; its body, if any, is left behind",
@@ -2746,11 +2745,10 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename)
 		case bodyFree:
 			if rerr := s.folderBox().Remove(s.folder.Name, m.Filename); rerr != nil {
-				slog.Warn("imap: expunge storage remove failed (index still expunged; leak reclaimable by rebuild+purge)",
+				slog.Warn("imap: expunge storage remove failed (the record is already gone; the file is an orphan until a rebuild)",
 					"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename, "err", rerr)
 			}
 		}
-		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		s.emitMailboxChangeSized(s.folder, locks.EventExpunged, m.UID, usageDelta(m))
 		s.statsExpunged++
 		expunge_count++
@@ -4117,10 +4115,11 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 	// Expunge source in descending seq order (RFC 6851 §3.3).
 	for i := len(hits) - 1; i >= 0; i-- {
 		h := hits[i]
+		// Index first, then storage, as the expunge loop does (#1690).
+		srcIdx.ExpungeMessage(s.folder.ID, h.srcUID) //nolint:errcheck
 		if !h.moved {
 			srcBox.Remove(s.folder.Name, h.filename) //nolint:errcheck
 		}
-		srcIdx.ExpungeMessage(s.folder.ID, h.srcUID) //nolint:errcheck
 		s.emitMailboxChangeSized(s.folder, locks.EventExpunged, h.srcUID, h.vsize)
 		if err := w.WriteExpunge(h.seqNum); err != nil {
 			return err

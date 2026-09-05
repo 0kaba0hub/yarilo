@@ -23,6 +23,11 @@ func (s *session) flagCorruptOnRead(idx mailbox.UserIndex, folderID uint64, fold
 	if !ok {
 		return
 	}
+	// Re-read the index: a record another session expunged between this
+	// session's snapshot and the read is not corruption (#1690).
+	if !s.recordStillThere(idx, folderID, uid) {
+		return
+	}
 	if s.markedCorrupt == nil {
 		s.markedCorrupt = make(map[uint64]bool)
 	}
@@ -39,6 +44,22 @@ func (s *session) flagCorruptOnRead(idx mailbox.UserIndex, folderID uint64, fold
 	s.markedCorrupt[folderID] = true
 	slog.Warn("imap: corrupt message flagged for reactive heal",
 		"user", s.username(), "folder", folder, "uid", uid, "file", filename, "err", err)
+}
+
+// recordStillThere reports whether the folder's index still carries uid. A read
+// error on a record another session has expunged is that expunge, not damage.
+func (s *session) recordStillThere(idx mailbox.UserIndex, folderID uint64, uid uint32) bool {
+	msgs, err := idx.GetMessages(folderID, mailbox.SeqSet{{From: uid, To: uid}})
+	if err != nil {
+		// Unknown: keep the old behaviour rather than swallow a real fault.
+		return true
+	}
+	for _, m := range msgs {
+		if m.UID == uid {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchSelected reads a message body from the selected folder, flagging the
