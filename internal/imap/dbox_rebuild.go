@@ -7,13 +7,9 @@ import (
 
 	"github.com/yarilomail/yarilo/internal/storage/idxrebuild"
 
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
-
-// maxHealAttempts bounds consecutive reactive-heal failures for one folder in
-// one session. Beyond it a continuous purge/altmove keeps aborting the scan;
-// stop auto-retrying (each retry costs a full storage scan) and log once.
-const maxHealAttempts = 3
 
 // flagCorruptOnRead persists the folder's FSCKD marker when a read failed on
 // missing/corrupt storage (never on a transient I/O error) so the next open
@@ -75,37 +71,26 @@ func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) 
 		// stale per-session flag so a fresh corruption re-flags this folder
 		// instead of being suppressed until the session ends.
 		delete(s.markedCorrupt, f.ID)
-		delete(s.healAttempts, f.ID)
 		return nil
 	}
 	rb, ok := mailbox.Driver(h.box).(mailbox.ReactiveHealer)
 	if !ok {
 		return nil
 	}
-	// Once a folder has failed to heal maxHealAttempts times this session,
-	// stop auto-retrying; the escalation was logged on the attempt that hit
-	// the bound.
-	if s.healAttempts[f.ID] >= maxHealAttempts {
+	expunged, err := rb.HealCorruptFolder(h.idx, f)
+	if errors.Is(err, mdbox.ErrHealDeferred) {
+		// Already failed at this storage generation: a reconnect is not new
+		// evidence, and each attempt costs a whole-storage scan (#1682).
+		slog.Debug("imap: dbox reactive heal deferred", "user", s.username(), "folder", rel)
 		return nil
 	}
-	expunged, err := rb.HealCorruptFolder(h.idx, f)
 	if err != nil {
-		if s.healAttempts == nil {
-			s.healAttempts = make(map[uint64]int)
-		}
-		s.healAttempts[f.ID]++
-		if s.healAttempts[f.ID] >= maxHealAttempts {
-			slog.Warn("imap: dbox reactive heal repeatedly aborted; stopping auto-retry this session — a purge/altmove is likely running, run an operator rebuild if it persists",
-				"user", s.username(), "folder", rel, "attempts", s.healAttempts[f.ID], "err", err)
-		} else {
-			slog.Warn("imap: dbox reactive heal failed", "user", s.username(), "folder", rel, "attempts", s.healAttempts[f.ID], "err", err)
-		}
+		slog.Warn("imap: dbox reactive heal failed", "user", s.username(), "folder", rel, "err", err)
 		return nil
 	}
 	// Marker cleared: drop the per-session mark so a later corruption re-flags
 	// the folder.
 	delete(s.markedCorrupt, f.ID)
-	delete(s.healAttempts, f.ID)
 	// Invalidate FTS documents for the expunged records; otherwise ghost
 	// documents linger until the next fts rescan.
 	for _, uid := range expunged {
