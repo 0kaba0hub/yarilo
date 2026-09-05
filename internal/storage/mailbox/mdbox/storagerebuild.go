@@ -57,6 +57,13 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool)
 	}
 
 	err = u.withMapLock(func() error {
+		// A frame at the size the file does not announce reads as corruption to
+		// the reference, and the rebuild is where it is rewritten (#1687).
+		fixed, nerr := u.normaliseStorageFrames()
+		if nerr != nil {
+			return nerr
+		}
+		stats.FilesNormalised = fixed
 		// Abort on an incomplete scan: a half-corrupt m.<N> or a transient I/O read
 		// is indistinguishable from "message gone", so expunging on it would delete
 		// live mail. The wrapped error names the bad file; move/repair it and re-run.
