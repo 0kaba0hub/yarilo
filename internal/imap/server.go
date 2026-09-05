@@ -2737,12 +2737,18 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 		// crash in the window leaves a dangling index record (reactive heal
 		// expunges it) rather than an unreclaimable orphan. Best-effort: on
 		// failure the index is still expunged, leak reclaimable by rebuild+purge.
-		if !refs.release(m.Filename) {
+		switch refs.fate(m.Filename) {
+		case bodyNameless:
+			slog.Warn("imap: expunge of a record with no filename; its body, if any, is left behind",
+				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID)
+		case bodyShared:
 			slog.Warn("imap: expunge kept the body, another record still points at it",
 				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename)
-		} else if rerr := s.folderBox().Remove(s.folder.Name, m.Filename); rerr != nil {
-			slog.Warn("imap: expunge storage remove failed (index still expunged; leak reclaimable by rebuild+purge)",
-				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename, "err", rerr)
+		case bodyFree:
+			if rerr := s.folderBox().Remove(s.folder.Name, m.Filename); rerr != nil {
+				slog.Warn("imap: expunge storage remove failed (index still expunged; leak reclaimable by rebuild+purge)",
+					"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename, "err", rerr)
+			}
 		}
 		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
 		s.emitMailboxChangeSized(s.folder, locks.EventExpunged, m.UID, usageDelta(m))
@@ -4343,13 +4349,30 @@ func newBodyRefs(msgs []*mailbox.MessageMeta) bodyRefs {
 	return r
 }
 
-// release drops one reference and reports whether the body can now be freed.
-func (r bodyRefs) release(filename string) bool {
+// bodyFate is what an expunge does with the record's body.
+type bodyFate int
+
+const (
+	// bodyNameless: the record carries no filename, so there is nothing to free
+	// and nothing referring to anything (#1693).
+	bodyNameless bodyFate = iota
+	// bodyShared: another record still names this file.
+	bodyShared
+	// bodyFree: this was the last record naming it.
+	bodyFree
+)
+
+// fate drops one reference and says what to do with the body. The three cases
+// were two before, and an empty name read as "another record points at it".
+func (r bodyRefs) fate(filename string) bodyFate {
 	if filename == "" {
-		return false
+		return bodyNameless
 	}
 	r[filename]--
-	return r[filename] <= 0
+	if r[filename] <= 0 {
+		return bodyFree
+	}
+	return bodyShared
 }
 
 func numSetContains(numSet imaplib.NumSet, seqNum uint32, uid imaplib.UID) bool {
