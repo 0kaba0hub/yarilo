@@ -45,7 +45,7 @@ func TestNormaliseTheFieldArtefact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rewrote {
+	if len(rewrote) == 0 {
 		t.Fatal("the artefact was left as it was")
 	}
 	after := framesAt(t, path)

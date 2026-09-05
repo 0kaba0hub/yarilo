@@ -990,18 +990,7 @@ func buildDboxMessageRecord(body []byte, guid [16]byte, origMailbox string, hdrS
 	now := uint32(time.Now().Unix())
 
 	var buf bytes.Buffer
-	// The reference message header: magic + 'N' + spaces, the 16-char hex
-	// size at 13..29, and LF as the LAST byte.
-	hdr := make([]byte, hdrSize)
-	for i := range hdr {
-		hdr[i] = ' '
-	}
-	hdr[0] = magicPreByte0
-	hdr[1] = magicPreByte1
-	hdr[2] = 'N'
-	copy(hdr[13:29], fmt.Sprintf("%016x", size))
-	hdr[hdrSize-1] = '\n'
-	buf.Write(hdr)
+	buf.Write(buildMessageHeader(size, hdrSize))
 	buf.Write(body)
 	// Metadata trailer.
 	buf.WriteString(magicPost)

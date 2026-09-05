@@ -57,9 +57,8 @@ func (u *userMailbox) RebuildStorage(idx mailbox.UserIndex, restoreOrphans bool)
 	}
 
 	err = u.withMapLock(func() error {
-		// Before the scan: a record framed at the size the file does not
-		// announce reads as corruption to the reference, so the rebuild is
-		// where it is rewritten (#1687).
+		// A frame at the size the file does not announce reads as corruption to
+		// the reference, and the rebuild is where it is rewritten (#1687).
 		fixed, nerr := u.normaliseStorageFrames()
 		if nerr != nil {
 			return nerr
