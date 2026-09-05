@@ -105,6 +105,7 @@ type StorageRebuildStats struct {
 	UnreferencedZeroref int    // present messages referenced by no folder; refcount reset to 0 for purge (NOT resurrected)
 	OrphansRestored     int    // unreferenced messages re-filed into their ORIG_MAILBOX (only when restoreOrphans is set)
 	RebuildCount        uint32 // new generation counter after the rebuild
+	FilesNormalised     int    // storage files rewritten to the header size they announce
 	// ExpungedUIDs maps folder name → UIDs dropped from that folder's index by
 	// the rebuild, so the operator caller can invalidate their FTS documents
 	// (otherwise ghost entries until the next rescan).
