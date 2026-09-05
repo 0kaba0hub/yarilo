@@ -148,6 +148,7 @@ type storageRebuildStats struct {
 	Expunged            int    `json:"expunged"`
 	UnreferencedZeroref int    `json:"unreferenced_zeroref"`
 	OrphansRestored     int    `json:"orphans_restored"`
+	FilesNormalised     int    `json:"files_normalised"`
 	RebuildCount        uint32 `json:"rebuild_count"`
 	DurationMs          int64  `json:"duration_ms"`
 	Note                string `json:"note"`
@@ -203,6 +204,7 @@ func (s *Server) handleStorageRebuild(w http.ResponseWriter, r *http.Request) {
 		FoldersRebuilt:      st.FoldersRebuilt,
 		Expunged:            st.Expunged,
 		UnreferencedZeroref: st.UnreferencedZeroref,
+		FilesNormalised:     st.FilesNormalised,
 		OrphansRestored:     st.OrphansRestored,
 		RebuildCount:        st.RebuildCount,
 		DurationMs:          time.Since(start).Milliseconds(),
