@@ -7,10 +7,8 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// The API answer carries every field the rebuild reports.
-//
-// FilesNormalised was added to the driver's stats and not to the response, so
-// an operator could not see whether a rebuild had rewritten anything (#1687).
+// The API answer carries every field the rebuild reports: FilesNormalised went
+// into the driver's stats and not into the response (#1687).
 func TestTheAPIAnswerCarriesEveryRebuildStat(t *testing.T) {
 	// ExpungedUIDs drives the FTS invalidation and is deliberately not in the
 	// answer: it is per-folder detail the caller does not act on.
