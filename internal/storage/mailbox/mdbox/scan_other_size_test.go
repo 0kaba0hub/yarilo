@@ -34,3 +34,22 @@ func TestScanStopsOnAHeaderNeitherSizeExplains(t *testing.T) {
 		t.Errorf("the scan failed for another reason: %v", err)
 	}
 }
+
+// The alt-tier scan reads it too: it is a second walker over the same bytes,
+// and a fix in one of the two is a fix in neither.
+func TestTheAltScanReadsARecordWrittenAtTheOtherSize(t *testing.T) {
+	recs, err := scanMFileForAlt(filepath.Join("testdata", "m.shortheader"))
+	if err != nil {
+		t.Fatalf("alt scan stopped on a record written at the other size: %v", err)
+	}
+	if len(recs) != 6 {
+		t.Errorf("alt scan read %d records, want 6", len(recs))
+	}
+}
+
+// And stops where the other one does.
+func TestTheAltScanStopsOnAHeaderNeitherSizeExplains(t *testing.T) {
+	if _, err := scanMFileForAlt(filepath.Join("testdata", "m.tornheader")); err == nil {
+		t.Fatal("the alt scan accepted a torn header")
+	}
+}
