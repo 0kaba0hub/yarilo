@@ -3,6 +3,7 @@ package mdbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -80,12 +81,12 @@ func healTestUser(t *testing.T) (*Backend, *userMailbox) {
 	return b, u
 }
 
-// A heal that failed is not attempted again until the generation moves: the
-// bound used to live in the session, so a reconnect reset it (#1682).
+// A heal that failed on unreadable bytes is not attempted again until the
+// generation moves: that bound used to live in the session (#1682).
 func TestASecondSessionDoesNotRepeatAFailedHeal(t *testing.T) {
 	healBarrier.Range(func(k, _ any) bool { healBarrier.Delete(k); return true })
 	b, first := healTestUser(t)
-	idx := &failingIndex{err: errors.New("scan incomplete")}
+	idx := &failingIndex{err: fmt.Errorf("%w: %w", ErrScanIncomplete, errScanCorrupt)}
 	f := &mailbox.Folder{ID: 7, Name: "INBOX", Fsckd: true}
 
 	if _, err := first.HealCorruptFolder(idx, f); err == nil {
@@ -228,30 +229,22 @@ func TestBothKeysAreAlwaysTakenMapFirst(t *testing.T) {
 	}
 }
 
-// A successful heal leaves no barrier behind: the next failure must be its own,
-// not a deferral against a failure that has already been repaired.
-func TestASuccessfulHealClearsTheBarrier(t *testing.T) {
+// A scan that a purge kept from finishing does not bar the next session: it says
+// nothing about the folder, and next time there may be no purge (#1682).
+func TestATransientAbortDoesNotBarTheNextSession(t *testing.T) {
 	healBarrier.Range(func(k, _ any) bool { healBarrier.Delete(k); return true })
-	_, u := healTestUser(t)
+	b, first := healTestUser(t)
+	idx := &failingIndex{err: fmt.Errorf("%w: %w", ErrScanIncomplete, errScanIO)}
 	f := &mailbox.Folder{ID: 7, Name: "INBOX", Fsckd: true}
-	if _, err := u.HealCorruptFolder(&failingIndex{err: errors.New("scan incomplete")}, f); err == nil {
+
+	if _, err := first.HealCorruptFolder(idx, f); err == nil {
 		t.Fatal("the first heal was expected to fail")
 	}
-	m, err := u.openMap()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := m.BumpRebuildCount(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := u.HealCorruptFolder(&failingIndex{}, f); err != nil {
-		t.Fatalf("the heal after a rebuild: %v", err)
-	}
-	// Same generation as that success: a failure now is this one's, and must be
-	// reported rather than deferred against the earlier, repaired one.
-	_, err = u.HealCorruptFolder(&failingIndex{err: errors.New("scan incomplete")}, f)
-	if errors.Is(err, ErrHealDeferred) {
-		t.Error("a heal after a successful one was deferred: the barrier outlives the " +
-			"failure it recorded")
+	second := b.OpenUser(&mailbox.UserInfo{
+		Username: first.username, Home: first.home, SessionID: "s2",
+	}).(*userMailbox)
+	if _, err := second.HealCorruptFolder(idx, f); errors.Is(err, ErrHealDeferred) {
+		t.Error("a transient abort barred the next session: a folder can then stay marked " +
+			"until something rebuilds, with nothing wrong with it")
 	}
 }

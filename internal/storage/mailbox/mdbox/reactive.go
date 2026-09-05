@@ -13,9 +13,8 @@ import (
 // storage generation, and nothing has rebuilt since.
 var ErrHealDeferred = errors.New("mdbox/heal: already failed at this rebuild count")
 
-// healBarrier remembers, per process, the storage generation at which a folder's
-// heal last failed: ours, not the reference's, and it expires when the
-// generation moves rather than waiting for an operator (#1682).
+// healBarrier holds, per process and per folder, the generation at which a heal
+// failed on unreadable bytes. Ours, not the reference's (#1682).
 var healBarrier sync.Map // string -> uint32
 
 func healBarrierKey(user string, folderID uint64) string {
@@ -32,8 +31,8 @@ var beforeHealScan func()
 // map refcount is not decremented here; the leak is reclaimed by the next
 // rebuild and purge.
 //
-// Lock order is map outer, folder inner, as delivery and RebuildStorage take
-// them: mdbox Scan walks the whole storage, not one folder (#1682).
+// Lock order: map outer, folder inner, as delivery takes them -- Scan walks the
+// whole storage, not one folder (#1682).
 func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.Folder) ([]uint32, error) {
 	var expunged []uint32
 	err := u.withMapLock(func() error {
@@ -42,8 +41,10 @@ func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.F
 			return gerr
 		}
 		key := healBarrierKey(u.username, folder.ID)
-		if last, ok := healBarrier.Load(key); ok && last.(uint32) == gen {
-			return ErrHealDeferred
+		if v, ok := healBarrier.Load(key); ok {
+			if last, ok := v.(uint32); ok && last == gen {
+				return ErrHealDeferred
+			}
 		}
 		return u.withMailboxLock(folder.Name, func() error {
 			if beforeHealScan != nil {
@@ -52,10 +53,13 @@ func (u *userMailbox) HealCorruptFolder(idx mailbox.UserIndex, folder *mailbox.F
 			var e error
 			expunged, e = idxrebuild.ExpungeMissing(u, idx, folder)
 			if e != nil {
-				healBarrier.Store(key, gen)
+				// Only unreadable bytes bar a retry: a scan a purge kept from
+				// finishing says nothing about the folder.
+				if errors.Is(e, errScanCorrupt) {
+					healBarrier.Store(key, gen)
+				}
 				return e
 			}
-			healBarrier.Delete(key)
 			if cm, ok := idx.(mailbox.CorruptionMarker); ok {
 				return cm.ClearFolderCorrupt(folder.ID)
 			}

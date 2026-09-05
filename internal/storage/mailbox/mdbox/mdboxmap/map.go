@@ -551,9 +551,8 @@ func (m *Map) RebuildCount() uint32 {
 	return m.rebuildCount
 }
 
-// RebuildCountUnderCallersLock re-reads the map and answers, for a caller that
-// already holds the cross-process map key: another pod's rebuild has to be
-// visible, and re-taking the key here would rely on re-entrancy.
+// RebuildCountUnderCallersLock re-reads the map for a caller already holding the
+// cross-process map key: another pod's rebuild has to be visible (#1682).
 func (m *Map) RebuildCountUnderCallersLock() (uint32, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
