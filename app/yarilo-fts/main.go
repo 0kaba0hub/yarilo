@@ -216,7 +216,7 @@ func lockMailbox(locker locks.Locker) func(user, folder string, fn func() error)
 		// one. Taking the mailbox key made every pass queue behind session
 		// mail-index writes it does not interact with (#1004).
 		key := locks.FTSKey(user, folder)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(locks.WithSite(context.Background(), "fts-index"), 30*time.Second)
 		defer cancel()
 		t0 := time.Now()
 		// One id per pass: "some fts" answers nothing an operator reading
