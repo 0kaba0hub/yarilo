@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -22,11 +23,9 @@ func (b *healBox) HealCorruptFolder(_ mailbox.UserIndex, _ *mailbox.Folder) ([]u
 	return b.expunged, b.err
 }
 
-// TestDboxHealRetryBound: when the heal keeps failing (a purge/altmove keeps the
-// scan incomplete), the session stops auto-retrying the folder after
-// maxHealAttempts, and a later clean open (marker cleared elsewhere) resets the
-// counter so a fresh corruption is healed again.
-func TestDboxHealRetryBound(t *testing.T) {
+// The session no longer bounds retries: that moved to the driver, where a
+// reconnect does not reset it (#1682).
+func TestTheSessionDoesNotBoundHealRetries(t *testing.T) {
 	const folderID = uint64(7)
 	box := &healBox{err: errors.New("scan incomplete")}
 	s := &session{
@@ -36,26 +35,30 @@ func TestDboxHealRetryBound(t *testing.T) {
 	h := &nsHandle{box: box}
 	fsckd := &mailbox.Folder{ID: folderID, Name: "INBOX", Fsckd: true}
 
-	// Many opens over a persistently-failing folder call the heal at most
-	// maxHealAttempts times, then stop.
-	for i := 0; i < maxHealAttempts+5; i++ {
+	for i := 0; i < 5; i++ {
 		s.dboxHealIfCorrupt(h, "INBOX", fsckd)
 	}
-	if box.calls != maxHealAttempts {
-		t.Fatalf("heal attempts = %d, want capped at %d", box.calls, maxHealAttempts)
+	if box.calls != 5 {
+		t.Fatalf("the driver was called %d times, want 5: the session is bounding "+
+			"retries again, and a reconnecting client resets that", box.calls)
 	}
+}
 
-	// The marker clearing elsewhere (folder now clean) resets the counter.
-	clean := &mailbox.Folder{ID: folderID, Name: "INBOX", Fsckd: false}
-	s.dboxHealIfCorrupt(h, "INBOX", clean)
-	if s.healAttempts[folderID] != 0 {
-		t.Fatalf("counter = %d after clean open, want reset to 0", s.healAttempts[folderID])
+// A deferred heal is not a failure: the driver says it did not attempt.
+func TestADeferredHealIsNotTreatedAsAFailure(t *testing.T) {
+	const folderID = uint64(7)
+	box := &healBox{err: mdbox.ErrHealDeferred}
+	s := &session{
+		srv:           &Server{opts: Options{DboxReactiveRebuild: true}},
+		markedCorrupt: map[uint64]bool{folderID: true},
 	}
-
-	// A fresh corruption is retried again from zero.
-	s.dboxHealIfCorrupt(h, "INBOX", fsckd)
-	if box.calls != maxHealAttempts+1 {
-		t.Fatalf("heal attempts = %d after reset, want %d", box.calls, maxHealAttempts+1)
+	h := &nsHandle{box: box}
+	fsckd := &mailbox.Folder{ID: folderID, Name: "INBOX", Fsckd: true}
+	if got := s.dboxHealIfCorrupt(h, "INBOX", fsckd); got != nil {
+		t.Error("a deferred heal returned a refreshed folder")
+	}
+	if !s.markedCorrupt[folderID] {
+		t.Error("a deferred heal cleared the session's mark: the folder is still corrupt")
 	}
 }
 

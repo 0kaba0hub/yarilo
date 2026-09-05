@@ -526,11 +526,6 @@ type session struct {
 	// by folder ID (stable across mark and clear sites, unlike the name).
 	markedCorrupt map[uint64]bool
 
-	// healAttempts counts consecutive reactive-heal failures per folder.
-	// After maxHealAttempts we stop auto-retrying (each attempt is a full
-	// storage scan) until the marker clears. Reset on a successful heal.
-	healAttempts map[uint64]int
-
 	// knownMsgs is the server's copy of the client's sequence→message state
 	// for the selected folder. Each entry records uid and modseq; the slice
 	// index+1 is the IMAP sequence number. Populated at SELECT, updated by

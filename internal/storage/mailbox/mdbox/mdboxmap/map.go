@@ -551,6 +551,17 @@ func (m *Map) RebuildCount() uint32 {
 	return m.rebuildCount
 }
 
+// RebuildCountUnderCallersLock re-reads the map for a caller already holding the
+// cross-process map key: another pod's rebuild has to be visible (#1682).
+func (m *Map) RebuildCountUnderCallersLock() (uint32, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.reloadLocked(); err != nil {
+		return 0, err
+	}
+	return m.rebuildCount, nil
+}
+
 // CreateTime returns the persisted creation stamp of fileID, known only for the
 // current append file. A file whose age cannot be proven is rotated by size
 // only, never by age.
