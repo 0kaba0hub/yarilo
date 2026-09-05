@@ -37,12 +37,12 @@ func (s *session) flagCorruptOnRead(idx mailbox.UserIndex, folderID uint64, fold
 		return
 	}
 	if merr := cm.MarkFolderCorrupt(folderID); merr != nil {
-		slog.Warn("imap: mark folder corrupt failed", "folder", folder, "err", merr)
+		slog.Warn("imap: mark folder corrupt failed", "user", s.username(), "folder", folder, "err", merr)
 		return
 	}
 	s.markedCorrupt[folderID] = true
 	slog.Warn("imap: corrupt message flagged for reactive heal",
-		"folder", folder, "uid", uid, "file", filename, "err", err)
+		"user", s.username(), "folder", folder, "uid", uid, "file", filename, "err", err)
 }
 
 // fetchSelected reads a message body from the selected folder, flagging the
@@ -96,9 +96,9 @@ func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) 
 		s.healAttempts[f.ID]++
 		if s.healAttempts[f.ID] >= maxHealAttempts {
 			slog.Warn("imap: dbox reactive heal repeatedly aborted; stopping auto-retry this session — a purge/altmove is likely running, run an operator rebuild if it persists",
-				"folder", rel, "attempts", s.healAttempts[f.ID], "err", err)
+				"user", s.username(), "folder", rel, "attempts", s.healAttempts[f.ID], "err", err)
 		} else {
-			slog.Warn("imap: dbox reactive heal failed", "folder", rel, "attempts", s.healAttempts[f.ID], "err", err)
+			slog.Warn("imap: dbox reactive heal failed", "user", s.username(), "folder", rel, "attempts", s.healAttempts[f.ID], "err", err)
 		}
 		return nil
 	}
@@ -111,10 +111,10 @@ func (s *session) dboxHealIfCorrupt(h *nsHandle, rel string, f *mailbox.Folder) 
 	for _, uid := range expunged {
 		s.ftsNotify(f, true, uid)
 	}
-	slog.Info("imap: dbox reactive heal", "folder", rel, "expunged", len(expunged))
+	slog.Info("imap: dbox reactive heal", "user", s.username(), "folder", rel, "expunged", len(expunged))
 	refreshed, err := h.idx.OpenFolder(rel, f.UIDValidity)
 	if err != nil {
-		slog.Warn("imap: reopen after heal failed", "folder", rel, "err", err)
+		slog.Warn("imap: reopen after heal failed", "user", s.username(), "folder", rel, "err", err)
 		return nil
 	}
 	return refreshed
@@ -160,18 +160,19 @@ func (s *session) dboxRestoreIfIndexLost(h *nsHandle, rel string, f *mailbox.Fol
 		return nil
 	}
 	slog.Warn("imap: folder index is missing and its messages are in storage; rebuilding from the files",
-		"folder", rel, "files", len(recs))
+		"user", s.username(), "folder", rel, "files", len(recs))
 	st, err := idxrebuild.RebuildFolder(h.box, h.idx, f)
 	if err != nil {
-		slog.Warn("imap: rebuild after index loss failed", "folder", rel, "err", err)
+		slog.Warn("imap: rebuild after index loss failed", "user", s.username(), "folder", rel, "err", err)
 		return nil
 	}
 	refreshed, err := h.idx.OpenFolder(rel, f.UIDValidity)
 	if err != nil {
-		slog.Warn("imap: reopen after rebuild failed", "folder", rel, "err", err)
+		slog.Warn("imap: reopen after rebuild failed", "user", s.username(), "folder", rel, "err", err)
 		return nil
 	}
 	slog.Info("imap: rebuilt a folder from storage after index loss",
-		"folder", rel, "messages", st.UIDsAssigned+st.UIDsPreserved, "uidvalidity", refreshed.UIDValidity)
+		"user", s.username(), "folder", rel,
+		"messages", st.UIDsAssigned+st.UIDsPreserved, "uidvalidity", refreshed.UIDValidity)
 	return refreshed
 }
