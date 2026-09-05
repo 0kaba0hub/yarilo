@@ -263,7 +263,14 @@ func scanMFileForAlt(path string) ([]physRecord, error) {
 			return nil, fmt.Errorf("read msg header @%d: %w", bodyStart, err)
 		}
 		if herr := checkMessageHeader(mh); herr != nil {
-			return nil, fmt.Errorf("@%d: %w", bodyStart, herr)
+			// Written at the other size, which the read path has recovered
+			// since #1526: one such record used to stop the scan for good.
+			recovered, rerr := readMessageHeaderAtOtherSize(f, int64(bodyStart), hdrSize)
+			if rerr != nil {
+				return nil, fmt.Errorf("@%d: %w", bodyStart, herr)
+			}
+			logOtherHeaderSize(f.Name(), bodyStart, hdrSize, len(recovered))
+			mh, hdrSize = recovered, len(recovered)
 		}
 		size, err := strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
 		if err != nil {
@@ -357,7 +364,12 @@ func (u *userMailbox) scanMFileAt(path string) ([]scanRecord, error) {
 			return out, scanReadErr(err, fmt.Sprintf("read msg header @%d", bodyStart))
 		}
 		if herr := checkMessageHeader(mh); herr != nil {
-			return out, fmt.Errorf("%w: @%d: %w", errScanCorrupt, bodyStart, herr)
+			recovered, rerr := readMessageHeaderAtOtherSize(f, int64(bodyStart), hdrSize)
+			if rerr != nil {
+				return out, fmt.Errorf("%w: @%d: %w", errScanCorrupt, bodyStart, herr)
+			}
+			logOtherHeaderSize(f.Name(), bodyStart, hdrSize, len(recovered))
+			mh, hdrSize = recovered, len(recovered)
 		}
 		size, err := strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
 		if err != nil {

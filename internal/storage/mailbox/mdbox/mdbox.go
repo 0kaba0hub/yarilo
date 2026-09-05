@@ -786,8 +786,7 @@ func readRecordHeader(f *os.File, offset uint32) (bodyOff int64, size uint64, er
 		if rerr != nil {
 			return 0, 0, err
 		}
-		slog.Warn("mdbox: record written at a header size the file does not announce; read at the other size",
-			"file", f.Name(), "offset", offset, "announced", hdrSize, "actual", len(recovered))
+		logOtherHeaderSize(f.Name(), offset, hdrSize, len(recovered))
 		mh, hdrSize = recovered, len(recovered)
 	}
 	size, err = strconv.ParseUint(strings.TrimSpace(string(mh[13:29])), 16, 64)
@@ -1193,4 +1192,11 @@ func randomGUID() [16]byte {
 	var g [16]byte
 	_, _ = rand.Read(g[:])
 	return g
+}
+
+// logOtherHeaderSize reports a record read at the size the file does not
+// announce: one line per record, so a file full of them reads as such.
+func logOtherHeaderSize(file string, offset uint32, announced, actual int) {
+	slog.Warn("mdbox: record written at a header size the file does not announce; read at the other size",
+		"file", file, "offset", offset, "announced", announced, "actual", actual)
 }

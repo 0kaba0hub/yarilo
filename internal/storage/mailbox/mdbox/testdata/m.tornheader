@@ -1,0 +1,105 @@
+2 M20 C6a75d346
+N          000000000000017eX XDelivered-To: u1@d00001.test
+Received: from jmap-fts-probe@test.invalid by mail-sb.seconddns.com with LMTP; Thu, 27 Aug 2026 13:01:55 +0000
+Message-ID: <sieve-smoke-1787835715538110316@test>
+Date: Thu, 27 Aug 2026 13:01:55 +0000
+From: <jmap-fts-probe@test.invalid>
+To: <u1@d00001.test>
+Subject: jmap fts smoke jfts538104529hit
+
+the jmap fts probe body jfts538104529hit end
+
+
+G9aa14356dd951e46352b67aa151bdccd
+R6a903543
+V17e
+BINBOX
+
+N          00000000000001e9  
+Subject: =?utf-8?q?caf=C3=A9?=
+From: "say \"hi\"" <sender@example.com>
+To: Team:alice@example.com,bob@example.com;, carol@example.com
+Date: Tue, 05 Aug 2026 09:30:00 +0200
+Message-Id: <smoke-header-forms@yarilo.invalid>
+List-Unsubscribe: <https://example.com/u/1>, <mailto:un@example.com>
+X-Spam-Status: No, score=-2.1 required=5.0
+Received: from a.example.com
+ by b.example.com;
+ Tue, 05 Aug 2026 09:29:00 +0200
+Received: from c.example.com by d.example.com
+
+smoke test body
+
+
+G1198b55ea473cacc5baa8ce67a0dcca0
+R6a903543
+V1e9
+BYariloSmoke
+
+N          0000000000000148
+Delivered-To: u1@d00001.test
+Received: from qa@test.invalid by mail-sb.seconddns.com with LMTP; Thu, 27 Aug 2026 20:17:06 +0000
+Message-ID: <efea4f517e56116d6829eccaebc85c38@mail-sb.seconddns.com>
+From: qa@test.invalid
+To: u1@d00001.test
+Subject: qa-name-1787861826
+Date: Mon, 01 Jan 2029 00:00:00 +0000
+
+no message-id
+
+
+G33b2a0ee11b7a418f91cd9e6ca3783a8
+R6a909b42
+V148
+BINBOX
+
+N          0000000000000148
+Delivered-To: u1@d00001.test
+Received: from qa@test.invalid by mail-sb.seconddns.com with LMTP; Thu, 27 Aug 2026 20:17:39 +0000
+Message-ID: <ae7ae32eb5412a7cd853ee22550f4dff@mail-sb.seconddns.com>
+From: qa@test.invalid
+To: u1@d00001.test
+Subject: qa-name-1787861859
+Date: Mon, 01 Jan 2029 00:00:00 +0000
+
+no message-id
+
+
+Gffac9b3be9650d6d8dd59372fa0f60f2
+R6a909b63
+V148
+BINBOX
+
+N          00000000000000f9
+Delivered-To: u1@d00001.test
+Received: from qa@test.invalid by mail-sb.seconddns.com with LMTP; Thu, 27 Aug 2026 20:18:57 +0000
+From: qa@test.invalid
+To: u1@d00001.test
+Subject: fresh-1787861937
+Message-ID: <fresh-1787861937@qa>
+
+hello body
+
+
+Gb9641b5128775f69fbd52ca7d100c395
+R6a909bb1
+Vf9
+BINBOX
+
+N          0000000000000148  
+Delivered-To: u1@d00001.test
+Received: from qa@test.invalid by mail-sb.seconddns.com with LMTP; Thu, 27 Aug 2026 20:53:59 +0000
+Message-ID: <b0ec24bd51058678a722a69ccad27598@mail-sb.seconddns.com>
+From: qa@test.invalid
+To: u1@d00001.test
+Subject: qa-name-1787864039
+Date: Mon, 01 Jan 2029 00:00:00 +0000
+
+no message-id
+
+
+Gd0614769a6a80febc12c6c712798fdf4
+R6a90a3e8
+V148
+BINBOX
+
