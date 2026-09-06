@@ -1175,19 +1175,26 @@ func loadNames(indexDir string) (map[uint32]string, map[uint32]uint32, error) {
 	return names, sizes, nil
 }
 
-// requireFilename guards the two places a record is created: no filename is a
-// message nobody can read. The record is kept anyway (#1693).
-func requireFilename(where, folder string, uid uint32, filename string) {
+// requireName reports whether the caller supplied one. On an update the answer
+// is refused rather than obeyed: erasing a name is the loss itself (#1693).
+func requireName(where, folder string, uid uint32, filename string) bool {
 	if filename != "" {
-		return
+		return true
 	}
-	_, file, line, _ := runtime.Caller(2)
+	report(where, folder, uid, "no filename", "the message would be unreadable")
+	return false
+}
+
+// report panics under test with the caller's file and line, and logs in
+// production. The stack carries the frames above it.
+func report(where, folder string, uid uint32, what, why string) {
+	_, file, line, _ := runtime.Caller(3)
 	if underTest() {
-		panic(fmt.Sprintf("fileindex: %s of uid %d in %q with no filename at %s:%d "+
-			"-- the message would be unreadable (#1693)", where, uid, folder, file, line))
+		panic(fmt.Sprintf("fileindex: %s of uid %d in %q with %s at %s:%d -- %s (#1693)",
+			where, uid, folder, what, file, line, why))
 	}
-	slog.Error("fileindex: record created with no filename; the message will not be readable",
-		"where", where, "folder", folder, "uid", uid,
+	slog.Error("fileindex: record written without what makes it readable",
+		"where", where, "folder", folder, "uid", uid, "missing", what,
 		"caller", fmt.Sprintf("%s:%d", file, line))
 }
 
