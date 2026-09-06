@@ -12,7 +12,7 @@ func starMsgs(uids ...uint32) ([]*mailbox.MessageMeta, map[uint32]uint32) {
 	msgs := make([]*mailbox.MessageMeta, 0, len(uids))
 	seq := make(map[uint32]uint32, len(uids))
 	for i, uid := range uids {
-		msgs = append(msgs, &mailbox.MessageMeta{UID: uid})
+		msgs = append(msgs, &mailbox.MessageMeta{UID: uid, Filename: "m"})
 		seq[uid] = uint32(i + 1)
 	}
 	return msgs, seq

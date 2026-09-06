@@ -21,7 +21,7 @@ func TestPurgeCacheIsANewGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for uid := uint32(1); uid <= 4; uid++ {
-		if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid}); err != nil {
+		if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, Filename: "m"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -131,7 +131,7 @@ func TestPurgeCacheReclaims(t *testing.T) {
 	}
 	const n = 50
 	for uid := uint32(1); uid <= n; uid++ {
-		if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid}); err != nil {
+		if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, Filename: "m"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -192,7 +192,7 @@ func TestPurgeCacheAbandonsTheGenerationOfAnUnreadableFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1}); err != nil {
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "m"}); err != nil {
 		t.Fatal(err)
 	}
 	indexID, resetID, _, err := ui.CachePairIdentity(f.ID)

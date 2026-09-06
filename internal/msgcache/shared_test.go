@@ -66,7 +66,7 @@ func sharedFolder(t *testing.T, lk locks.Locker) (mailbox.UserIndex, uint64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1}); err != nil {
+	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "m"}); err != nil {
 		t.Fatal(err)
 	}
 	// Warm the file into existence: a shared open that must create it reopens

@@ -23,7 +23,7 @@ func benchFolder(b *testing.B, n int) (mailbox.UserIndex, *mailbox.Folder, []*ma
 		b.Fatal("cache unavailable")
 	}
 	for uid := uint32(1); uid <= uint32(n); uid++ {
-		m := &mailbox.MessageMeta{UID: uid}
+		m := &mailbox.MessageMeta{UID: uid, Filename: "m"}
 		if err := idx.AppendMessage(f.ID, m); err != nil {
 			b.Fatal(err)
 		}

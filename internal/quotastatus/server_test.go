@@ -95,7 +95,7 @@ func startStorageServerOpts(t *testing.T, quotaRules []string, aliasD dict.Dict,
 			t.Fatalf("open INBOX for %s: %v", user, err)
 		}
 		if b > 0 {
-			if err := uidx.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, VSize: b, Size: b}); err != nil {
+			if err := uidx.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, VSize: b, Size: b, Filename: "m"}); err != nil {
 				t.Fatalf("append for %s: %v", user, err)
 			}
 		}

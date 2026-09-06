@@ -17,7 +17,7 @@ func TestCacheOffsetRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	for uid := uint32(1); uid <= 3; uid++ {
-		if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid}); err != nil {
+		if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, Filename: "m"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -79,10 +79,10 @@ func TestAppendNeverPersistsACacheOffset(t *testing.T) {
 		t.Fatal(err)
 	}
 	// As a naive copy of the source meta would carry it.
-	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, CacheOffset: 4096}); err != nil {
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, CacheOffset: 4096, Filename: "m"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ui.AllocateAndAppend(f.ID, &mailbox.MessageMeta{CacheOffset: 8192}); err != nil {
+	if err := ui.AllocateAndAppend(f.ID, &mailbox.MessageMeta{CacheOffset: 8192, Filename: "m"}); err != nil {
 		t.Fatal(err)
 	}
 	msgs, err := ui.GetMessages(f.ID, nil)
@@ -120,7 +120,7 @@ func TestEnsureCacheExtensionOnAnIndexThatPredatesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1}); err != nil {
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "m"}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -15,7 +15,7 @@ import (
 // so the guard on the helper they call did not cover them (#1184).
 func TestFolderCacheNilReceiverIsTheAbsentCache(t *testing.T) {
 	var fc *Handle
-	m := &mailbox.MessageMeta{UID: 1, CacheOffset: 4096}
+	m := &mailbox.MessageMeta{UID: 1, CacheOffset: 4096, Filename: "m"}
 
 	t.Run("envelope", func(t *testing.T) {
 		if got := fc.Envelope(m); got != nil {
@@ -97,7 +97,7 @@ func TestOpenFolderCacheAddsTheExtensionToAnOlderIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := real.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1}); err != nil {
+	if err := real.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "m"}); err != nil {
 		t.Fatal(err)
 	}
 	idx := &olderIndex{UserIndex: real}

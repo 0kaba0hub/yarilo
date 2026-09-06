@@ -104,7 +104,10 @@ func (u *userIndex) openFolder(folder string, uidValidity uint32, traceID string
 		return nil, err
 	}
 
-	names, sizes := loadNames(indexDir)
+	names, sizes, namesErr := loadNames(indexDir)
+	if namesErr != nil {
+		return nil, namesErr
+	}
 	fs := &folderState{
 		folder:      folder,
 		indexDir:    indexDir,
@@ -824,7 +827,13 @@ func (fs *folderState) reloadLocked() error {
 		if err := fs.refreshExtState(); err != nil {
 			return err
 		}
-		fs.filenames, fs.sizes = loadNames(fs.indexDir)
+		names, sizes, nerr := loadNames(fs.indexDir)
+		if nerr != nil {
+			// A partial map becomes a truncated sidecar at the next wholesale
+			// flush, so refuse the reload instead (#1693).
+			return nerr
+		}
+		fs.filenames, fs.sizes = names, sizes
 		fs.baseMod = newBaseMod
 		fs.baseIdent = baseStat
 		fs.lineage = readLineage(mf)
@@ -1127,6 +1136,7 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 	if rec.Flags&mailindex.FlagDeleted != 0 {
 		fs.file.Header.DeletedMessagesCount++
 	}
+	requireFilename("append", fs.folder, m.UID, m.Filename)
 	if m.Filename != "" {
 		fs.filenames[m.UID] = m.Filename
 	}
@@ -1716,6 +1726,7 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 			if rec.Flags&mailindex.FlagDeleted != 0 {
 				fs.file.Header.DeletedMessagesCount++
 			}
+			requireFilename("reset", fs.folder, m.UID, m.Filename)
 			if m.Filename != "" {
 				fs.filenames[m.UID] = m.Filename
 			}
@@ -2485,7 +2496,11 @@ func (fs *folderState) applyLogFrom(lg *logReader, fromOffset int64) (int64, err
 	}
 
 	if appendedMsgs {
-		fs.filenames, fs.sizes = loadNames(fs.indexDir)
+		names, sizes, nerr := loadNames(fs.indexDir)
+		if nerr != nil {
+			return committedEnd, nerr
+		}
+		fs.filenames, fs.sizes = names, sizes
 	}
 
 	if maxModseq > 0 {

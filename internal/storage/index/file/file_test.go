@@ -86,7 +86,7 @@ func TestDeleteFolderRemovesIndexDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFolder: %v", err)
 	}
-	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}}) //nolint:errcheck
+	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}, Filename: "m"}) //nolint:errcheck
 
 	fdir := b.indexDir("Sent")
 	if _, err := os.Stat(fdir); err != nil {
@@ -115,7 +115,7 @@ func TestDeleteFolderReclaimsDboxShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFolder: %v", err)
 	}
-	ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1}) //nolint:errcheck
+	ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "m"}) //nolint:errcheck
 
 	folderDir := filepath.Dir(ui.indexDir("Sent")) // mailboxes/Sent (strip dbox-Mails)
 	if _, err := os.Stat(folderDir); err != nil {
@@ -137,7 +137,7 @@ func TestLogReplay(t *testing.T) {
 	// Append 3 messages, flag-update one, expunge one.
 	for i := uint32(1); i <= 3; i++ {
 		modseq, _ := b.NextModSeq(f.ID)
-		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, Flags: []string{`\Seen`}, ModSeq: modseq}) //nolint:errcheck
+		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, Flags: []string{`\Seen`}, ModSeq: modseq, Filename: "m"}) //nolint:errcheck
 	}
 	b.UpdateFlags(f.ID, 2, []string{`\Seen`, `\Flagged`}, nil) //nolint:errcheck
 	b.ExpungeMessage(f.ID, 3)                                  //nolint:errcheck
@@ -187,7 +187,8 @@ func TestLogReplay_Keywords(t *testing.T) {
 	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	modseq, _ := b.NextModSeq(f.ID)
-	b.AppendMessage(f.ID, &mailbox.MessageMeta{ //nolint:errcheck
+	b.AppendMessage(f.ID, &mailbox.MessageMeta{
+		Filename: "m", //nolint:errcheck
 		UID:      1,
 		Flags:    []string{`\Seen`},
 		Keywords: []string{"$Forwarded"},
@@ -247,7 +248,7 @@ func TestAppendAndGetMessages(t *testing.T) {
 
 	for i := uint32(1); i <= 5; i++ {
 		modseq, _ := b.NextModSeq(f.ID)
-		m := &mailbox.MessageMeta{UID: i, Flags: []string{`\Seen`}, ModSeq: modseq}
+		m := &mailbox.MessageMeta{UID: i, Flags: []string{`\Seen`}, ModSeq: modseq, Filename: "m"}
 		if err := b.AppendMessage(f.ID, m); err != nil {
 			t.Fatalf("AppendMessage uid=%d: %v", i, err)
 		}
@@ -268,7 +269,7 @@ func TestUpdateFlags(t *testing.T) {
 	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	modseq, _ := b.NextModSeq(f.ID)
-	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}, ModSeq: modseq}) //nolint:errcheck
+	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}, ModSeq: modseq, Filename: "m"}) //nolint:errcheck
 
 	if err := b.UpdateFlags(f.ID, 1, []string{`\Seen`, `\Flagged`}, nil); err != nil {
 		t.Fatal(err)
@@ -296,7 +297,7 @@ func TestExpungeMessage(t *testing.T) {
 	f, _ := b.OpenFolder("INBOX", 1, "")
 
 	for i := uint32(1); i <= 3; i++ {
-		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, Flags: []string{`\Deleted`}}) //nolint:errcheck
+		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, Flags: []string{`\Deleted`}, Filename: "m"}) //nolint:errcheck
 	}
 	if err := b.ExpungeMessage(f.ID, 2); err != nil {
 		t.Fatal(err)
@@ -341,7 +342,7 @@ func TestKeywordsRoundTrip(t *testing.T) {
 
 	modseq, _ := b.NextModSeq(f.ID)
 	err := b.AppendMessage(f.ID, &mailbox.MessageMeta{
-		UID:      1,
+		Filename: "m", UID: 1,
 		Flags:    []string{`\Seen`},
 		Keywords: []string{"$Forwarded", "$Junk"},
 		ModSeq:   modseq,
@@ -387,7 +388,7 @@ func TestKeywordsUpdateFlags(t *testing.T) {
 	b := openIdx(t.TempDir(), testUser)
 	f, _ := b.OpenFolder("INBOX", 1, "")
 
-	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}}) //nolint:errcheck
+	b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Seen`}, Filename: "m"}) //nolint:errcheck
 
 	if err := b.UpdateFlags(f.ID, 1, []string{`\Seen`}, []string{"$NotJunk"}); err != nil {
 		t.Fatal(err)
@@ -461,7 +462,7 @@ func TestNextModSeqIsMonotonic(t *testing.T) {
 		if err != nil {
 			t.Fatalf("AllocateUID #%d: %v", i, err)
 		}
-		if err := b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}}); err != nil {
+		if err := b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}, Filename: "m"}); err != nil {
 			t.Fatalf("AppendMessage #%d: %v", i, err)
 		}
 		uids[i] = uid
@@ -523,7 +524,7 @@ func TestAppendAdvancesHighestModSeqForCrossHandleReader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AllocateUID: %v", err)
 	}
-	if err := writer.AppendMessage(wf.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}}); err != nil {
+	if err := writer.AppendMessage(wf.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}, Filename: "m"}); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -568,7 +569,7 @@ func TestExpungeAdvancesHighestModSeqForCrossHandleReader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AllocateUID: %v", err)
 	}
-	if err := writer.AppendMessage(wf.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}}); err != nil {
+	if err := writer.AppendMessage(wf.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}, Filename: "m"}); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 	// The expunge bumps the modseq strictly past the append's.
@@ -598,7 +599,7 @@ func TestUpdateFlagsPersistsModSeqBump(t *testing.T) {
 
 	ms, _ := b.NextModSeq(f.ID)
 	uid, _ := b.AllocateUID(f.ID)
-	_ = b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}})
+	_ = b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}, Filename: "m"})
 
 	if err := b.UpdateFlags(f.ID, uid, []string{`\Seen`}, nil); err != nil {
 		t.Fatalf("UpdateFlags: %v", err)
@@ -624,7 +625,7 @@ func TestExpungePersistsModSeqBump(t *testing.T) {
 
 	ms, _ := b.NextModSeq(f.ID)
 	uid, _ := b.AllocateUID(f.ID)
-	_ = b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}})
+	_ = b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: uid, ModSeq: ms, Flags: []string{}, Filename: "m"})
 	beforeHeader, _ := b.OpenFolder("INBOX", 1, "")
 
 	if err := b.ExpungeMessage(f.ID, uid); err != nil {
@@ -683,7 +684,7 @@ func TestSaveFolderDoesNotCorruptMessagesCount(t *testing.T) {
 	// Append 5 messages.
 	for i := uint32(1); i <= 5; i++ {
 		modseq, _ := b.NextModSeq(f.ID)
-		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, ModSeq: modseq}) //nolint:errcheck
+		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, ModSeq: modseq, Filename: "m"}) //nolint:errcheck
 	}
 
 	// Simulate what the IMAP MOVE handler used to do: set the Folder counter
@@ -724,7 +725,7 @@ func TestApplyLogRecountsAfterCorruptedHeaderUpdate(t *testing.T) {
 	// Append 3 messages and expunge 1.
 	for i := uint32(1); i <= 3; i++ {
 		modseq, _ := b.NextModSeq(f.ID)
-		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, ModSeq: modseq}) //nolint:errcheck
+		b.AppendMessage(f.ID, &mailbox.MessageMeta{UID: i, ModSeq: modseq, Filename: "m"}) //nolint:errcheck
 	}
 	b.ExpungeMessage(f.ID, 2) //nolint:errcheck
 
@@ -736,8 +737,8 @@ func TestApplyLogRecountsAfterCorruptedHeaderUpdate(t *testing.T) {
 	b2 := openIdx(dir, testUser)
 	f2, _ := b2.OpenFolder("INBOX", 1, "")
 	modseq, _ := b2.NextModSeq(f2.ID)
-	b2.AppendMessage(f2.ID, &mailbox.MessageMeta{UID: 4, ModSeq: modseq}) //nolint:errcheck
-	b2.Close()                                                            //nolint:errcheck
+	b2.AppendMessage(f2.ID, &mailbox.MessageMeta{UID: 4, ModSeq: modseq, Filename: "m"}) //nolint:errcheck
+	b2.Close()                                                                           //nolint:errcheck
 
 	// Third open: MessagesCount must equal actual record count (2 surviving + 1 new = 3).
 	b3 := openIdx(dir, testUser)
