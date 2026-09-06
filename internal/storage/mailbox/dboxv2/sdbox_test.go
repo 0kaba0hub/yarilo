@@ -54,12 +54,9 @@ func TestSaveFetchRoundTrip(t *testing.T) {
 	_, mb, home := newTestUser(t)
 	body := "From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\nbody bytes\r\n"
 
-	name, _, _, err := mb.Save("INBOX", strings.NewReader(body), 7, int64(len(body)), nil, [16]byte{})
-	if err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	if !strings.HasPrefix(name, "u.") {
-		t.Errorf("final name = %q, want u.<guid> prefix", name)
+	name, _ := saveNamed(t, mb, "INBOX", body, 7, [16]byte{})
+	if name != "u.7" {
+		t.Errorf("final name = %q, want u.7", name)
 	}
 	finalPath := filepath.Join(home, "sdbox", "mailboxes", "INBOX", "dbox-Mails", name)
 	if _, err := os.Stat(finalPath); err != nil {
@@ -90,10 +87,7 @@ func TestSaveFetchRoundTrip(t *testing.T) {
 func TestSaveCRLFNormalisation(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	lf := "line one\nline two\n"
-	name, vsize, _, err := mb.Save("INBOX", strings.NewReader(lf), 1, int64(len(lf)), nil, [16]byte{})
-	if err != nil {
-		t.Fatalf("save: %v", err)
-	}
+	name, vsize := saveNamed(t, mb, "INBOX", lf, 1, [16]byte{})
 	// Save must return the virtual (CRLF) size so the index records it and
 	// RFC822.SIZE stays stable: 18 physical bytes + 2 bare LFs = 20 (#892).
 	if wantV := uint32(len(lf) + 2); vsize != wantV {
@@ -116,10 +110,7 @@ func TestSaveCRLFNormalisation(t *testing.T) {
 
 func TestCopyHardlinks(t *testing.T) {
 	_, mb, home := newTestUser(t)
-	src, _, _, err := mb.Save("INBOX", strings.NewReader("payload"), 3, 7, nil, [16]byte{})
-	if err != nil {
-		t.Fatalf("save: %v", err)
-	}
+	src, _ := saveNamed(t, mb, "INBOX", "payload", 3, [16]byte{})
 	if err := mb.Create("Sent"); err != nil {
 		t.Fatalf("create dest folder: %v", err)
 	}
@@ -154,9 +145,7 @@ func TestRemoveIdempotent(t *testing.T) {
 func TestListAndFolderOps(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	for _, uid := range []uint32{1, 2, 3} {
-		if _, _, _, err := mb.Save("INBOX", strings.NewReader("msg"), uid, 3, nil, [16]byte{}); err != nil {
-			t.Fatalf("save uid=%d: %v", uid, err)
-		}
+		saveNamed(t, mb, "INBOX", "msg", uid, [16]byte{})
 	}
 	msgs, err := mb.List("INBOX")
 	if err != nil {
@@ -167,7 +156,7 @@ func TestListAndFolderOps(t *testing.T) {
 	}
 	for _, m := range msgs {
 		if !strings.HasPrefix(m.Filename, "u.") {
-			t.Errorf("unexpected filename %q, want u.<guid> prefix", m.Filename)
+			t.Errorf("unexpected filename %q, want u.<uid>", m.Filename)
 		}
 	}
 
@@ -232,13 +221,7 @@ func TestDeleteRemovesFolderDir(t *testing.T) {
 func TestScanRecoversGUIDAndSize(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	body := "hello world"
-	name, _, _, err := mb.Save("INBOX", strings.NewReader(body), 42, int64(len(body)), nil, [16]byte{})
-	if err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	if !strings.HasPrefix(name, "u.") {
-		t.Errorf("save name = %q, want u.<guid> prefix", name)
-	}
+	saveNamed(t, mb, "INBOX", body, 42, [16]byte{})
 
 	recs, err := mb.Scan("INBOX")
 	if err != nil {
@@ -248,8 +231,8 @@ func TestScanRecoversGUIDAndSize(t *testing.T) {
 		t.Fatalf("got %d records, want 1", len(recs))
 	}
 	r := recs[0]
-	if !strings.HasPrefix(r.Filename, "u.") {
-		t.Errorf("filename = %q, want u.<guid> prefix", r.Filename)
+	if r.Filename != "u.42" {
+		t.Errorf("filename = %q, want u.42", r.Filename)
 	}
 	var zero [16]byte
 	if r.GUID == zero {
@@ -305,9 +288,13 @@ func TestSaveGUIDAndMovePreservesIt(t *testing.T) {
 	for i := range want {
 		want[i] = byte(i + 1)
 	}
-	name, _, got, err := mb.Save("INBOX", strings.NewReader("body\r\n"), 1, 6, nil, want)
+	temp, _, got, err := mb.Save("INBOX", strings.NewReader("body\r\n"), 0, 6, nil, want)
 	if err != nil {
 		t.Fatalf("save: %v", err)
+	}
+	name, err := mb.(mailbox.UIDNamer).AssignUID("INBOX", temp, 1)
+	if err != nil {
+		t.Fatalf("assign: %v", err)
 	}
 	if got != want {
 		t.Fatalf("Save guid = %x, want %x", got, want)
@@ -348,10 +335,7 @@ func TestSaveGUIDAndMovePreservesIt(t *testing.T) {
 func TestScanReportsNoFlagsOrKeywords(t *testing.T) {
 	_, mb, _ := newTestUser(t)
 	body := "hello world"
-	if _, _, _, err := mb.Save("INBOX", strings.NewReader(body), 7, int64(len(body)),
-		[]string{`\Seen`}, [16]byte{}); err != nil {
-		t.Fatalf("save: %v", err)
-	}
+	saveNamed(t, mb, "INBOX", body, 1, [16]byte{})
 	recs, err := mb.Scan("INBOX")
 	if err != nil {
 		t.Fatalf("scan: %v", err)

@@ -27,9 +27,15 @@ func sdboxWithMail(t *testing.T, n int) (*mailbox.UserInfo, mailbox.UserMailbox,
 	}
 	for i := 0; i < n; i++ {
 		body := "From: a@b\r\nSubject: s\r\n\r\nbody\r\n"
-		name, _, _, serr := box.Save("INBOX", strings.NewReader(body), uint32(i+1), int64(len(body)), nil, [16]byte{})
+		temp, _, _, serr := box.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{})
 		if serr != nil {
 			t.Fatal(serr)
+		}
+		name := temp
+		if namer, ok := mailbox.Driver(box).(mailbox.UIDNamer); ok {
+			if name, serr = namer.AssignUID("INBOX", temp, uint32(i+1)); serr != nil {
+				t.Fatal(serr)
+			}
 		}
 		if aerr := idx.AllocateAndAppend(f.ID, &mailbox.MessageMeta{Filename: name}); aerr != nil {
 			t.Fatal(aerr)

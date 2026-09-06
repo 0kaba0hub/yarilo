@@ -60,6 +60,22 @@ type UIDSpaceAdopter interface {
 	AdoptUIDSpace(folderID uint64, uidValidity, nextUID uint32) error
 }
 
+// UIDNamer is a driver whose file name is the uid: the name cannot be settled
+// until the uid is, so a save leaves a temp file and this renames it.
+type UIDNamer interface {
+	// AssignUID renames the file a save left under tempName to the name uid
+	// gives it, and returns that name. Called inside the caller's own cycle.
+	AssignUID(folder, tempName string, uid uint32) (string, error)
+}
+
+// NamingAppender allocates a uid and settles the message's name in one cycle:
+// two cycles would take the folder key twice for one APPEND.
+type NamingAppender interface {
+	// AllocateAndAppendNamed assigns the uid, calls name with it, records the
+	// answer as the message's filename, and appends -- all under one hold.
+	AllocateAndAppendNamed(folderID uint64, m *MessageMeta, name func(uid uint32) (string, error)) error
+}
+
 type CorruptionMarker interface {
 	// MarkFolderCorrupt sets the marker. Idempotent.
 	MarkFolderCorrupt(folderID uint64) error

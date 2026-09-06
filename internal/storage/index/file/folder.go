@@ -1060,6 +1060,13 @@ func (u *userIndex) AllocateUIDWithModSeq(folderID uint64) (uint32, uint64, erro
 }
 
 func (u *userIndex) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) error {
+	return u.AllocateAndAppendNamed(folderID, m, nil)
+}
+
+// AllocateAndAppendNamed settles the name inside the cycle that hands out the
+// uid: a driver named by uid cannot know it any earlier, and a second cycle
+// would take the folder key twice for one APPEND (#1704).
+func (u *userIndex) AllocateAndAppendNamed(folderID uint64, m *mailbox.MessageMeta, name func(uint32) (string, error)) error {
 	if err := u.withFolder(folderID, func(fs *folderState) error {
 		next := fs.file.Header.NextUID
 		if next == 0 {
@@ -1067,6 +1074,13 @@ func (u *userIndex) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) e
 		}
 		fs.file.Header.NextUID = next + 1
 		m.UID = next
+		if name != nil {
+			named, nerr := name(m.UID)
+			if nerr != nil {
+				return nerr
+			}
+			m.Filename = named
+		}
 		if err := fs.appendLocked(m); err != nil {
 			return err
 		}
