@@ -11,10 +11,8 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// The reference keeps an mdbox message's storage key in the mailbox index, in a
-// per-record "mdbox" extension -- not by scanning the map for a GUID. These are
-// its own bytes, so the encoder is checked against them and not against a
-// description of them (#1700).
+// The reference keeps an mdbox message's storage key in a per-record extension,
+// not by scanning the map: checked against its own bytes (#1700).
 func TestTheMdboxRecordMatchesTheReferenceBytes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "yarilo.index")
 	if err := os.WriteFile(path, dboxref.IndexBase(t), 0o600); err != nil {
@@ -52,9 +50,8 @@ func TestTheMdboxRecordMatchesTheReferenceBytes(t *testing.T) {
 	}
 }
 
-// And a message we store carries it: the record, not a sidecar, is where the
-// storage key lives -- read back after a reopen, which is the only reading that
-// counts (#1700).
+// A message we store carries it, read back after a reopen: a field that never
+// reached the base is one the resolver will not find (#1700).
 func TestOurRecordCarriesTheMapUID(t *testing.T) {
 	dir := t.TempDir()
 	a := openIdx(dir, testUser)
@@ -84,4 +81,50 @@ func TestOurRecordCarriesTheMapUID(t *testing.T) {
 		t.Errorf("the record says map uid %d saved %d, want 7 and 1788000000", mapUID, saveDate)
 	}
 	_ = fb
+}
+
+// The whole extension, not half: the geometry a reader takes the layout from is
+// theirs too, header included (#1700).
+func TestOurMdboxExtensionHasTheReferenceGeometry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "their.index")
+	if err := os.WriteFile(path, dboxref.IndexBase(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	their, err := mailindex.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs := findExt(their.Extensions, extNameMdbox)
+	if theirs == nil {
+		t.Fatal("their index carries no mdbox extension")
+	}
+
+	dir := t.TempDir()
+	a := openIdx(dir, testUser)
+	defer a.Close() //nolint:errcheck
+	f, err := a.OpenFolder("INBOX", 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.AppendMessage(f.ID, &mailbox.MessageMeta{
+		UID: 1, Filename: "7", Size: 10, MapUID: 7, SaveDate: 1788000000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := a.folderStateFor(t, "INBOX")
+	ours := findExt(fs.file.Extensions, extNameMdbox)
+	if ours == nil {
+		t.Fatal("we declare no mdbox extension")
+	}
+	if ours.HdrSize != theirs.HdrSize || len(ours.HdrData) != len(theirs.HdrData) {
+		t.Errorf("our header is %d bytes (%d of data), theirs %d (%d)",
+			ours.HdrSize, len(ours.HdrData), theirs.HdrSize, len(theirs.HdrData))
+	}
+	if ours.RecordSize != theirs.RecordSize || ours.RecordAlign != theirs.RecordAlign {
+		t.Errorf("our field is %d bytes aligned %d, theirs %d aligned %d",
+			ours.RecordSize, ours.RecordAlign, theirs.RecordSize, theirs.RecordAlign)
+	}
+	if ours.ResetID != theirs.ResetID {
+		t.Errorf("our reset id is %d, theirs %d", ours.ResetID, theirs.ResetID)
+	}
 }

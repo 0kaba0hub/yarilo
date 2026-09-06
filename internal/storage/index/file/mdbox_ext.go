@@ -38,7 +38,6 @@ func (fs *folderState) ensureMdboxExtLocked() {
 	}
 	fs.file.Extensions = append(fs.file.Extensions, mailindex.Extension{
 		Name: extNameMdbox, RecordSize: mdboxRecSize, RecordAlign: 4,
-		ResetID: fs.file.Header.UIDValidity,
 	})
 	if err := fs.syncHeaderSizeLocked(); err != nil {
 		slog.Warn("fileindex: mdbox extension not declared", "folder", fs.folder, "err", err)

@@ -439,7 +439,6 @@ func defaultExtensions(uidValidity uint32, guid [16]byte) []mailindex.Extension 
 			Name:        extNameMdbox,
 			RecordSize:  mdboxRecSize,
 			RecordAlign: 4,
-			ResetID:     uidValidity,
 		},
 		{
 			// A fresh folder holds no pre-existing messages, so it is born
