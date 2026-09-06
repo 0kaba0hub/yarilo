@@ -93,7 +93,7 @@ func (s *Server) handleMessageGet(w http.ResponseWriter, r *http.Request) {
 	// Nothing here writes: no \Seen, no modseq, no index update. A diagnostic
 	// that changes what it is diagnosing answers a different question than the
 	// one that was asked.
-	rc, err := bundle.box.Fetch(req.Folder, meta.Filename, meta.AltTier)
+	rc, err := mailbox.OpenMessage(bundle.box, req.Folder, meta)
 	if err != nil {
 		apiError(w, "fetch message: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -111,7 +111,7 @@ func (s *Server) handleMessageGet(w http.ResponseWriter, r *http.Request) {
 	// cannot be parsed: the first reader is spent by then, and what is left in
 	// it starts in the middle of a header.
 	reopen := func() (io.ReadCloser, error) {
-		return bundle.box.Fetch(req.Folder, meta.Filename, meta.AltTier)
+		return mailbox.OpenMessage(bundle.box, req.Folder, meta)
 	}
 	written, werr := writeMessage(w, rc, req.Mode, reopen)
 

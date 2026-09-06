@@ -314,6 +314,12 @@ func (h *userHandle) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) 
 func (h *userHandle) AllocateAndAppendNamed(folderID uint64, m *mailbox.MessageMeta, name func(uint32) (string, error)) error {
 	return h.stamped(folderID).AllocateAndAppendNamed(folderID, m, name)
 }
+func (h *userHandle) AdoptStoredNames(folderID uint64, keyOf func(string, [16]byte) (uint32, bool)) error {
+	return h.stamped(folderID).AdoptStoredNames(folderID, keyOf)
+}
+func (h *userHandle) MarkUIDNamedPass(folderID uint64, pass uint32) error {
+	return h.stamped(folderID).MarkUIDNamedPass(folderID, pass)
+}
 func (h *userHandle) UIDNamed(folderID uint64) (bool, error) {
 	return h.stamped(folderID).UIDNamed(folderID)
 }
@@ -1215,6 +1221,9 @@ func underTest() bool { return flag.Lookup("test.v") != nil }
 // appendName appends one entry to the .names sidecar through a kept-open fd, so
 // it costs one write(2). loadNames takes the last entry for a uid.
 func (fs *folderState) appendName(uid uint32, filename string, size uint32) error {
+	if filename == "" {
+		return nil // nothing to record: the record names its own storage
+	}
 	if fs.namesFD == nil {
 		dst := namesPath(fs.indexDir)
 		f, err := os.OpenFile(dst, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)

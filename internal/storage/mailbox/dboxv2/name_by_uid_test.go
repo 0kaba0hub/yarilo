@@ -145,15 +145,14 @@ func TestAGUIDNamedStoreIsMigrated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The record keeps no name at all now: u.<uid> is what it answers with.
 	for _, m := range msgs {
-		want := "u." + strconv.FormatUint(uint64(m.UID), 10)
-		if m.Filename != want {
-			t.Errorf("uid %d still names %q, want %q", m.UID, m.Filename, want)
+		if m.Filename != "" {
+			t.Errorf("uid %d still carries a name: %q", m.UID, m.Filename)
 		}
 	}
-	// And the file each record names can be read: the rename and the record agree.
 	for _, m := range msgs {
-		rc, ferr := mb.Fetch("INBOX", m.Filename, false)
+		rc, ferr := mailbox.OpenMessage(mb, "INBOX", m)
 		if ferr != nil {
 			t.Errorf("uid %d: %v", m.UID, ferr)
 			continue
@@ -299,7 +298,11 @@ func TestNoPathWritesAGUIDName(t *testing.T) {
 	if !ok {
 		t.Fatal("the sdbox driver no longer copies")
 	}
-	if _, err := copier.Copy("INBOX", m.Filename, "Archive", 9); err != nil {
+	srcName, err := mailbox.MessagePath(mb, "INBOX", m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := copier.Copy("INBOX", srcName, "Archive", 9); err != nil {
 		t.Fatal(err)
 	}
 	// Moved, into a folder where that very name is taken: the collision path.
@@ -463,8 +466,12 @@ func TestAMoveIntoATakenNameEndsUnderTheDestinationUID(t *testing.T) {
 	if err := mailbox.RecordSaved(idx, mb, archive.ID, "Archive", m); err != nil {
 		t.Fatal(err)
 	}
-	if want := "u." + strconv.FormatUint(uint64(m.UID), 10); m.Filename != want {
-		t.Errorf("the moved message is %q, want %q", m.Filename, want)
+	name, err := mailbox.MessagePath(mb, "Archive", m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "u." + strconv.FormatUint(uint64(m.UID), 10); name != want {
+		t.Errorf("the moved message is %q, want %q", name, want)
 	}
 	for _, folder := range []string{"INBOX", "Archive"} {
 		entries, rerr := os.ReadDir(filepath.Join(home, "sdbox", "mailboxes", folder, "dbox-Mails"))
@@ -477,9 +484,100 @@ func TestAMoveIntoATakenNameEndsUnderTheDestinationUID(t *testing.T) {
 			}
 		}
 	}
-	if rc, ferr := mb.Fetch("Archive", m.Filename, false); ferr != nil {
+	if rc, ferr := mailbox.OpenMessage(mb, "Archive", m); ferr != nil {
 		t.Errorf("the moved message cannot be read: %v", ferr)
 	} else {
 		rc.Close() //nolint:errcheck
+	}
+}
+
+// A record that lost its name still names its file, by the GUID it carries.
+// The first pass skipped exactly these and orphaned their bodies (#1713).
+func TestANamelessRecordFindsItsBodyByGUID(t *testing.T) {
+	_, mb, home := newTestUser(t)
+	idx := fileidx.New().OpenUser(&mailbox.UserInfo{Username: "alice@example.com", Home: home})
+	defer idx.Close() //nolint:errcheck
+	folder, err := idx.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "sdbox", "mailboxes", "INBOX", "dbox-Mails")
+
+	temp, vsize, guid, err := mb.Save("INBOX", strings.NewReader("ghost\n"), 0, 6, nil, [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := "u." + guidHex(guid)
+	if err := os.Rename(filepath.Join(dir, temp), filepath.Join(dir, old)); err != nil {
+		t.Fatal(err)
+	}
+	// The record an older build left behind: a guid, a size, and no name.
+	if err := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{
+		UID: 1, Size: 6, VSize: vsize, GUID: guid, SelfNamed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	migrator := mb.(interface {
+		MigrateUIDNames(mailbox.UserIndex, *mailbox.Folder) (int, error)
+	})
+	if _, err := migrator.MigrateUIDNames(idx, folder); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, old)); !os.IsNotExist(err) {
+		t.Errorf("the body is still under its old name: %v", err)
+	}
+	msgs, err := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := mailbox.OpenMessage(mb, "INBOX", msgs[0])
+	if err != nil {
+		t.Fatalf("the healed message cannot be read: %v", err)
+	}
+	rc.Close() //nolint:errcheck
+}
+
+// A folder the first pass already marked has to be walked again, or the bodies
+// it orphaned stay orphaned for good: the mark carries which pass ran (#1713).
+func TestAFolderMarkedByTheOlderPassIsWalkedAgain(t *testing.T) {
+	_, mb, home := newTestUser(t)
+	idx := fileidx.New().OpenUser(&mailbox.UserInfo{Username: "alice@example.com", Home: home})
+	defer idx.Close() //nolint:errcheck
+	folder, err := idx.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "sdbox", "mailboxes", "INBOX", "dbox-Mails")
+	temp, vsize, guid, err := mb.Save("INBOX", strings.NewReader("ghost\n"), 0, 6, nil, [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := "u." + guidHex(guid)
+	if err := os.Rename(filepath.Join(dir, temp), filepath.Join(dir, old)); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{
+		UID: 1, Size: 6, VSize: vsize, GUID: guid, SelfNamed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// What the first pass left: the folder marked, the body orphaned.
+	marker := idx.(interface {
+		MarkUIDNamedPass(folderID uint64, pass uint32) error
+	})
+	if err := marker.MarkUIDNamedPass(folder.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	migrator := mb.(interface {
+		MigrateUIDNames(mailbox.UserIndex, *mailbox.Folder) (int, error)
+	})
+	if _, err := migrator.MigrateUIDNames(idx, folder); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "u.1")); err != nil {
+		t.Errorf("a folder marked by the older pass was skipped, and the body stayed lost: %v", err)
 	}
 }

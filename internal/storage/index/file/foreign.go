@@ -192,6 +192,9 @@ func (u *userIndex) convertForeignFolder(fs *folderState) (bool, error) {
 				fs.folder, meta.UID, meta.Filename, perr)
 		}
 		guids[uint32(mapUID)] = meta.GUID
+		// Their record keeps the key in the map alone; ours keeps it in the
+		// record, which is what makes the name derivable (#1700).
+		meta.MapUID = uint32(mapUID)
 	}
 	if n, gerr := m.SetGUIDs(guids); gerr != nil {
 		return false, fmt.Errorf("fileindex/convert: folder %q: stamp guids: %w", fs.folder, gerr)

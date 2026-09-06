@@ -125,6 +125,13 @@ func (u *userIndex) openFolder(folder string, uidValidity uint32, traceID string
 	if err := u.stampLineage(fs); err != nil {
 		return nil, err
 	}
+	// One stat, and the lock only when there is a file to remove: this runs on
+	// every open of every folder.
+	if uidNamedLocked(fs) && sidecarExists(fs.indexDir) {
+		if err := u.withFolderLock(fs, fs.dropSidecarLocked); err != nil {
+			return nil, err
+		}
+	}
 
 	u.mu.Lock()
 	u.open[id] = fs
@@ -1158,7 +1165,11 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 	if rec.Flags&mailindex.FlagDeleted != 0 {
 		fs.file.Header.DeletedMessagesCount++
 	}
-	requireName("append", fs.folder, m.UID, m.Filename)
+	// A record that names its own storage needs no filename; one that names
+	// neither is the defect the guard exists for (#1693, #1700).
+	if m.MapUID == 0 && !namesItsOwnStorage(m) {
+		requireName("append", fs.folder, m.UID, m.Filename)
+	}
 	if m.Filename != "" {
 		fs.filenames[m.UID] = m.Filename
 	}
@@ -1586,11 +1597,15 @@ func (u *userIndex) getMessages(folderID uint64, uids mailbox.SeqSet, unlocked b
 			if !seqSetContains(uids, rec.UID) {
 				continue
 			}
+			mapUID, saveDate := decodeMdboxRec(rec.Ext[extNameMdbox])
 			meta := &mailbox.MessageMeta{
 				UID:      rec.UID,
+				MapUID:   mapUID,
+				SaveDate: saveDate,
 				Filename: fs.filenames[rec.UID],
 				Flags:    indexFlagsToIMAP(uint8(rec.Flags)),
-				Size:     fs.sizes[rec.UID],
+				Size:     recordSize(rec, fs.sizes),
+				VSize:    decodeVsizeRec(rec.Ext[extNameVsize]),
 				AltTier:  rec.Flags&mailindex.FlagBackend != 0,
 			}
 			if data, ok := rec.Ext[extNameModSeq]; ok {

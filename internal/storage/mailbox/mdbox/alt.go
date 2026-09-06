@@ -189,6 +189,7 @@ func (u *userMailbox) AltMove(q AltMoveQuery) (AltMoveStats, error) {
 // satisfies the filter, joining physical records to the map by (fileID, offset).
 // An orphan the map does not know is skipped for the next purge.
 func (u *userMailbox) scanAltCandidates(m *mdboxmap.Map, srcTier string, q AltMoveQuery) ([]altCandidate, error) {
+	countDirReads.Add(1)
 	entries, err := os.ReadDir(srcTier)
 	if os.IsNotExist(err) {
 		return nil, nil

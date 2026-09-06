@@ -1,6 +1,7 @@
 package dboxv2
 
 import (
+	"encoding/hex"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ func (u *userMailbox) MigrateUIDNames(idx mailbox.UserIndex, folder *mailbox.Fol
 		return 0, fmt.Errorf("sdbox/migrate: get messages %q: %w", folder.Name, err)
 	}
 	renamed := make(map[uint32]string, len(msgs))
+	leftovers := 0
 	err = u.withMailboxLock(folder.Name, func() error {
 		dir := u.folderPath(folder.Name)
 		if serr := sweepStaleTemps(dir); serr != nil {
@@ -39,44 +41,73 @@ func (u *userMailbox) MigrateUIDNames(idx mailbox.UserIndex, folder *mailbox.Fol
 		}
 		for _, m := range msgs {
 			want := sdboxMailPrefix + strconv.FormatUint(uint64(m.UID), 10)
-			if m.Filename == "" || m.Filename == want {
+			old := m.Filename
+			if old == "" {
+				// A record that lost its name still names its file: the old one
+				// was the GUID in hex, and the GUID is in the record (#1713).
+				old = sdboxMailPrefix + hex.EncodeToString(m.GUID[:])
+			}
+			if old == want {
 				continue
 			}
-			from := filepath.Join(dir, m.Filename)
+			from := filepath.Join(dir, old)
 			if _, serr := os.Lstat(from); serr != nil {
 				// Nothing to rename: a record whose file is already gone is the
 				// reactive heal's business, not this pass's.
 				continue
 			}
 			if err := os.Rename(from, filepath.Join(dir, want)); err != nil {
-				return fmt.Errorf("sdbox/migrate: rename %s -> %s: %w", m.Filename, want, err)
+				return fmt.Errorf("sdbox/migrate: rename %s -> %s: %w", old, want, err)
 			}
 			renamed[m.UID] = want
 		}
-		return nil
+		left, cerr := guidNamedLeft(dir)
+		leftovers = left
+		return cerr
 	})
 	if err != nil {
 		return 0, err
+	}
+	if leftovers > 0 {
+		// Not marked: a file still named by a GUID is a body this pass could
+		// not place, and marking would close the folder to the next one (#1713).
+		slog.Warn("sdbox: the folder still holds messages named by a guid",
+			"user", u.username, "folder", folder.Name, "left", leftovers)
+		return len(renamed), nil
 	}
 	if len(renamed) == 0 {
 		return 0, marker.MarkUIDNamed(folder.ID)
 	}
 	// After the rename, never before: a crash between the two leaves a file the
 	// index cannot name, and the next pass renames nothing and repairs it.
-	writer, ok := idx.(mailbox.FilenameWriterMulti)
-	if !ok {
-		return 0, fmt.Errorf("sdbox/migrate: %q: the index cannot record a batch of names", folder.Name)
-	}
-	// Marked last: a crash before it repeats a pass that renames nothing.
-	if err := writer.UpdateFilenames(folder.ID, renamed); err != nil {
-		return 0, fmt.Errorf("sdbox/migrate: record names %q: %w", folder.Name, err)
-	}
+	// Marked last: a crash before it repeats a pass that renames nothing. The
+	// names are not recorded at all -- u.<uid> is the record's own answer.
 	if err := marker.MarkUIDNamed(folder.ID); err != nil {
 		return 0, err
 	}
 	slog.Info("sdbox: renamed messages to the name their uid gives them",
 		"user", u.username, "folder", folder.Name, "renamed", len(renamed))
 	return len(renamed), nil
+}
+
+// guidNamedLeft counts the messages still named by a GUID: what the pass could
+// not place, and the reason to walk this folder again.
+func guidNamedLeft(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, fmt.Errorf("sdbox/migrate: list %s: %w", dir, err)
+	}
+	left := 0
+	for _, e := range entries {
+		rest, ok := strings.CutPrefix(e.Name(), sdboxMailPrefix)
+		if !ok || len(rest) != 32 {
+			continue
+		}
+		if _, herr := hex.DecodeString(rest); herr == nil {
+			left++
+		}
+	}
+	return left, nil
 }
 
 // staleTemp is when a half-finished save stops being one: a save names its file

@@ -296,7 +296,7 @@ func (s *session) envelopeOf(m *mailbox.MessageMeta, raw []byte) (*imaplib.Envel
 		}
 		return imapserver.ExtractEnvelope(hdr), nil
 	}
-	if m.Filename == "" {
+	if !mailbox.Readable(s.folderBox(), m) {
 		return &imaplib.Envelope{}, nil
 	}
 	rc, err := s.fetchSelected(m)
@@ -408,7 +408,7 @@ func messageIDList(v string) []string {
 // and nothing else, and a THREAD over a large mailbox would otherwise read
 // every byte of every message in it.
 func (s *session) readHeader(m *mailbox.MessageMeta) ([]byte, error) {
-	if m.Filename == "" {
+	if !mailbox.Readable(s.folderBox(), m) {
 		// Nothing was ever stored for this record; that is not a read failure.
 		return nil, nil
 	}

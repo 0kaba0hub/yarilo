@@ -60,6 +60,16 @@ type UIDSpaceAdopter interface {
 	AdoptUIDSpace(folderID uint64, uidValidity, nextUID uint32) error
 }
 
+// UIDAddressable is a driver that finds a message from the record itself: the
+// name is derived from what the folder records, not kept beside it (#1700).
+type UIDAddressable interface {
+	// OpenRecord returns the message body. Caller closes.
+	OpenRecord(folder string, m *MessageMeta) (io.ReadCloser, error)
+	// RecordPath names the message for the operations that take a name --
+	// copy, move, remove -- which stay the driver's own vocabulary.
+	RecordPath(folder string, m *MessageMeta) (string, error)
+}
+
 // StorageKeyer is a driver whose messages have a storage key of their own: the
 // mdbox map_uid, which the mailbox index carries per record as the reference does.
 type StorageKeyer interface {
@@ -81,6 +91,12 @@ type NamingAppender interface {
 	// AllocateAndAppendNamed assigns the uid, calls name with it, records the
 	// answer as the message's filename, and appends -- all under one hold.
 	AllocateAndAppendNamed(folderID uint64, m *MessageMeta, name func(uid uint32) (string, error)) error
+}
+
+// StoredNameAdopter moves what a sidecar holds into the records: the caller
+// reads its own storage key out of each stored name.
+type StoredNameAdopter interface {
+	AdoptStoredNames(folderID uint64, keyOf func(name string, guid [16]byte) (uint32, bool)) error
 }
 
 // UIDNameMarker answers, and records, whether a folder's message files already
@@ -195,8 +211,11 @@ type MessageMeta struct {
 	Filename string // backend-specific filename returned by UserMailbox.Save
 	// MapUID and SaveDate are the mdbox storage key, carried in the record so
 	// the name is derived rather than stored beside it (#1700).
-	MapUID       uint32
-	SaveDate     uint32
+	MapUID   uint32
+	SaveDate uint32
+	// SelfNamed says the driver finds this message from the record alone, so
+	// the index is given no filename to keep.
+	SelfNamed    bool
 	Flags        []string
 	Keywords     []string
 	ModSeq       uint64

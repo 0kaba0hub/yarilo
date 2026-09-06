@@ -351,7 +351,7 @@ func (e *ftsEvaluator) readMessage(sf scopeFolder, m *mailbox.MessageMeta) (mess
 }
 
 func (e *ftsEvaluator) readParts(sf scopeFolder, m *mailbox.MessageMeta) (message.Header, []walkedPart, error) {
-	rc, err := e.box.Fetch(sf.name, m.Filename, m.AltTier)
+	rc, err := mailbox.OpenMessage(e.box, sf.name, m)
 	if err != nil {
 		return message.Header{}, nil, err
 	}

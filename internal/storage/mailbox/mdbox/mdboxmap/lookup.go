@@ -3,8 +3,17 @@ package mdboxmap
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// GUIDWalks counts the walks a GUID lookup costs, so "no walk" is a number a
+// test reads rather than a claim (#1700).
+var guidWalks atomic.Int64
+
+// GUIDWalks returns the count, and ResetGUIDWalks zeroes it.
+func GUIDWalks() int  { return int(guidWalks.Load()) }
+func ResetGUIDWalks() { guidWalks.Store(0) }
 
 // lockRead takes the in-process map mutex and records the wait. A read needs no
 // cross-process lock, but it queues behind a writer that is waiting for one --
@@ -82,6 +91,7 @@ func (m *Map) LookupMany(mapUIDs []uint32) ([]MapEntry, error) {
 // match, since a GUID survives compaction where an offset does not. A zero GUID
 // always returns false, or it would mass-match every pre-GUID record.
 func (m *Map) LookupByGUID(guid [16]byte) (MapEntry, bool, error) {
+	guidWalks.Add(1)
 	if guid == ([16]byte{}) {
 		return MapEntry{}, false, nil
 	}

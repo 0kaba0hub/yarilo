@@ -1570,7 +1570,11 @@ func (s *session) renameInbox(dest string) error {
 	}
 	for _, m := range msgs {
 		// Relocation, not a new message: the GUID carries over (RFC 8474).
-		newFilename, guid, moveErr := s.box.Move("INBOX", dest, m.Filename, m.GUID)
+		srcName, pathErr := mailbox.MessagePath(s.box, "INBOX", m)
+		if pathErr != nil {
+			return fmt.Errorf("imap/rename-inbox path: %w", pathErr)
+		}
+		newFilename, guid, moveErr := s.box.Move("INBOX", dest, srcName, m.GUID)
 		if moveErr != nil {
 			return fmt.Errorf("imap/rename-inbox move: %w", moveErr)
 		}
@@ -2723,7 +2727,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 	// here — the per-message expunge events below supply "after", so an "under"
 	// crossing fires on a delete-only session regardless of SELECT-time seeding.
 	s.captureQuotaSnap()
-	refs := newBodyRefs(msgs)
+	refs := newBodyRefs(s.folderBox(), s.folder.Name, msgs)
 	// Each expunge shifts later sequence numbers down by one, so track and
 	// adjust seqNum as we go rather than using the static GetMessages index.
 	seqNum := uint32(len(msgs))
@@ -2738,10 +2742,13 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 			seqNum--
 			continue
 		}
+		// The name before the record: a driver named by uid reads it out of the
+		// record this loop is about to remove (#1700).
+		storedName, pathErr := mailbox.MessagePath(s.folderBox(), s.folder.Name, m)
 		// Index first: no reader may see a record whose file is already gone. A
 		// crash here leaves a file the next rebuild re-files with a new UID.
 		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
-		switch refs.fate(m.Filename) {
+		switch refs.fate(storedName) {
 		case bodyNameless:
 			slog.Warn("imap: expunge of a record with no filename; its body, if any, is left behind",
 				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID)
@@ -2749,7 +2756,14 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 			slog.Warn("imap: expunge kept the body, another record still points at it",
 				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename)
 		case bodyFree:
-			if rerr := s.folderBox().Remove(s.folder.Name, m.Filename); rerr != nil {
+			if pathErr != nil {
+				// One line for one fact: the body stays because the record
+				// could not name it, not because the unlink failed.
+				slog.Warn("imap: expunge could not name the message; its body is left behind",
+					"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "err", pathErr)
+				break
+			}
+			if rerr := s.folderBox().Remove(s.folder.Name, storedName); rerr != nil {
 				slog.Warn("imap: expunge storage remove failed (the record is already gone; the file is an orphan until a rebuild)",
 					"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename, "err", rerr)
 			}
@@ -2784,7 +2798,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 // -- a message nobody looked at is not a message that matched.
 func (s *session) matchMessage(seqNum uint32, m *mailbox.MessageMeta, criteria *imaplib.SearchCriteria, needRaw bool) (bool, []byte, error) {
 	var rawMsg []byte
-	if needRaw && m.Filename != "" {
+	if needRaw && mailbox.Readable(s.folderBox(), m) {
 		rc, err := s.fetchSelected(m)
 		if err == nil {
 			rawMsg, err = io.ReadAll(rc)
@@ -3010,7 +3024,7 @@ func (s *session) Search(kind imapserver.NumKind, criteria *imaplib.SearchCriter
 					}
 				}
 				var raw []byte
-				if needRaw && m.Filename != "" {
+				if needRaw && mailbox.Readable(s.folderBox(), m) {
 					if rc, err := s.fetchSelected(m); err == nil {
 						raw, _ = io.ReadAll(rc)
 						rc.Close()
@@ -3274,7 +3288,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			// Records with VSize==0 predate Save() returning virtual size and
 			// fall back to physical size; recompute from the body on read so
 			// the reported size stays stable.
-			if m.VSize == 0 && m.Filename != "" {
+			if m.VSize == 0 && mailbox.Readable(s.folderBox(), m) {
 				if rc, ferr := s.fetchSelected(m); ferr == nil {
 					if raw, rerr := io.ReadAll(rc); rerr == nil {
 						size = virtualSizeFromRaw(raw)
@@ -3302,7 +3316,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			// threading existed.
 			mw.WriteThreadID(threadIDs[m.UID])
 		}
-		if opts.Envelope && m.Filename != "" {
+		if opts.Envelope && mailbox.Readable(s.folderBox(), m) {
 			if env := envCache.Envelope(m); env != nil {
 				mw.WriteEnvelope(env)
 			} else if rc, ferr := s.fetchSelected(m); ferr == nil {
@@ -3315,7 +3329,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 				mark("envelope", ferr)
 			}
 		}
-		if opts.BodyStructure != nil && m.Filename != "" {
+		if opts.BodyStructure != nil && mailbox.Readable(s.folderBox(), m) {
 			if bs := envCache.BodyStructure(m); bs != nil {
 				mw.WriteBodyStructure(bs)
 			} else if rc, ferr := s.fetchSelected(m); ferr == nil {
@@ -3328,7 +3342,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 			}
 		}
 		for _, section := range opts.BodySection {
-			if m.Filename == "" {
+			if !mailbox.Readable(s.folderBox(), m) {
 				if slog.Default().Enabled(context.Background(), slog.LevelDebug) &&
 					section.Specifier == imaplib.PartSpecifierNone && len(section.Part) == 0 {
 					slog.Debug("imap: fetch body[] no filename",
@@ -3398,7 +3412,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		// part spec we decode message-level CTE; multipart-walk (BINARY[1])
 		// returns the section unchanged when MIME parsing is non-trivial.
 		for _, section := range opts.BinarySection {
-			if m.Filename == "" {
+			if !mailbox.Readable(s.folderBox(), m) {
 				break
 			}
 			rc, ferr := s.fetchSelected(m)
@@ -3417,7 +3431,7 @@ func (s *session) Fetch(w *imapserver.FetchWriter, numSet imaplib.NumSet, opts *
 		}
 		// BINARY.SIZE[] — same decode, return size only.
 		for _, section := range opts.BinarySectionSize {
-			if m.Filename == "" {
+			if !mailbox.Readable(s.folderBox(), m) {
 				break
 			}
 			rc, ferr := s.fetchSelected(m)
@@ -3677,7 +3691,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
-		rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename, m.AltTier)
+		rc, fetchErr := mailbox.OpenMessage(srcBox, s.folder.Name, m)
 		if fetchErr != nil {
 			return nil, fmt.Errorf("imap/copy fetch: %w", fetchErr)
 		}
@@ -4056,14 +4070,18 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		tSave := time.Now()
 		if srcBox == destH.box {
 			var moveErr error
-			newFilename, guid, moveErr = srcBox.Move(s.folder.Name, destRel, m.Filename, m.GUID)
+			srcName, pathErr := mailbox.MessagePath(srcBox, s.folder.Name, m)
+			if pathErr != nil {
+				return fmt.Errorf("imap/move path: %w", pathErr)
+			}
+			newFilename, guid, moveErr = srcBox.Move(s.folder.Name, destRel, srcName, m.GUID)
 			if moveErr != nil {
 				return fmt.Errorf("imap/move relocate: %w", moveErr)
 			}
 		} else {
 			// Cross-namespace: no shared storage to relocate within, so copy the
 			// body over and hand the source GUID to Save, which stores it verbatim.
-			rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename, m.AltTier)
+			rc, fetchErr := mailbox.OpenMessage(srcBox, s.folder.Name, m)
 			if fetchErr != nil {
 				return fmt.Errorf("imap/move fetch: %w", fetchErr)
 			}
@@ -4343,11 +4361,13 @@ func virtualSizeFromRaw(raw []byte) uint32 {
 // on the first expunge would strip the body from the ones still live.
 type bodyRefs map[string]int
 
-func newBodyRefs(msgs []*mailbox.MessageMeta) bodyRefs {
+// newBodyRefs counts how many records point at each body, by the name the
+// driver gives it: two records naming one file must not both unlink it.
+func newBodyRefs(box mailbox.UserMailbox, folder string, msgs []*mailbox.MessageMeta) bodyRefs {
 	r := make(bodyRefs, len(msgs))
 	for _, m := range msgs {
-		if m.Filename != "" {
-			r[m.Filename]++
+		if name, err := mailbox.MessagePath(box, folder, m); err == nil && name != "" {
+			r[name]++
 		}
 	}
 	return r

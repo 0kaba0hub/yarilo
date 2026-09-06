@@ -116,7 +116,7 @@ func (s *Server) buildEmail(h *userHandle, ref messageRef, req jmapcore.EmailGet
 		}
 	}
 
-	rc, err := h.box.Fetch(ref.folder, m.Filename, m.AltTier)
+	rc, err := mailbox.OpenMessage(h.box, ref.folder, m)
 	if err != nil {
 		return email, headerFields, fmt.Errorf("jmap: fetch %s/%d: %w", ref.folder, m.UID, err)
 	}

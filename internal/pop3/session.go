@@ -902,7 +902,7 @@ func (s *session) cmdList(arg string) {
 // fetchINBOX reads a message body and flags the folder for a reactive heal if
 // the read tripped over corrupt sdbox storage (missing/truncated/bad file).
 func (s *session) fetchINBOX(m *mailbox.MessageMeta) (io.ReadCloser, error) {
-	rc, err := s.box.Fetch("INBOX", m.Filename, m.AltTier)
+	rc, err := mailbox.OpenMessage(s.box, "INBOX", m)
 	// flag once per session: one mark heals every missing record on the
 	// next open, so a RETR loop over a corrupt mailbox pays no per-message cost
 	if err != nil && !s.markedCorrupt && mailbox.MarkCorruptOnFetchErr(s.box, s.idx, "INBOX", err) {
@@ -1121,7 +1121,7 @@ func (s *session) expungeDeleted() int {
 			if !s.deleted[i] {
 				continue
 			}
-			if rerr := s.box.Remove("INBOX", m.Filename); rerr != nil {
+			if rerr := mailbox.RemoveMessage(s.box, "INBOX", m); rerr != nil {
 				slog.Error("pop3: remove", "uid", m.UID, "err", rerr)
 				errCount++
 				continue
@@ -1143,7 +1143,7 @@ func (s *session) expungeDeletedPerMessage() int {
 		if !s.deleted[i] {
 			continue
 		}
-		if err := s.box.Remove("INBOX", m.Filename); err != nil {
+		if err := mailbox.RemoveMessage(s.box, "INBOX", m); err != nil {
 			slog.Error("pop3: remove", "uid", m.UID, "err", err)
 			errCount++
 		} else {

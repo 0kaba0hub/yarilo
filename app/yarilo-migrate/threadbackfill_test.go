@@ -11,6 +11,7 @@ import (
 
 	fileindex "github.com/yarilomail/yarilo/internal/storage/index/file"
 	"github.com/yarilomail/yarilo/internal/storage/mailbox/maildir"
+	"github.com/yarilomail/yarilo/internal/storage/mailbox/mdbox"
 	"github.com/yarilomail/yarilo/internal/userstate/threads"
 	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
@@ -433,13 +434,15 @@ func TestBackfillFollowsTheAccountsOwnDriverAndMailRoot(t *testing.T) {
 	info.Driver = "mdbox"
 	info.MailPath = filepath.Join(base.Home, "mdbox")
 
-	box := maildir.New().OpenUser(&info)
+	// The store is written with the driver the account declares: a message
+	// named by one driver and read by another is a fixture, not a store.
+	box := mdbox.New().OpenUser(&info)
 	if err := box.Init(); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	idx := fileindex.New().OpenUser(&info)
 	raw := "Message-ID: <a@x>\r\nSubject: Plan\r\n\r\nbody\r\n"
-	name, vsize, guid, err := box.Save("INBOX", strings.NewReader(raw), 1, int64(len(raw)), nil, [16]byte{})
+	name, vsize, guid, err := box.Save("INBOX", strings.NewReader(raw), 0, int64(len(raw)), nil, [16]byte{})
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -447,10 +450,14 @@ func TestBackfillFollowsTheAccountsOwnDriverAndMailRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open folder: %v", err)
 	}
-	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{
+	meta := &mailbox.MessageMeta{
 		UID: 1, Filename: name, Size: uint32(len(raw)), VSize: vsize,
 		GUID: guid, InternalDate: time.Now(),
-	}); err != nil {
+	}
+	if err := mailbox.NameSaved(box, "INBOX", meta); err != nil {
+		t.Fatalf("name: %v", err)
+	}
+	if err := idx.AppendMessage(f.ID, meta); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	idx.Close() //nolint:errcheck
@@ -459,6 +466,9 @@ func TestBackfillFollowsTheAccountsOwnDriverAndMailRoot(t *testing.T) {
 	var askedFor []string
 	byDriver := func(d string) mailbox.MailboxBackend {
 		askedFor = append(askedFor, d)
+		if d == "mdbox" {
+			return mdbox.New()
+		}
 		return maildir.New()
 	}
 	resolveUser := func(string) (*mailbox.UserInfo, error) { return &info, nil }

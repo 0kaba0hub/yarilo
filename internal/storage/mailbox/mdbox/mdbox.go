@@ -200,6 +200,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	}
 	return &userMailbox{
 		b:           b,
+		info:        u,
 		home:        mailPath,
 		indexRoot:   u.IndexDir,
 		separator:   mailbox.SepOrDefault(u.Separator),
@@ -231,6 +232,9 @@ type userMailbox struct {
 	owner       string
 	altBasePath string // expanded alt root + "/mdbox"; "" = disabled
 	listUTF8    bool
+
+	// info is the user this handle was opened for.
+	info *mailbox.UserInfo
 
 	mu      sync.Mutex
 	mapping *mdboxmap.Map // lazily opened on first use
