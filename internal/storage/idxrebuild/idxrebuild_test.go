@@ -142,3 +142,64 @@ func TestExpungeMissing(t *testing.T) {
 		t.Fatalf("after heal: %+v, want only UID 1 (%s)", msgs, keep)
 	}
 }
+
+// A crash between the index expunge and the unlink leaves a file with no record,
+// which the next rebuild re-files as a new message (#1690).
+func TestARebuildRefilesAFileWhoseRecordWasExpunged(t *testing.T) {
+	root := t.TempDir()
+	const user = "crash@x.com"
+	info := &mailbox.UserInfo{Username: user, Home: home(root, user)}
+
+	box := maildir.New().OpenUser(info)
+	if err := box.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := box.Create("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	idx := fileidx.New().OpenUser(info)
+	folder, err := idx.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, _, _, err := box.Save("INBOX", strings.NewReader("body\n"), 1, 5, nil, [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.AllocateAndAppend(folder.ID, &mailbox.MessageMeta{Filename: name, Size: 5}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil || len(before) != 1 {
+		t.Fatalf("setup: %d records, %v", len(before), err)
+	}
+
+	// The crash: the record is gone, the file is not.
+	if err := idx.ExpungeMessage(folder.ID, before[0].UID); err != nil {
+		t.Fatal(err)
+	}
+
+	folder, err = idx.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := idxrebuild.RebuildFolder(box, idx, folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.UIDsAssigned != 1 {
+		t.Errorf("the rebuild assigned %d fresh UIDs, want 1: the orphan file is not "+
+			"re-filed, so the documented consequence is not what happens", st.UIDsAssigned)
+	}
+	after, err := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("after the rebuild the folder holds %d records, want 1", len(after))
+	}
+	if after[0].UID == before[0].UID {
+		t.Errorf("the message came back with its old UID %d; a re-filed orphan gets a "+
+			"fresh one", after[0].UID)
+	}
+}
