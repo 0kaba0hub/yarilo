@@ -434,6 +434,14 @@ func defaultExtensions(uidValidity uint32, guid [16]byte) []mailindex.Extension 
 			ResetID:     uidValidity,
 		},
 		{
+			// The mdbox storage key rides in the record, as the reference's
+			// does; a folder of another driver leaves it zero.
+			Name:        extNameMdbox,
+			RecordSize:  mdboxRecSize,
+			RecordAlign: 4,
+			ResetID:     uidValidity,
+		},
+		{
 			// A fresh folder holds no pre-existing messages, so it is born
 			// backfilled; only indexes predating the extension start pending.
 			Name:        extNameGUID,
@@ -509,6 +517,7 @@ var ourExtensions = map[string]bool{
 	extNameGUID:         true,
 	extNameCache:        true,
 	extNameLineage:      true,
+	extNameMdbox:        true,
 }
 
 // looksForeign reports whether an index file under a legacy canonical name was
