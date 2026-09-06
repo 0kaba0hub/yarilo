@@ -1136,7 +1136,7 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 	if rec.Flags&mailindex.FlagDeleted != 0 {
 		fs.file.Header.DeletedMessagesCount++
 	}
-	requireFilename("append", fs.folder, m.UID, m.Filename)
+	requireName("append", fs.folder, m.UID, m.Filename)
 	if m.Filename != "" {
 		fs.filenames[m.UID] = m.Filename
 	}
@@ -1304,6 +1304,10 @@ func (u *userIndex) UpdateFilenames(folderID uint64, names map[uint32]string) er
 			if cur, have := fs.filenames[uid]; !have || cur == filename {
 				continue
 			}
+			// An empty name would erase a readable record; keep what is there.
+			if !requireName("update-batch", fs.folder, uid, filename) {
+				continue
+			}
 			fs.filenames[uid] = filename
 			if aerr := fs.appendName(uid, filename, fs.sizes[uid]); aerr != nil {
 				return aerr
@@ -1326,6 +1330,9 @@ func (u *userIndex) UpdateFilename(folderID uint64, uid uint32, filename string)
 			return nil
 		}
 		if fs.filenames[uid] == filename {
+			return nil
+		}
+		if !requireName("update", fs.folder, uid, filename) {
 			return nil
 		}
 		fs.filenames[uid] = filename
@@ -1726,7 +1733,7 @@ func (u *userIndex) ResetFolder(folderID uint64, records []*mailbox.MessageMeta)
 			if rec.Flags&mailindex.FlagDeleted != 0 {
 				fs.file.Header.DeletedMessagesCount++
 			}
-			requireFilename("reset", fs.folder, m.UID, m.Filename)
+			requireName("reset", fs.folder, m.UID, m.Filename)
 			if m.Filename != "" {
 				fs.filenames[m.UID] = m.Filename
 			}
