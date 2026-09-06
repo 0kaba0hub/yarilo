@@ -91,6 +91,7 @@ func (u *userMailbox) scanStorage() ([]mailbox.ScanRecord, error) {
 	// mail that a primary-only scan would drop.
 	paths := map[uint32]string{}
 	addDir := func(dir string) error {
+		countDirReads.Add(1)
 		entries, err := os.ReadDir(dir)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil

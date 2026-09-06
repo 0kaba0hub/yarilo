@@ -60,6 +60,24 @@ type UIDSpaceAdopter interface {
 	AdoptUIDSpace(folderID uint64, uidValidity, nextUID uint32) error
 }
 
+// StorageKeyReader answers where a message is kept, from the record that
+// carries the key -- the mdbox map_uid.
+type StorageKeyReader interface {
+	StorageKey(folderID uint64, uid uint32) (mapUID, saveDate uint32, ok bool)
+	// StorageKeys answers for a whole command's worth of messages at once.
+	StorageKeys(folderID uint64, uids []uint32) (map[uint32]uint32, error)
+}
+
+// UIDAddressable is a driver that can find a message from its uid alone: the
+// name is derived from what the folder already records, not kept beside it.
+type UIDAddressable interface {
+	// OpenByUID returns the message body. Caller closes.
+	OpenByUID(folder string, uid uint32, altTier bool) (io.ReadCloser, error)
+	// PathByUID names the message for the operations that take a name --
+	// copy, move, remove -- which stay the driver's own vocabulary.
+	PathByUID(folder string, uid uint32) (string, error)
+}
+
 // StorageKeyer is a driver whose messages have a storage key of their own: the
 // mdbox map_uid, which the mailbox index carries per record as the reference does.
 type StorageKeyer interface {

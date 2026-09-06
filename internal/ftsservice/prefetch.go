@@ -161,7 +161,7 @@ func (f *fetcher) release(size int64) {
 // read pulls one message into memory, timing the open and the read separately.
 func (f *fetcher) read(m *mailbox.MessageMeta) fetched {
 	tOpen := time.Now()
-	rc, err := f.h.box.Fetch(f.name, m.Filename, m.AltTier)
+	rc, err := mailbox.OpenMessage(f.h.box, f.name, m)
 	metricFetch.Observe(time.Since(tOpen).Seconds())
 	if err != nil {
 		return fetched{meta: m, err: err}

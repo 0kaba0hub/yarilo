@@ -150,7 +150,7 @@ func Run(cfg Config) (Report, error) {
 // match it against the criteria.
 func scanOnce(box mailbox.UserMailbox, folder string, metas []*mailbox.MessageMeta, criteria *imaplib.SearchCriteria) {
 	for i, m := range metas {
-		rc, err := box.Fetch(folder, m.Filename, m.AltTier)
+		rc, err := mailbox.OpenMessage(box, folder, m)
 		if err != nil {
 			continue
 		}

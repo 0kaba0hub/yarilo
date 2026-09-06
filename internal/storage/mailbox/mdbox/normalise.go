@@ -223,6 +223,7 @@ func parseHeaderSize(mh []byte) (uint64, error) {
 // normaliseStorageFrames rewrites every m.<N> holding a record at the other
 // size. One pass per file per rebuild, as the reference bounds it (#1687).
 func (u *userMailbox) normaliseStorageFrames() (int, error) {
+	countDirReads.Add(1)
 	entries, err := os.ReadDir(u.storagePath())
 	if err != nil {
 		if os.IsNotExist(err) {

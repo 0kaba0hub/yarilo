@@ -330,7 +330,7 @@ func migrateUser(walker sourceWalker, srcRoot string, boxBE mailbox.MailboxBacke
 		}
 		// Source GUID is preserved so EMAILID survives migration; zero means the
 		// source had none and the driver mints one.
-		filename, vsize, guid, err := box.Save(msg.Folder, msg.bodyReader(), uid, int64(len(msg.Body)), msg.Flags, msg.GUID)
+		filename, vsize, guid, err := box.Save(msg.Folder, msg.bodyReader(), 0, int64(len(msg.Body)), msg.Flags, msg.GUID)
 		if err != nil {
 			return fmt.Errorf("save %s/%s: %w", user, msg.Folder, err)
 		}
@@ -344,6 +344,11 @@ func migrateUser(walker sourceWalker, srcRoot string, boxBE mailbox.MailboxBacke
 			VSize:        vsize,
 			InternalDate: msg.InternalDate,
 			GUID:         guid,
+		}
+		// The uid is already ours, so the name is settled here rather than in an
+		// allocating cycle (#1704, #1700).
+		if err := mailbox.NameSaved(box, msg.Folder, meta); err != nil {
+			return fmt.Errorf("name %s/%s: %w", user, msg.Folder, err)
 		}
 		if err := idx.AppendMessage(f.ID, meta); err != nil {
 			return fmt.Errorf("append %s/%s: %w", user, msg.Folder, err)

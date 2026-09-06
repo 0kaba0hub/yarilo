@@ -200,6 +200,7 @@ func (b *Backend) OpenUser(u *mailbox.UserInfo) mailbox.UserMailbox {
 	}
 	return &userMailbox{
 		b:           b,
+		info:        u,
 		home:        mailPath,
 		indexRoot:   u.IndexDir,
 		separator:   mailbox.SepOrDefault(u.Separator),
@@ -231,6 +232,14 @@ type userMailbox struct {
 	owner       string
 	altBasePath string // expanded alt root + "/mdbox"; "" = disabled
 	listUTF8    bool
+
+	// info is the user this handle was opened for, kept so the index can be
+	// opened for the same one rather than for a rebuilt guess.
+	info *mailbox.UserInfo
+	// keyIdx is this handle's view of the index, where a message's map_uid is
+	// recorded; opened on first use by uid and closed with the handle.
+	keyMu  sync.Mutex
+	keyIdx mailbox.UserIndex
 
 	mu      sync.Mutex
 	mapping *mdboxmap.Map // lazily opened on first use
@@ -958,6 +967,12 @@ func (u *userMailbox) MapJournalSizes() (int64, int64, error) {
 
 // Close releases the cached map handle.
 func (u *userMailbox) Close() error {
+	u.keyMu.Lock()
+	if u.keyIdx != nil {
+		_ = u.keyIdx.Close()
+		u.keyIdx = nil
+	}
+	u.keyMu.Unlock()
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.mapping != nil {

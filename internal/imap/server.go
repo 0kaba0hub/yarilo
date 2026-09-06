@@ -1570,7 +1570,11 @@ func (s *session) renameInbox(dest string) error {
 	}
 	for _, m := range msgs {
 		// Relocation, not a new message: the GUID carries over (RFC 8474).
-		newFilename, guid, moveErr := s.box.Move("INBOX", dest, m.Filename, m.GUID)
+		srcName, pathErr := mailbox.MessagePath(s.box, "INBOX", m)
+		if pathErr != nil {
+			return fmt.Errorf("imap/rename-inbox path: %w", pathErr)
+		}
+		newFilename, guid, moveErr := s.box.Move("INBOX", dest, srcName, m.GUID)
 		if moveErr != nil {
 			return fmt.Errorf("imap/rename-inbox move: %w", moveErr)
 		}
@@ -2738,6 +2742,13 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 			seqNum--
 			continue
 		}
+		// The name before the record: a driver named by uid reads it out of the
+		// record this loop is about to remove (#1700).
+		storedName, pathErr := mailbox.MessagePath(s.folderBox(), s.folder.Name, m)
+		if pathErr != nil {
+			slog.Warn("imap: expunge could not name the message; its body is left behind",
+				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "err", pathErr)
+		}
 		// Index first: no reader may see a record whose file is already gone. A
 		// crash here leaves a file the next rebuild re-files with a new UID.
 		idx.ExpungeMessage(s.folder.ID, m.UID) //nolint:errcheck
@@ -2749,7 +2760,7 @@ func (s *session) Expunge(w *imapserver.ExpungeWriter, uids *imaplib.UIDSet) err
 			slog.Warn("imap: expunge kept the body, another record still points at it",
 				"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename)
 		case bodyFree:
-			if rerr := s.folderBox().Remove(s.folder.Name, m.Filename); rerr != nil {
+			if rerr := s.folderBox().Remove(s.folder.Name, storedName); rerr != nil {
 				slog.Warn("imap: expunge storage remove failed (the record is already gone; the file is an orphan until a rebuild)",
 					"user", s.userInfo.Username, "folder", s.folder.Name, "uid", m.UID, "file", m.Filename, "err", rerr)
 			}
@@ -3677,7 +3688,7 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 		if !numSetContains(numSet, seqNum, imaplib.UID(m.UID)) {
 			continue
 		}
-		rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename, m.AltTier)
+		rc, fetchErr := mailbox.OpenMessage(srcBox, s.folder.Name, m)
 		if fetchErr != nil {
 			return nil, fmt.Errorf("imap/copy fetch: %w", fetchErr)
 		}
@@ -4056,14 +4067,18 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 		tSave := time.Now()
 		if srcBox == destH.box {
 			var moveErr error
-			newFilename, guid, moveErr = srcBox.Move(s.folder.Name, destRel, m.Filename, m.GUID)
+			srcName, pathErr := mailbox.MessagePath(srcBox, s.folder.Name, m)
+			if pathErr != nil {
+				return fmt.Errorf("imap/move path: %w", pathErr)
+			}
+			newFilename, guid, moveErr = srcBox.Move(s.folder.Name, destRel, srcName, m.GUID)
 			if moveErr != nil {
 				return fmt.Errorf("imap/move relocate: %w", moveErr)
 			}
 		} else {
 			// Cross-namespace: no shared storage to relocate within, so copy the
 			// body over and hand the source GUID to Save, which stores it verbatim.
-			rc, fetchErr := srcBox.Fetch(s.folder.Name, m.Filename, m.AltTier)
+			rc, fetchErr := mailbox.OpenMessage(srcBox, s.folder.Name, m)
 			if fetchErr != nil {
 				return fmt.Errorf("imap/move fetch: %w", fetchErr)
 			}

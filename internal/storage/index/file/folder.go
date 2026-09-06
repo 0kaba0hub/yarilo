@@ -109,15 +109,17 @@ func (u *userIndex) openFolder(folder string, uidValidity uint32, traceID string
 		return nil, namesErr
 	}
 	fs := &folderState{
-		user:        u.username,
-		folder:      folder,
-		indexDir:    indexDir,
-		indexPath:   indexPath,
-		volatileDir: u.folderVolatileDir(folder),
-		filenames:   names,
-		sizes:       sizes,
-		traceID:     traceID,
-		intent:      intent,
+		user:          u.username,
+		folder:        folder,
+		derivedName:   derivesName(u.driver),
+		driverIsSdbox: u.driver == "sdbox" || u.driver == "dbox",
+		indexDir:      indexDir,
+		indexPath:     indexPath,
+		volatileDir:   u.folderVolatileDir(folder),
+		filenames:     names,
+		sizes:         sizes,
+		traceID:       traceID,
+		intent:        intent,
 	}
 	if err := u.loadOrInit(fs, uidValidity); err != nil {
 		return nil, err
@@ -665,7 +667,7 @@ func (fs *folderState) flush(wholeNames bool) error {
 		return fmt.Errorf("fileindex/flush: recreate: %w", err)
 	}
 	fs.lineage = next
-	if wholeNames {
+	if wholeNames && !fs.derivedName {
 		if fs.namesFD != nil {
 			_ = fs.namesFD.Close()
 			fs.namesFD = nil
@@ -1588,7 +1590,7 @@ func (u *userIndex) getMessages(folderID uint64, uids mailbox.SeqSet, unlocked b
 			}
 			meta := &mailbox.MessageMeta{
 				UID:      rec.UID,
-				Filename: fs.filenames[rec.UID],
+				Filename: fs.nameOf(rec),
 				Flags:    indexFlagsToIMAP(uint8(rec.Flags)),
 				Size:     fs.sizes[rec.UID],
 				AltTier:  rec.Flags&mailindex.FlagBackend != 0,
@@ -1820,7 +1822,7 @@ func (u *userIndex) SetAltTier(folderID uint64, filenames []string, altTier bool
 	return u.withFolder(folderID, func(fs *folderState) error {
 		changed := false
 		for _, rec := range fs.file.Records {
-			fn := fs.filenames[rec.UID]
+			fn := fs.nameOf(rec)
 			if _, ok := set[fn]; !ok {
 				continue
 			}
