@@ -669,7 +669,11 @@ func (fs *folderState) flush(wholeNames bool) error {
 			_ = fs.namesFD.Close()
 			fs.namesFD = nil
 		}
-		if err := saveNames(fs.indexDir, fs.volatileDir, fs.filenames, fs.sizes); err != nil {
+		live := make(map[uint32]struct{}, len(fs.file.Records))
+		for _, rec := range fs.file.Records {
+			live[rec.UID] = struct{}{}
+		}
+		if err := saveNames(fs.indexDir, fs.volatileDir, fs.folder, fs.filenames, fs.sizes, live, fs.file.Header.NextUID); err != nil {
 			return err
 		}
 	}

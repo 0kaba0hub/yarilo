@@ -1221,9 +1221,12 @@ func (fs *folderState) appendName(uid uint32, filename string, size uint32) erro
 	return nil
 }
 
-// saveNames rewrites the .names sidecar atomically, one <uid> <filename> <size>
-// line each, through volatileDir like every other sidecar rewrite here.
-func saveNames(indexDir, volatileDir string, names map[uint32]string, sizes map[uint32]uint32) error {
+// saveNames rewrites the .names sidecar from the records the index holds, name
+// from memory else from disk: a record returns through the log, a name has none
+// (#1693). A uid on disk the records lack is kept at or above nextUID (an
+// append not replayed here), dropped below it as expunged. Under the folder's
+// exclusive lock, the one appendName writes under.
+func saveNames(indexDir, volatileDir, folder string, names map[uint32]string, sizes map[uint32]uint32, live map[uint32]struct{}, nextUID uint32) error {
 	if err := os.MkdirAll(indexDir, 0o700); err != nil {
 		return fmt.Errorf("fileindex/names: mkdir: %w", err)
 	}
@@ -1232,24 +1235,41 @@ func saveNames(indexDir, volatileDir string, names map[uint32]string, sizes map[
 			return fmt.Errorf("fileindex/names: mkdir volatile: %w", err)
 		}
 	}
+	onDisk, diskSizes, err := loadNames(indexDir)
+	if err != nil {
+		return err
+	}
+	write := make(map[uint32]struct{}, len(live))
+	for uid := range live {
+		write[uid] = struct{}{}
+	}
+	for uid := range onDisk {
+		if _, held := live[uid]; !held && uid >= nextUID {
+			write[uid] = struct{}{}
+		}
+	}
 	dst := namesPath(indexDir)
 	tmp := sidecarTmpPath(dst, volatileDir)
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("fileindex/names: open tmp: %w", err)
 	}
-	// Collect all UIDs from both maps so messages with no filename
-	// (but a known size) are still persisted.
-	all := make(map[uint32]struct{}, len(names))
-	for uid := range names {
-		all[uid] = struct{}{}
-	}
-	for uid := range sizes {
-		all[uid] = struct{}{}
-	}
 	bw := bufio.NewWriter(f)
-	for uid := range all {
-		fmt.Fprintf(bw, "%d\t%s\t%d\n", uid, names[uid], sizes[uid]) //nolint:errcheck
+	for uid := range write {
+		name, size := names[uid], sizes[uid]
+		if name == "" {
+			name = onDisk[uid]
+			if size == 0 {
+				size = diskSizes[uid]
+			}
+		}
+		// Logged, not refused: a migrated index arrives before anything has
+		// named its records.
+		if name == "" {
+			slog.Error("fileindex: a record the index holds is named nowhere",
+				"folder", folder, "uid", uid, "index_dir", indexDir)
+		}
+		fmt.Fprintf(bw, "%d\t%s\t%d\n", uid, name, size) //nolint:errcheck
 	}
 	if err := bw.Flush(); err != nil {
 		_ = f.Close()
