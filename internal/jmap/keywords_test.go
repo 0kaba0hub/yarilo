@@ -19,22 +19,22 @@ func TestKeywordsOfCarriesCustomKeywordsThrough(t *testing.T) {
 	}{
 		{
 			name: "system flags map to their keywords",
-			meta: &mailbox.MessageMeta{Flags: []string{`\Seen`, `\Flagged`, `\Answered`, `\Draft`, `\Deleted`}},
+			meta: &mailbox.MessageMeta{Flags: []string{`\Seen`, `\Flagged`, `\Answered`, `\Draft`, `\Deleted`}, Filename: "m"},
 			want: []string{"$seen", "$flagged", "$answered", "$draft", "$deleted"},
 		},
 		{
 			name: "a custom keyword survives beside a system flag",
-			meta: &mailbox.MessageMeta{Flags: []string{`\Seen`}, Keywords: []string{"$smokelabel"}},
+			meta: &mailbox.MessageMeta{Flags: []string{`\Seen`}, Keywords: []string{"$smokelabel"}, Filename: "m"},
 			want: []string{"$seen", "$smokelabel"},
 		},
 		{
 			name: "keyword case is folded, as JMAP keywords are case-insensitive",
-			meta: &mailbox.MessageMeta{Keywords: []string{"$SmokeLabel"}},
+			meta: &mailbox.MessageMeta{Keywords: []string{"$SmokeLabel"}, Filename: "m"},
 			want: []string{"$smokelabel"},
 		},
 		{
 			name:  "session state is not a keyword",
-			meta:  &mailbox.MessageMeta{Flags: []string{`\Seen`, `\Recent`}},
+			meta:  &mailbox.MessageMeta{Flags: []string{`\Seen`, `\Recent`}, Filename: "m"},
 			want:  []string{"$seen"},
 			unwan: []string{`\recent`, "$recent"},
 		},

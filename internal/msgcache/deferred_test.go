@@ -18,7 +18,7 @@ func newFolder(t *testing.T) (mailbox.UserIndex, uint64, *mailbox.MessageMeta) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &mailbox.MessageMeta{UID: 1}
+	m := &mailbox.MessageMeta{UID: 1, Filename: "m"}
 	if err := idx.AppendMessage(f.ID, m); err != nil {
 		t.Fatal(err)
 	}

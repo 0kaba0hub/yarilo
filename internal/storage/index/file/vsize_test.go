@@ -21,9 +21,9 @@ func TestVsizeAggregate(t *testing.T) {
 
 	// Append three messages with distinct virtual sizes.
 	msgs := []*mailbox.MessageMeta{
-		{UID: 1, VSize: 100, Size: 90},
-		{UID: 2, VSize: 200, Size: 180},
-		{UID: 3, VSize: 300, Size: 270},
+		{UID: 1, VSize: 100, Size: 90, Filename: "m"},
+		{UID: 2, VSize: 200, Size: 180, Filename: "m"},
+		{UID: 3, VSize: 300, Size: 270, Filename: "m"},
 	}
 	for _, m := range msgs {
 		if err := idx.AppendMessage(f.ID, m); err != nil {
@@ -70,7 +70,7 @@ func TestVsizeFallbackToPhysical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFolder: %v", err)
 	}
-	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Size: 512}); err != nil {
+	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Size: 512, Filename: "m"}); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	bytes, count, _ := idx.FolderVSize(f.ID)

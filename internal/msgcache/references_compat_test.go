@@ -17,7 +17,7 @@ func compatFolder(t *testing.T) (mailbox.UserIndex, *mailbox.Folder, *mailbox.Me
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &mailbox.MessageMeta{UID: 1}
+	m := &mailbox.MessageMeta{UID: 1, Filename: "m"}
 	if err := idx.AppendMessage(f.ID, m); err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestAPreloadedHandleStillSeesWhatItAppends(t *testing.T) {
 	fc.StoreEnvelope(first, &imaplib.Envelope{Subject: "First", MessageID: "<a@x>"})
 	fc.Close()
 
-	second := &mailbox.MessageMeta{UID: 2}
+	second := &mailbox.MessageMeta{UID: 2, Filename: "m"}
 	if err := idx.AppendMessage(f.ID, second); err != nil {
 		t.Fatal(err)
 	}
