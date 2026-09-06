@@ -96,7 +96,7 @@ type NamingAppender interface {
 // StoredNameAdopter moves what a sidecar holds into the records: the caller
 // reads its own storage key out of each stored name.
 type StoredNameAdopter interface {
-	AdoptStoredNames(folderID uint64, keyOf func(name string) (uint32, bool)) error
+	AdoptStoredNames(folderID uint64, keyOf func(name string, guid [16]byte) (uint32, bool)) error
 }
 
 // UIDNameMarker answers, and records, whether a folder's message files already

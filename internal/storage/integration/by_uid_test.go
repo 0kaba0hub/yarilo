@@ -492,3 +492,55 @@ func TestTheSizeIsWhatWasStoredNotWhatWasHandedOver(t *testing.T) {
 		})
 	}
 }
+
+// The mdbox half: a record whose sidecar line is gone has no name to read, and
+// the map knows it by the guid the record carries (#1713).
+func TestANamelessMdboxRecordFindsItsKeyByGUID(t *testing.T) {
+	home := t.TempDir()
+	info := &mailbox.UserInfo{Username: "u1@example.com", Home: home, Driver: "mdbox"}
+	box := mdbox.New().OpenUser(info)
+	defer box.Close() //nolint:errcheck
+	if err := box.Init(); err != nil {
+		t.Fatal(err)
+	}
+	idx := indexfile.New().OpenUser(info)
+	f, err := idx.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "From: a@b\r\n\r\nlost name\r\n"
+	saved, vsize, guid, err := box.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = saved
+	// The record an older build left after losing its sidecar line: a guid, a
+	// size, no name and no key.
+	if err := idx.AppendMessage(f.ID, &mailbox.MessageMeta{
+		UID: 1, Size: uint32(len(body)), VSize: vsize, GUID: guid, SelfNamed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx.Close() //nolint:errcheck
+
+	fresh := indexfile.New().OpenUser(info)
+	defer fresh.Close() //nolint:errcheck
+	f2, err := fresh.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrate(t, box, fresh, f2)
+
+	msgs, err := fresh.GetMessages(f2.ID, mailbox.SeqSet{{From: 1, To: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].MapUID == 0 {
+		t.Fatalf("the record still names no storage: %+v", msgs)
+	}
+	rc, err := mailbox.OpenMessage(box, "INBOX", msgs[0])
+	if err != nil {
+		t.Fatalf("the healed message cannot be read: %v", err)
+	}
+	rc.Close() //nolint:errcheck
+}

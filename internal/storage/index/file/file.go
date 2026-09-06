@@ -314,7 +314,7 @@ func (h *userHandle) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) 
 func (h *userHandle) AllocateAndAppendNamed(folderID uint64, m *mailbox.MessageMeta, name func(uint32) (string, error)) error {
 	return h.stamped(folderID).AllocateAndAppendNamed(folderID, m, name)
 }
-func (h *userHandle) AdoptStoredNames(folderID uint64, keyOf func(string) (uint32, bool)) error {
+func (h *userHandle) AdoptStoredNames(folderID uint64, keyOf func(string, [16]byte) (uint32, bool)) error {
 	return h.stamped(folderID).AdoptStoredNames(folderID, keyOf)
 }
 func (h *userHandle) MarkUIDNamedPass(folderID uint64, pass uint32) error {

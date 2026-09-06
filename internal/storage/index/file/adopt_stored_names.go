@@ -7,10 +7,9 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// AdoptStoredNames hands each stored name to the caller, which reads its own
-// storage key out of it, and keeps the answer in the record. The folder is then
-// marked: from there on the record is the only place a message is named (#1700).
-func (u *userIndex) AdoptStoredNames(folderID uint64, keyOf func(string) (uint32, bool)) error {
+// AdoptStoredNames hands each record's stored name and guid to the caller for
+// its storage key, keeps the answer, and marks the folder (#1700).
+func (u *userIndex) AdoptStoredNames(folderID uint64, keyOf func(name string, guid [16]byte) (uint32, bool)) error {
 	return u.withFolder(folderID, func(fs *folderState) error {
 		if uidNamedLocked(fs) {
 			return nil
@@ -20,7 +19,7 @@ func (u *userIndex) AdoptStoredNames(folderID uint64, keyOf func(string) (uint32
 			if mapUID, _ := decodeMdboxRec(rec.Ext[extNameMdbox]); mapUID != 0 {
 				continue
 			}
-			key, ok := keyOf(fs.filenames[rec.UID])
+			key, ok := keyOf(fs.filenames[rec.UID], decodeGUIDRec(rec.Ext[extNameGUID]))
 			if !ok {
 				continue
 			}
