@@ -1251,6 +1251,9 @@ func (s *session) Select(name string, opts *imaplib.SelectOptions) (*imaplib.Sel
 	if refreshed := s.maildirSyncOnSelect(h, rel, f); refreshed != nil {
 		f = refreshed
 	}
+	if refreshed := s.migrateNamesOnSelect(h, rel, f); refreshed != nil {
+		f = refreshed
+	}
 	if refreshed := s.dboxHealIfCorrupt(h, rel, f); refreshed != nil {
 		f = refreshed
 	}
@@ -1580,8 +1583,8 @@ func (s *session) renameInbox(dest string) error {
 			InternalDate: m.InternalDate,
 			GUID:         guid,
 		}
-		if err := s.idx.AllocateAndAppend(destFolder.ID, nm); err != nil {
-			_ = s.box.Remove(dest, newFilename)
+		if err := mailbox.RecordSaved(s.idx, s.box, destFolder.ID, dest, nm); err != nil {
+			_ = s.box.Remove(dest, nm.Filename)
 			return fmt.Errorf("imap/rename-inbox record: %w", err)
 		}
 		s.emitMailboxChangeSized(destFolder, locks.EventDelivered, nm.UID, usageDelta(nm))
@@ -2290,10 +2293,12 @@ func (s *session) Append(name string, r imaplib.LiteralReader, opts *imaplib.App
 		Filename: filename, Flags: flagList, Keywords: kwList, Size: uint32(size), VSize: vsize,
 		InternalDate: internalDate, GUID: guid,
 	}
-	if err := h.idx.AllocateAndAppend(f.ID, m); err != nil {
+	if err := mailbox.RecordSaved(h.idx, h.box, f.ID, rel, m); err != nil {
 		_ = h.box.Remove(rel, filename)
 		return nil, fmt.Errorf("imap/append record: %w", err)
 	}
+	// A uid-named driver renamed the file inside that cycle.
+	filename = m.Filename
 	tDone := time.Now()
 	slog.Debug("imap: append timing",
 		"user", s.userInfo.Username, "folder", rel, "size", size,
@@ -3699,8 +3704,8 @@ func (s *session) Copy(numSet imaplib.NumSet, dest string) (*imaplib.CopyData, e
 			GUID:         guid,
 		}
 		tIndex := time.Now()
-		if err := destH.idx.AllocateAndAppend(destFolder.ID, nm); err != nil {
-			_ = destH.box.Remove(destRel, newFilename)
+		if err := mailbox.RecordSaved(destH.idx, destH.box, destFolder.ID, destRel, nm); err != nil {
+			_ = destH.box.Remove(destRel, nm.Filename)
 			return nil, fmt.Errorf("imap/copy record: %w", err)
 		}
 		indexTotalMs += time.Since(tIndex).Milliseconds()
@@ -4085,11 +4090,11 @@ func (s *session) Move(w *imapserver.MoveWriter, numSet imaplib.NumSet, dest str
 			GUID:         guid,
 		}
 		tIndex := time.Now()
-		if err := destH.idx.AllocateAndAppend(destFolder.ID, nm); err != nil {
+		if err := mailbox.RecordSaved(destH.idx, destH.box, destFolder.ID, destRel, nm); err != nil {
 			if srcBox == destH.box {
-				_, _, _ = srcBox.Move(destRel, s.folder.Name, newFilename, guid)
+				_, _, _ = srcBox.Move(destRel, s.folder.Name, nm.Filename, guid)
 			} else {
-				_ = destH.box.Remove(destRel, newFilename)
+				_ = destH.box.Remove(destRel, nm.Filename)
 			}
 			return fmt.Errorf("imap/move record: %w", err)
 		}

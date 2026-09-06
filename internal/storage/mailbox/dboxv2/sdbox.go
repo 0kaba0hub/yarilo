@@ -353,23 +353,25 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 		guid = randomGUID()
 	}
 	now := uint32(time.Now().Unix())
-	finalName := fmt.Sprintf("%s%s", sdboxMailPrefix, guidHex(guid))
 
 	var buf bytes.Buffer
 	buf.Write(encodeFileHeaderLine(now))
 	buf.Write(encodeMessageHeader(messageHeader{Size: uint64(physSize)}))
 	buf.Write(body)
+	// R, V, G: the order the reference writes, so a store of ours differs from
+	// one of theirs in no byte a reader has to skip past.
 	buf.Write(encodeMetadataBlock([]metadataEntry{
-		{Key: metaKeyGUID, Value: guidHex(guid)},
 		{Key: metaKeyReceived, Value: fmt.Sprintf("%x", now)},
 		{Key: metaKeyVirtualSize, Value: fmt.Sprintf("%x", virtSize)},
+		{Key: metaKeyGUID, Value: guidHex(guid)},
 	}))
 
+	// The file keeps its temp name until a uid exists: the name is u.<uid>, and
+	// only the caller's allocating cycle knows the number (#1704).
 	tempName := u.makeTempName()
-	err = u.withMailboxLock(folder, func() error {
+	err = func() error {
 		dir := u.folderPath(folder)
 		tempPath := filepath.Join(dir, tempName)
-		finalPath := filepath.Join(dir, finalName)
 
 		f, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
@@ -384,16 +386,26 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 			_ = os.Remove(tempPath)
 			return fmt.Errorf("sdbox/save: close: %w", err)
 		}
-		if err := os.Rename(tempPath, finalPath); err != nil {
-			_ = os.Remove(tempPath)
-			return fmt.Errorf("sdbox/save: rename %s → %s: %w", tempPath, finalPath, err)
-		}
 		return nil
-	})
+	}()
 	if err != nil {
 		return "", 0, noGUID, err
 	}
-	return finalName, virtSize, guid, nil
+	return tempName, virtSize, guid, nil
+}
+
+// AssignUID gives a saved message the only name the reference knows for it,
+// u.<uid>. One rename, inside the caller's cycle (#1704).
+func (u *userMailbox) AssignUID(folder, tempName string, uid uint32) (string, error) {
+	if uid == 0 {
+		return "", fmt.Errorf("sdbox/assign: uid 0 names no message")
+	}
+	final := fmt.Sprintf("%s%d", sdboxMailPrefix, uid)
+	dir := u.folderPath(folder)
+	if err := os.Rename(filepath.Join(dir, tempName), filepath.Join(dir, final)); err != nil {
+		return "", fmt.Errorf("sdbox/assign: rename %s -> %s: %w", tempName, final, err)
+	}
+	return final, nil
 }
 
 // Move relocates a message between folders by renaming the file; the GUID lives
@@ -414,11 +426,9 @@ func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte)
 		}
 		dstPath := filepath.Join(u.folderPath(dstFolder), newName)
 		if _, err := os.Lstat(dstPath); err == nil {
-			// Name taken in the destination: mint one from the GUID.
-			if guid == noGUID {
-				return fmt.Errorf("sdbox/move: %s exists in %s and no guid to rename by", newName, dstFolder)
-			}
-			newName = fmt.Sprintf("%s%s", sdboxMailPrefix, guidHex(guid))
+			// Taken: park it under a temp name until the destination's uid
+			// exists, since only that gives the file its name (#1704).
+			newName = u.makeTempName()
 			dstPath = filepath.Join(u.folderPath(dstFolder), newName)
 		}
 		if err := os.Rename(srcPath, dstPath); err != nil {

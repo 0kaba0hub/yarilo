@@ -311,6 +311,15 @@ func (h *userHandle) AllocateUIDWithModSeq(folderID uint64) (uint32, uint64, err
 func (h *userHandle) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) error {
 	return h.stamped(folderID).AllocateAndAppend(folderID, m)
 }
+func (h *userHandle) AllocateAndAppendNamed(folderID uint64, m *mailbox.MessageMeta, name func(uint32) (string, error)) error {
+	return h.stamped(folderID).AllocateAndAppendNamed(folderID, m, name)
+}
+func (h *userHandle) UIDNamed(folderID uint64) (bool, error) {
+	return h.stamped(folderID).UIDNamed(folderID)
+}
+func (h *userHandle) MarkUIDNamed(folderID uint64) error {
+	return h.stamped(folderID).MarkUIDNamed(folderID)
+}
 func (h *userHandle) UpdateFlags(folderID uint64, uid uint32, flags, keywords []string) error {
 	return h.stamped(folderID).UpdateFlags(folderID, uid, flags, keywords)
 }

@@ -47,7 +47,7 @@ func TestGUIDIsRealAndStable(t *testing.T) {
 			}
 
 			body := "Subject: t\r\n\r\nbody\r\n"
-			name1, _, guid1, err := mb.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil, zero)
+			name1, guid1, err := saveAndName(mb, "INBOX", body, 1, zero)
 			if err != nil {
 				t.Fatalf("save: %v", err)
 			}
@@ -55,7 +55,7 @@ func TestGUIDIsRealAndStable(t *testing.T) {
 				t.Fatal("Save returned a zero GUID: EMAILID would be all-zero")
 			}
 
-			name2, _, guid2, err := mb.Save("INBOX", strings.NewReader(body), 2, int64(len(body)), nil, zero)
+			name2, guid2, err := saveAndName(mb, "INBOX", body, 2, zero)
 			if err != nil {
 				t.Fatalf("save 2: %v", err)
 			}
@@ -118,7 +118,7 @@ func TestGUIDSurvivesFlagChange(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	body := "Subject: t\r\n\r\nbody\r\n"
-	name, _, guid, err := mb.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil, [16]byte{})
+	name, guid, err := saveAndName(mb, "INBOX", body, 1, [16]byte{})
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -161,13 +161,17 @@ func TestGUIDReachesIndex(t *testing.T) {
 		t.Fatalf("allocate: %v", err)
 	}
 	body := "Subject: t\r\n\r\nbody\r\n"
-	name, vsize, guid, err := mb.Save("INBOX", strings.NewReader(body), uid, int64(len(body)), nil, [16]byte{})
+	temp, vsize, guid, err := mb.Save("INBOX", strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{})
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if err := idx.AppendMessage(folder.ID, &mailbox.MessageMeta{
-		UID: uid, Filename: name, Size: uint32(len(body)), VSize: vsize, GUID: guid,
-	}); err != nil {
+	meta := &mailbox.MessageMeta{
+		UID: uid, Filename: temp, Size: uint32(len(body)), VSize: vsize, GUID: guid,
+	}
+	if err := mailbox.NameSaved(mb, "INBOX", meta); err != nil {
+		t.Fatalf("name: %v", err)
+	}
+	if err := idx.AppendMessage(folder.ID, meta); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
@@ -184,4 +188,19 @@ func TestGUIDReachesIndex(t *testing.T) {
 	if got[0].GUID == ([16]byte{}) {
 		t.Fatal("index returned a zero GUID: this is the shipped EMAILID bug")
 	}
+}
+
+// saveAndName performs the two steps a save takes: the body, then the name a
+// uid gives it for a driver named that way.
+func saveAndName(mb mailbox.UserMailbox, folder, body string, uid uint32, guid [16]byte) (string, [16]byte, error) {
+	temp, _, g, err := mb.Save(folder, strings.NewReader(body), 0, int64(len(body)), nil, guid)
+	if err != nil {
+		return "", g, err
+	}
+	namer, ok := mailbox.Driver(mb).(mailbox.UIDNamer)
+	if !ok {
+		return temp, g, nil
+	}
+	name, err := namer.AssignUID(folder, temp, uid)
+	return name, g, err
 }
