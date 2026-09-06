@@ -1175,9 +1175,8 @@ func loadNames(indexDir string) (map[uint32]string, map[uint32]uint32, error) {
 	return names, sizes, nil
 }
 
-// requireFilename guards the two places a record is created: a record with no
-// filename is a message nobody can read. The record is kept anyway -- dropping
-// it would lose the mail this is about (#1693).
+// requireFilename guards the two places a record is created: no filename is a
+// message nobody can read. The record is kept anyway (#1693).
 func requireFilename(where, folder string, uid uint32, filename string) {
 	if filename != "" {
 		return
