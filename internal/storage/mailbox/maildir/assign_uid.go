@@ -24,8 +24,8 @@ func (u *userMailbox) takeGUID(folder, filename string) ([16]byte, bool) {
 	return guid, ok
 }
 
-// AssignUID records the message in the folder's list, inside the caller's own
-// uid cycle. The name does not change: on maildir the uid lives in the list.
+// AssignUID records the message in the folder's list, inside the caller's uid
+// cycle. No rename: on maildir the uid lives in the list, not in the name.
 func (u *userMailbox) AssignUID(folder, filename string, uid uint32) (string, error) {
 	if uid == 0 {
 		return "", fmt.Errorf("maildir/assign: uid 0 names no message")

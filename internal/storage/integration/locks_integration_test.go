@@ -149,9 +149,7 @@ func TestTwoProcessAppendNoUIDCollision(t *testing.T) {
 						errCh <- &dupErr{uid: uid}
 						return
 					}
-					// 2. Save the body, then record it against the uid the
-					//    step above reserved: maildir writes the list there,
-					//    sdbox renames to u.<uid>.
+					// 2. Save the body, then record it against the reserved uid.
 					content := strings.NewReader("hello from p" +
 						strconv.Itoa(pid) + ":g" + strconv.Itoa(gid) + ":k" + strconv.Itoa(k))
 					filename, _, _, err := mb.Save("INBOX", content, 0, 0, nil, [16]byte{})
@@ -164,7 +162,6 @@ func TestTwoProcessAppendNoUIDCollision(t *testing.T) {
 						errCh <- err
 						return
 					}
-					filename = meta.Filename
 					// 3. Record the meta under the same lock.
 					if err := idx.AppendMessage(folder.ID, meta); err != nil {
 						errCh <- err

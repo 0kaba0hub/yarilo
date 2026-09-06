@@ -40,9 +40,8 @@ func headerNextUID(t *testing.T, header string) uint32 {
 	return 0
 }
 
-// The list is the mapping, so it is written where the uid is handed out: it
-// used to wait for a reconcile, and until one ran the list named neither the
-// message nor the right next uid (#1703, #1700).
+// The list is written where the uid is handed out: waiting for a reconcile left
+// it naming neither the message nor the right next uid (#1703, #1700).
 func TestTheListCarriesAnAppendBeforeAnyReconcile(t *testing.T) {
 	home := t.TempDir()
 	info := &mailbox.UserInfo{Username: "u1@example.com", Home: home, Driver: "maildir"}
