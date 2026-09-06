@@ -1064,8 +1064,7 @@ func (u *userIndex) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) e
 }
 
 // AllocateAndAppendNamed settles the name inside the cycle that hands out the
-// uid: a driver named by uid cannot know it any earlier, and a second cycle
-// would take the folder key twice for one APPEND (#1704).
+// uid: a second cycle would take the folder key twice for one APPEND (#1704).
 func (u *userIndex) AllocateAndAppendNamed(folderID uint64, m *mailbox.MessageMeta, name func(uint32) (string, error)) error {
 	if err := u.withFolder(folderID, func(fs *folderState) error {
 		next := fs.file.Header.NextUID

@@ -16,9 +16,8 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// The reference names an sdbox message u.<uid> -- its own fixtures are u.1 and
-// u.2 -- and a store of u.<guid> names is one it cannot read (#1704). The name
-// is settled inside the same cycle that hands out the uid.
+// The reference names an sdbox message u.<uid> -- its fixtures are u.1 and u.2
+// -- and a store of u.<guid> names is one it cannot read (#1704).
 func TestASavedMessageIsNamedByItsUID(t *testing.T) {
 	_, mb, home := newTestUser(t)
 	idx := fileidx.New().OpenUser(&mailbox.UserInfo{Username: "alice@example.com", Home: home})
@@ -133,6 +132,10 @@ func TestAGUIDNamedStoreIsMigrated(t *testing.T) {
 	}
 	var got []string
 	for _, e := range entries {
+		// The folder's own state files sit here too: the index and the marker.
+		if strings.HasPrefix(e.Name(), "yarilo.") {
+			continue
+		}
 		got = append(got, e.Name())
 	}
 	sort.Strings(got)
@@ -267,9 +270,8 @@ func TestAnAppendTakesTheFolderKeyOnce(t *testing.T) {
 	}
 }
 
-// Every path that puts a file in a folder names it u.<uid> -- the shape the
-// reference's own fixtures carry (sdbox-u.1, sdbox-u.2). One path still minting
-// a name from a GUID would leave a store it cannot read (#1704).
+// Every path that puts a file in a folder names it u.<uid>: one still minting a
+// name from a GUID would leave a store the reference cannot read (#1704).
 func TestNoPathWritesAGUIDName(t *testing.T) {
 	_, mb, home := newTestUser(t)
 	idx := fileidx.New().OpenUser(&mailbox.UserInfo{Username: "alice@example.com", Home: home})
@@ -377,5 +379,114 @@ func TestOnlyAnOldTempIsSweptAway(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, young)); err != nil {
 		t.Errorf("a save in flight was swept away: %v", err)
+	}
+}
+
+// dirCountingRecorder counts what a pass takes and how often it reads the
+// folder, so "does nothing" is measured rather than assumed.
+type dirCountingRecorder struct {
+	appendRecorder
+}
+
+// A folder that has been through the pass is not read again: the migration is
+// one pass per folder, not work on every SELECT (#1704).
+func TestAMigratedFolderIsNotWalkedAgain(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "sdbox", "mailboxes", "INBOX", "dbox-Mails")
+	rec := &appendRecorder{dir: dir}
+	info := &mailbox.UserInfo{Username: "alice@example.com", Home: home}
+	mb := New(WithLocker(rec)).OpenUser(info)
+	if err := mb.Init(); err != nil {
+		t.Fatal(err)
+	}
+	idx := fileidx.New().OpenUser(info)
+	defer idx.Close() //nolint:errcheck
+	folder, err := idx.OpenFolder("INBOX", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveNamed(t, mb, "INBOX", "msg\n", 1, [16]byte{})
+
+	migrator := mb.(interface {
+		MigrateUIDNames(mailbox.UserIndex, *mailbox.Folder) (int, error)
+	})
+	if _, err := migrator.MigrateUIDNames(idx, folder); err != nil {
+		t.Fatal(err)
+	}
+
+	// Everything from here on is what a later SELECT does.
+	rec.mu.Lock()
+	rec.taken = nil
+	rec.mu.Unlock()
+	before := dirMTime(t, dir)
+
+	for i := 0; i < 3; i++ {
+		if n, err := migrator.MigrateUIDNames(idx, folder); err != nil || n != 0 {
+			t.Fatalf("pass %d: renamed %d, err %v -- a migrated folder has nothing to do", i, n, err)
+		}
+	}
+	rec.mu.Lock()
+	taken := append([]string(nil), rec.taken...)
+	rec.mu.Unlock()
+	if len(taken) != 0 {
+		t.Errorf("a migrated folder took %v on SELECT", taken)
+	}
+	if after := dirMTime(t, dir); !after.Equal(before) {
+		t.Errorf("the folder was written to on a SELECT: %v -> %v", before, after)
+	}
+}
+
+func dirMTime(t *testing.T, dir string) time.Time {
+	t.Helper()
+	st, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st.ModTime()
+}
+
+// A move into a folder where that name is taken ends with the message under the
+// destination's own uid, and no parked file left in either folder (#1704).
+func TestAMoveIntoATakenNameEndsUnderTheDestinationUID(t *testing.T) {
+	_, mb, home := newTestUser(t)
+	idx := fileidx.New().OpenUser(&mailbox.UserInfo{Username: "alice@example.com", Home: home})
+	defer idx.Close() //nolint:errcheck
+	if err := mb.Create("Archive"); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := idx.OpenFolder("Archive", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// u.1 exists in both folders: the move collides on the name.
+	saveNamed(t, mb, "INBOX", "one\n", 1, [16]byte{})
+	saveNamed(t, mb, "Archive", "other\n", 1, [16]byte{})
+
+	moved, _, err := mb.Move("INBOX", "Archive", "u.1", [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &mailbox.MessageMeta{Filename: moved, Size: 4, VSize: 4}
+	if err := mailbox.RecordSaved(idx, mb, archive.ID, "Archive", m); err != nil {
+		t.Fatal(err)
+	}
+	if want := "u." + strconv.FormatUint(uint64(m.UID), 10); m.Filename != want {
+		t.Errorf("the moved message is %q, want %q", m.Filename, want)
+	}
+	for _, folder := range []string{"INBOX", "Archive"} {
+		entries, rerr := os.ReadDir(filepath.Join(home, "sdbox", "mailboxes", folder, "dbox-Mails"))
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".temp.") {
+				t.Errorf("%s still holds a parked file %s", folder, e.Name())
+			}
+		}
+	}
+	if rc, ferr := mb.Fetch("Archive", m.Filename, false); ferr != nil {
+		t.Errorf("the moved message cannot be read: %v", ferr)
+	} else {
+		rc.Close() //nolint:errcheck
 	}
 }

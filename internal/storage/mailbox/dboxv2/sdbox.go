@@ -358,10 +358,12 @@ func (u *userMailbox) Save(folder string, r io.Reader, _ uint32, _ int64, _ []st
 	buf.Write(encodeFileHeaderLine(now))
 	buf.Write(encodeMessageHeader(messageHeader{Size: uint64(physSize)}))
 	buf.Write(body)
+	// R, V, G: the order the reference writes, so a store of ours differs from
+	// one of theirs in no byte a reader has to skip past.
 	buf.Write(encodeMetadataBlock([]metadataEntry{
-		{Key: metaKeyGUID, Value: guidHex(guid)},
 		{Key: metaKeyReceived, Value: fmt.Sprintf("%x", now)},
 		{Key: metaKeyVirtualSize, Value: fmt.Sprintf("%x", virtSize)},
+		{Key: metaKeyGUID, Value: guidHex(guid)},
 	}))
 
 	// The file keeps its temp name until a uid exists: the name is u.<uid>, and
