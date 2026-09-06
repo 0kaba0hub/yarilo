@@ -216,7 +216,7 @@ func (u *userMailbox) writeUIDList(folder string, l *uidList) error {
 	}
 	// Synced before the rename: a crash in between otherwise leaves a list of
 	// zero length, and every file behind it takes a fresh uid.
-	if err := f.Sync(); err != nil {
+	if err := syncFile(f); err != nil {
 		f.Close()      //nolint:errcheck
 		os.Remove(tmp) //nolint:errcheck
 		return fmt.Errorf("maildir/uidlist: sync: %w", err)
@@ -225,12 +225,22 @@ func (u *userMailbox) writeUIDList(folder string, l *uidList) error {
 		os.Remove(tmp) //nolint:errcheck
 		return fmt.Errorf("maildir/uidlist: close: %w", err)
 	}
+	if beforeUIDListRename != nil {
+		beforeUIDListRename(tmp)
+	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp) //nolint:errcheck
 		return fmt.Errorf("maildir/uidlist: rename: %w", err)
 	}
 	return nil
 }
+
+// syncFile is the durability call, and beforeUIDListRename runs after it. Test
+// seams: the order is measured, not read off the comment above it.
+var (
+	syncFile            = (*os.File).Sync
+	beforeUIDListRename func(tmp string)
+)
 
 // dotlock takes the lock file beside the list with O_EXCL and returns its
 // release. A stale one older than staleDotlock is removed, not waited on.
@@ -331,4 +341,13 @@ func (u *userMailbox) ensureUIDListLocked(folder string) error {
 		return fmt.Errorf("maildir/uidlist: mkdir control: %w", err)
 	}
 	return u.writeUIDList(folder, &uidList{})
+}
+
+// SetTestWriteSeams points the durability call and the pre-rename hook at a
+// test's own. Both nil restores the real ones.
+func SetTestWriteSeams(sync func(*os.File) error, beforeRename func(string)) {
+	if sync == nil {
+		sync = (*os.File).Sync
+	}
+	syncFile, beforeUIDListRename = sync, beforeRename
 }

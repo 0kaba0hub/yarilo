@@ -349,3 +349,39 @@ func TestAMovedForeignNameCarriesMeasuredSizes(t *testing.T) {
 		t.Errorf("the record is %q, want the sizes the file measures: %s and %s", recs[0], wantS, wantW)
 	}
 }
+
+// The list reaches the disk before it takes its name: a crash after the rename
+// and before the data would leave a list of zero length (#1701).
+func TestTheListIsSyncedBeforeItIsRenamed(t *testing.T) {
+	home := t.TempDir()
+	info := &mailbox.UserInfo{Username: "u1@example.com", Home: home, Driver: "maildir"}
+	box := maildir.New().OpenUser(info)
+	defer box.Close() //nolint:errcheck
+	if err := box.Create("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+
+	var order []string
+	var atRename string
+	maildir.SetTestWriteSeams(
+		func(f *os.File) error { order = append(order, "sync"); return f.Sync() },
+		func(tmp string) {
+			order = append(order, "rename")
+			raw, err := os.ReadFile(tmp)
+			if err != nil {
+				t.Errorf("read the temp list: %v", err)
+			}
+			atRename = string(raw)
+		})
+	defer maildir.SetTestWriteSeams(nil, nil)
+
+	if _, _, _, err := box.Save("INBOX", strings.NewReader("From: a@b\r\n\r\nx\r\n"), 7, 0, nil, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) < 2 || order[len(order)-2] != "sync" || order[len(order)-1] != "rename" {
+		t.Fatalf("the write went %v, want the sync before the rename", order)
+	}
+	if !strings.Contains(atRename, "\n7 :") || !strings.HasPrefix(atRename, "3 V") {
+		t.Errorf("the file renamed into place is not the whole list: %q", atRename)
+	}
+}
