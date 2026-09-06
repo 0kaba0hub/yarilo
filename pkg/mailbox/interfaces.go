@@ -76,6 +76,13 @@ type NamingAppender interface {
 	AllocateAndAppendNamed(folderID uint64, m *MessageMeta, name func(uid uint32) (string, error)) error
 }
 
+// UIDNameMarker answers, and records, whether a folder's message files already
+// carry the names their uids give them. In the index, not beside the mail.
+type UIDNameMarker interface {
+	UIDNamed(folderID uint64) (bool, error)
+	MarkUIDNamed(folderID uint64) error
+}
+
 type CorruptionMarker interface {
 	// MarkFolderCorrupt sets the marker. Idempotent.
 	MarkFolderCorrupt(folderID uint64) error

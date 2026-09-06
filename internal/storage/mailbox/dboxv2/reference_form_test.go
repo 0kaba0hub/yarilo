@@ -30,9 +30,8 @@ func keysOf(t *testing.T, raw []byte) []byte {
 	return out
 }
 
-// What we write has the shape of what the reference wrote: the fixtures are its
-// own bytes, so a drift in the header or in the trailer's keys shows up here
-// rather than on a store somebody else has to read (#1704).
+// What we write has the shape of what the reference wrote: a drift shows up
+// here rather than on a store somebody else has to read (#1704).
 func TestASavedMessageHasTheReferenceForm(t *testing.T) {
 	home := t.TempDir()
 	info := &mailbox.UserInfo{Username: "alice@example.com", Home: home}
@@ -58,7 +57,7 @@ func TestASavedMessageHasTheReferenceForm(t *testing.T) {
 	}
 	var names []string
 	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), "yarilo.") {
+		if !strings.HasPrefix(e.Name(), "yarilo.index") {
 			names = append(names, e.Name())
 		}
 	}

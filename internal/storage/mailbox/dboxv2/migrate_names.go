@@ -13,18 +13,19 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// namedMarker records that a folder has been through the pass. One stat on a
-// SELECT, against a lock and a directory read on every one of them.
-const namedMarker = "yarilo.uid-names"
-
 // MigrateUIDNames renames what earlier builds stored under a GUID name to
 // u.<uid>. Once per folder: the marker answers for a migrated one (#1704).
 func (u *userMailbox) MigrateUIDNames(idx mailbox.UserIndex, folder *mailbox.Folder) (int, error) {
-	marker := filepath.Join(u.folderPath(folder.Name), namedMarker)
-	if _, err := os.Stat(marker); err == nil {
+	// The fact belongs to the folder's index, not to a file among the mail.
+	marker, ok := idx.(mailbox.UIDNameMarker)
+	if !ok {
+		return 0, fmt.Errorf("sdbox/migrate: %q: the index cannot record the pass", folder.Name)
+	}
+	switch done, err := marker.UIDNamed(folder.ID); {
+	case err != nil:
+		return 0, fmt.Errorf("sdbox/migrate: read marker %q: %w", folder.Name, err)
+	case done:
 		return 0, nil
-	} else if !os.IsNotExist(err) {
-		return 0, fmt.Errorf("sdbox/migrate: stat marker %q: %w", folder.Name, err)
 	}
 	msgs, err := idx.GetMessages(folder.ID, mailbox.SeqSet{{From: 1, To: 0}})
 	if err != nil {
@@ -58,7 +59,7 @@ func (u *userMailbox) MigrateUIDNames(idx mailbox.UserIndex, folder *mailbox.Fol
 		return 0, err
 	}
 	if len(renamed) == 0 {
-		return 0, markNamed(marker)
+		return 0, marker.MarkUIDNamed(folder.ID)
 	}
 	// After the rename, never before: a crash between the two leaves a file the
 	// index cannot name, and the next pass renames nothing and repairs it.
@@ -66,25 +67,16 @@ func (u *userMailbox) MigrateUIDNames(idx mailbox.UserIndex, folder *mailbox.Fol
 	if !ok {
 		return 0, fmt.Errorf("sdbox/migrate: %q: the index cannot record a batch of names", folder.Name)
 	}
+	// Marked last: a crash before it repeats a pass that renames nothing.
 	if err := writer.UpdateFilenames(folder.ID, renamed); err != nil {
 		return 0, fmt.Errorf("sdbox/migrate: record names %q: %w", folder.Name, err)
 	}
-	if err := markNamed(marker); err != nil {
+	if err := marker.MarkUIDNamed(folder.ID); err != nil {
 		return 0, err
 	}
 	slog.Info("sdbox: renamed messages to the name their uid gives them",
 		"user", u.username, "folder", folder.Name, "renamed", len(renamed))
 	return len(renamed), nil
-}
-
-// markNamed is written last: a crash before it repeats a pass that renames
-// nothing, where the reverse would skip one that still has work.
-func markNamed(marker string) error {
-	f, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("sdbox/migrate: mark %s: %w", marker, err)
-	}
-	return f.Close()
 }
 
 // staleTemp is when a half-finished save stops being one: a save names its file

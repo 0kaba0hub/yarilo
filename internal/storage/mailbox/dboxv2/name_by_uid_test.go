@@ -132,9 +132,8 @@ func TestAGUIDNamedStoreIsMigrated(t *testing.T) {
 	}
 	var got []string
 	for _, e := range entries {
-		// The folder's own state files sit here too: the index and the marker.
-		if strings.HasPrefix(e.Name(), "yarilo.") {
-			continue
+		if strings.HasPrefix(e.Name(), "yarilo.index") {
+			continue // the folder's index sits here too
 		}
 		got = append(got, e.Name())
 	}
@@ -380,12 +379,6 @@ func TestOnlyAnOldTempIsSweptAway(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, young)); err != nil {
 		t.Errorf("a save in flight was swept away: %v", err)
 	}
-}
-
-// dirCountingRecorder counts what a pass takes and how often it reads the
-// folder, so "does nothing" is measured rather than assumed.
-type dirCountingRecorder struct {
-	appendRecorder
 }
 
 // A folder that has been through the pass is not read again: the migration is
