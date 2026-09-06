@@ -26,8 +26,8 @@ func TestStoreBodyStructure_RefusesWhatItCannotDecode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	known := &mailbox.MessageMeta{UID: 1}
-	unknown := &mailbox.MessageMeta{UID: 2}
+	known := &mailbox.MessageMeta{UID: 1, Filename: "m"}
+	unknown := &mailbox.MessageMeta{UID: 2, Filename: "m"}
 	for _, m := range []*mailbox.MessageMeta{known, unknown} {
 		if err := idx.AppendMessage(f.ID, m); err != nil {
 			t.Fatal(err)

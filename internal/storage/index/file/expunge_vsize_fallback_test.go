@@ -26,7 +26,7 @@ func TestExpungeVSizeFallbackNoExt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.AppendMessage(fa.ID, &mailbox.MessageMeta{UID: 1, Flags: []string{`\Deleted`}}); err != nil {
+	if err := a.AppendMessage(fa.ID, &mailbox.MessageMeta{UID: 1, Filename: "m.1", Flags: []string{`\Deleted`}}); err != nil {
 		t.Fatal(err)
 	}
 	idxDir := a.indexDir("INBOX")

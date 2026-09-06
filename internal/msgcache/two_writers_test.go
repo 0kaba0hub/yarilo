@@ -27,7 +27,7 @@ func TestFolderCache_TwoWritersStampTheirOwnMessages(t *testing.T) {
 	const n = 200 // messages per writer
 	metas := make([]*mailbox.MessageMeta, 0, 2*n)
 	for uid := uint32(1); uid <= 2*n; uid++ {
-		m := &mailbox.MessageMeta{UID: uid}
+		m := &mailbox.MessageMeta{UID: uid, Filename: "m"}
 		if err := idx.AppendMessage(f.ID, m); err != nil {
 			t.Fatal(err)
 		}

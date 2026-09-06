@@ -21,7 +21,7 @@ func TestObjectIDsUseTheSharedFormatter(t *testing.T) {
 	for _, guid := range guids {
 		want := mailbox.FormatObjectID(guid)
 
-		if got := emailID(&mailbox.MessageMeta{GUID: guid}); got != want {
+		if got := emailID(&mailbox.MessageMeta{GUID: guid, Filename: "m"}); got != want {
 			t.Errorf("emailID = %q, IMAP EMAILID = %q", got, want)
 		}
 		// mailboxID is what mailboxList actually calls, so the anchor pins the

@@ -14,12 +14,14 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1132,14 +1134,17 @@ func migrateLegacyFilenames(indexDir string) error {
 	return nil
 }
 
-// loadNames reads the .names sidecar (TSV, legacy rows taken as size 0) into
-// UID->filename and UID->size maps; a missing file is empty maps.
-func loadNames(indexDir string) (map[uint32]string, map[uint32]uint32) {
+// loadNames reads the .names sidecar (TSV, legacy rows taken as size 0). A scan
+// that stops early is an error: the next flush would rewrite from a partial map.
+func loadNames(indexDir string) (map[uint32]string, map[uint32]uint32, error) {
 	names := map[uint32]string{}
 	sizes := map[uint32]uint32{}
 	f, err := os.Open(namesPath(indexDir))
 	if err != nil {
-		return names, sizes
+		if os.IsNotExist(err) {
+			return names, sizes, nil
+		}
+		return names, sizes, fmt.Errorf("fileindex/names: open: %w", err)
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -1164,8 +1169,32 @@ func loadNames(indexDir string) (map[uint32]string, map[uint32]uint32) {
 			names[uid] = rest
 		}
 	}
-	return names, sizes
+	if err := sc.Err(); err != nil {
+		return names, sizes, fmt.Errorf("fileindex/names: read: %w", err)
+	}
+	return names, sizes, nil
 }
+
+// requireFilename guards the two places a record is created: a record with no
+// filename is a message nobody can read. The record is kept anyway -- dropping
+// it would lose the mail this is about (#1693).
+func requireFilename(where, folder string, uid uint32, filename string) {
+	if filename != "" {
+		return
+	}
+	_, file, line, _ := runtime.Caller(2)
+	if underTest() {
+		panic(fmt.Sprintf("fileindex: %s of uid %d in %q with no filename at %s:%d "+
+			"-- the message would be unreadable (#1693)", where, uid, folder, file, line))
+	}
+	slog.Error("fileindex: record created with no filename; the message will not be readable",
+		"where", where, "folder", folder, "uid", uid,
+		"caller", fmt.Sprintf("%s:%d", file, line))
+}
+
+// underTest reports whether this is a `go test` binary. Looked up on the call:
+// testing registers its flags after package variables run.
+func underTest() bool { return flag.Lookup("test.v") != nil }
 
 // appendName appends one entry to the .names sidecar through a kept-open fd, so
 // it costs one write(2). loadNames takes the last entry for a uid.

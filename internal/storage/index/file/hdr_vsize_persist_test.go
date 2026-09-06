@@ -56,7 +56,7 @@ func TestHdrVsizeBackfillRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.AppendMessage(fa.ID, &mailbox.MessageMeta{UID: 1, VSize: 1000, Size: 1000}); err != nil {
+	if err := a.AppendMessage(fa.ID, &mailbox.MessageMeta{UID: 1, VSize: 1000, Size: 1000, Filename: "m"}); err != nil {
 		t.Fatal(err)
 	}
 	base := indexPathFor(a.indexDir("INBOX"))
