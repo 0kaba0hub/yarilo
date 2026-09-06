@@ -60,6 +60,13 @@ type UIDSpaceAdopter interface {
 	AdoptUIDSpace(folderID uint64, uidValidity, nextUID uint32) error
 }
 
+// StorageKeyer is a driver whose messages have a storage key of their own: the
+// mdbox map_uid, which the mailbox index carries per record as the reference does.
+type StorageKeyer interface {
+	// StorageKey reads the key out of what Save returned for this message.
+	StorageKey(folder, filename string) (mapUID, saveDate uint32, ok bool)
+}
+
 // UIDNamer is a driver whose file name is the uid: the name cannot be settled
 // until the uid is, so a save leaves a temp file and this renames it.
 type UIDNamer interface {
@@ -184,8 +191,12 @@ func FormatObjectID(guid [16]byte) string {
 
 // MessageMeta holds per-message metadata stored in the index.
 type MessageMeta struct {
-	UID          uint32
-	Filename     string // backend-specific filename returned by UserMailbox.Save
+	UID      uint32
+	Filename string // backend-specific filename returned by UserMailbox.Save
+	// MapUID and SaveDate are the mdbox storage key, carried in the record so
+	// the name is derived rather than stored beside it (#1700).
+	MapUID       uint32
+	SaveDate     uint32
 	Flags        []string
 	Keywords     []string
 	ModSeq       uint64
