@@ -223,6 +223,9 @@ type userMailbox struct {
 	sectionFS  atomic.Int32            // stats made inside the section
 	sectionDir atomic.Int32            // directory reads made inside the section
 	cache      map[string]*folderCache // keyed by folder name; lazy-initialised
+	// pending holds the explicit GUID a save or a move must record, until the
+	// uid exists and the record can be written (#1703).
+	pending map[string][16]byte
 }
 
 // withMailboxLockSite takes the in-process mutex then the cross-process lock,
@@ -526,6 +529,9 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 		effGUID = guid
 	}
 
+	if override {
+		u.rememberGUID(folder, finalName, effGUID)
+	}
 	if err := u.withMailboxLockSite(folder, lockSiteSave, func() error {
 		dstPath := filepath.Join(folderPath, "cur", finalName)
 		if err := os.Rename(tmpPath, dstPath); err != nil {
@@ -533,12 +539,6 @@ func (u *userMailbox) Save(folder string, r io.Reader, uid uint32, _ int64, flag
 			return fmt.Errorf("maildir: rename to cur: %w", err)
 		}
 		u.folderCacheFor(folder).invalidateDir()
-		if uid != 0 || override {
-			if err := u.appendUIDListLocked(folder, uid, finalName, override, effGUID); err != nil {
-				_ = os.Remove(dstPath)
-				return fmt.Errorf("maildir: uidlist: %w", err)
-			}
-		}
 		return nil
 	}); err != nil {
 		return "", 0, noGUID, err
@@ -584,9 +584,7 @@ func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte)
 		u.folderCacheFor(srcFolder).invalidateDir()
 		u.folderCacheFor(dstFolder).invalidateDir()
 		if override {
-			if err := u.appendUIDListLocked(dstFolder, 0, newName, true, outGUID); err != nil {
-				return fmt.Errorf("maildir: move uidlist: %w", err)
-			}
+			u.rememberGUID(dstFolder, newName, outGUID)
 		}
 		return nil
 	})
@@ -599,6 +597,10 @@ func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte)
 // appendUIDListLocked records one uid against one name and rewrites the list.
 // Caller MUST hold the mailbox X lock.
 func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename string, guidOverride bool, guid [16]byte) error {
+	// The list maps a uid to a name, and a zero maps nothing (#1703).
+	if uid == 0 {
+		return fmt.Errorf("maildir/uidlist: refusing a record with no uid for %q", filename)
+	}
 	if err := u.ensureUIDListLocked(folder); err != nil {
 		return err
 	}

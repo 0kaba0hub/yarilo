@@ -284,14 +284,8 @@ func TestSave_AppendsUIDList(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	body := "m"
-	f1, _, _, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), []string{`\Seen`}, [16]byte{})
-	if err != nil {
-		t.Fatalf("Save uid=1: %v", err)
-	}
-	f2, _, _, err := box.Save("INBOX", strings.NewReader(body), 2, int64(len(body)), nil, [16]byte{})
-	if err != nil {
-		t.Fatalf("Save uid=2: %v", err)
-	}
+	f1 := saveAndRecord(t, box, "INBOX", body, 1, []string{`\Seen`})
+	f2 := saveAndRecord(t, box, "INBOX", body, 2, nil)
 
 	path := box.uidListPath("INBOX")
 	fp, err := os.Open(path)
@@ -496,7 +490,7 @@ func TestUIDListRoundtrip(t *testing.T) {
 
 	saved := make(map[string]uint32)
 	for _, uid := range []uint32{1, 2, 3} {
-		fn, _, _, err := box.Save("INBOX", strings.NewReader("m"), uid, 1, nil, [16]byte{})
+		fn, err := saveAndRecordErr(box, "INBOX", "m", uid)
 		if err != nil {
 			t.Fatalf("Save uid=%d: %v", uid, err)
 		}
@@ -522,9 +516,7 @@ func TestReadUIDList_CacheHitSkipsDiskRead(t *testing.T) {
 	box, _ := newBox(t, "u@x.com")
 	box.Init() //nolint:errcheck
 
-	if _, _, _, err := box.Save("INBOX", strings.NewReader("msg"), 1, 1, nil, [16]byte{}); err != nil {
-		t.Fatal(err)
-	}
+	saveAndRecord(t, box, "INBOX", "msg", 1, nil)
 
 	// First call populates the cache.
 	m1, err := box.readUIDList("INBOX")
@@ -555,15 +547,12 @@ func TestReadUIDList_CacheUpdatedAfterAppend(t *testing.T) {
 	box.Init() //nolint:errcheck
 
 	// Seed initial entry and populate cache.
-	fn1, _, _, err := box.Save("INBOX", strings.NewReader("msg1"), 1, 1, nil, [16]byte{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fn1 := saveAndRecord(t, box, "INBOX", "msg1", 1, nil)
 	if _, err := box.readUIDList("INBOX"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Append a second entry via appendUIDListLocked (same path Save() uses).
+	// Append a second entry the way the uid cycle does.
 	fn2 := "second.file:2,"
 	if err := box.appendUIDListLocked("INBOX", 2, fn2, false, [16]byte{}); err != nil {
 		t.Fatal(err)
@@ -763,4 +752,27 @@ func TestMaildirAdvertisesProactiveScan(t *testing.T) {
 	if !box.ProactiveScan() {
 		t.Fatal("maildir must advertise ProactiveScan")
 	}
+}
+
+// saveAndRecord is the two steps a save takes: the body, then the record the
+// uid cycle writes.
+func saveAndRecord(t *testing.T, box *userMailbox, folder, body string, uid uint32, flags []string) string {
+	t.Helper()
+	name, _, _, err := box.Save(folder, strings.NewReader(body), 0, int64(len(body)), flags, [16]byte{})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if _, err := box.AssignUID(folder, name, uid); err != nil {
+		t.Fatalf("assign uid %d: %v", uid, err)
+	}
+	return name
+}
+
+func saveAndRecordErr(box *userMailbox, folder, body string, uid uint32) (string, error) {
+	name, _, _, err := box.Save(folder, strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{})
+	if err != nil {
+		return "", err
+	}
+	_, err = box.AssignUID(folder, name, uid)
+	return name, err
 }

@@ -107,9 +107,7 @@ func TestTheIndexTakesItsUIDValidityFromTheList(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, _, err := box.Save("INBOX", strings.NewReader("From: a@b\r\n\r\nx\r\n"), f.NextUID, 0, nil, [16]byte{}); err != nil {
-				t.Fatal(err)
-			}
+			saveAndAssign(t, box, "INBOX", "From: a@b\r\n\r\nx\r\n", f.NextUID)
 			reconcile(t, box, idx, f)
 
 			v, _ := uidlistHeader(t, filepath.Join(home, "Maildir", maildir.UIDListFileName))
@@ -150,9 +148,7 @@ func TestTheHeaderNextUIDFollowsTheRecords(t *testing.T) {
 	}
 
 	for uid := uint32(1); uid <= 3; uid++ {
-		if _, _, _, err := box.Save("INBOX", strings.NewReader("From: a@b\r\n\r\nx\r\n"), uid, 0, nil, [16]byte{}); err != nil {
-			t.Fatal(err)
-		}
+		saveAndAssign(t, box, "INBOX", "From: a@b\r\n\r\nx\r\n", uid)
 	}
 	_, n := uidlistHeader(t, filepath.Join(home, "Maildir", maildir.UIDListFileName))
 	if n != 4 {
@@ -171,9 +167,7 @@ func TestSizeKeysOnlyWhereTheNameLacksThem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, _, err := box.Save("INBOX", strings.NewReader("From: a@b\r\n\r\nx\r\n"), 1, 0, nil, [16]byte{}); err != nil {
-		t.Fatal(err)
-	}
+	saveAndAssign(t, box, "INBOX", "From: a@b\r\n\r\nx\r\n", 1)
 	list := filepath.Join(home, "Maildir", maildir.UIDListFileName)
 	for _, rec := range uidlistRecords(t, list) {
 		if strings.Contains(rec, " S") || strings.Contains(rec, " W") {
@@ -188,9 +182,7 @@ func TestSizeKeysOnlyWhereTheNameLacksThem(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "Maildir", "cur", foreign), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := box.Save("INBOX", strings.NewReader("From: a@b\r\n\r\nx\r\n"), 2, 0, nil, [16]byte{}); err != nil {
-		t.Fatal(err)
-	}
+	saveAndAssign(t, box, "INBOX", "From: a@b\r\n\r\nx\r\n", 2)
 	idx := indexfile.New().OpenUser(info)
 	defer idx.Close() //nolint:errcheck
 	f, err := idx.OpenFolder("INBOX", 0)
@@ -231,9 +223,7 @@ func TestTheListIsReplacedWholeAndLeavesNothingBehind(t *testing.T) {
 		t.Fatal(err)
 	}
 	for uid := uint32(1); uid <= 3; uid++ {
-		if _, _, _, err := box.Save("INBOX", strings.NewReader("From: a@b\r\n\r\nx\r\n"), uid, 0, nil, [16]byte{}); err != nil {
-			t.Fatal(err)
-		}
+		saveAndAssign(t, box, "INBOX", "From: a@b\r\n\r\nx\r\n", uid)
 	}
 	entries, err := os.ReadDir(filepath.Join(home, "Maildir"))
 	if err != nil {
@@ -256,9 +246,7 @@ func TestATornListIsRewrittenAndSaidOutLoud(t *testing.T) {
 	if err := box.Create("INBOX"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := box.Save("INBOX", strings.NewReader("From: a@b\r\n\r\nx\r\n"), 1, 0, nil, [16]byte{}); err != nil {
-		t.Fatal(err)
-	}
+	saveAndAssign(t, box, "INBOX", "From: a@b\r\n\r\nx\r\n", 1)
 	list := filepath.Join(home, "Maildir", maildir.UIDListFileName)
 	raw, err := os.ReadFile(list)
 	if err != nil {
@@ -274,9 +262,7 @@ func TestATornListIsRewrittenAndSaidOutLoud(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
 	defer slog.SetDefault(prev)
 
-	if _, _, _, err := box.Save("INBOX", strings.NewReader("From: a@b\r\n\r\nx\r\n"), 2, 0, nil, [16]byte{}); err != nil {
-		t.Fatal(err)
-	}
+	saveAndAssign(t, box, "INBOX", "From: a@b\r\n\r\nx\r\n", 2)
 	if !strings.Contains(buf.String(), "no rule explains") {
 		t.Errorf("a torn list was carried forward in silence: %q", buf.String())
 	}
@@ -303,7 +289,11 @@ func TestAHeldDotlockStopsTheWrite(t *testing.T) {
 	}
 	defer os.Remove(lock) //nolint:errcheck
 
-	_, _, _, err := box.Save("INBOX", strings.NewReader("From: a@b\r\n\r\nx\r\n"), 1, 0, nil, [16]byte{})
+	name, _, _, err := box.Save("INBOX", strings.NewReader("From: a@b\r\n\r\nx\r\n"), 0, 0, nil, [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = box.(mailbox.UIDNamer).AssignUID("INBOX", name, 1)
 	if err == nil {
 		t.Fatal("the list was written while another writer held the lock")
 	}
@@ -334,7 +324,11 @@ func TestAMovedForeignNameCarriesMeasuredSizes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "Maildir", ".Archive", "cur", foreign), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := box.Move("INBOX", "Archive", foreign, [16]byte{}); err != nil {
+	moved, _, err := box.Move("INBOX", "Archive", foreign, [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := box.(mailbox.UIDNamer).AssignUID("Archive", moved, 5); err != nil {
 		t.Fatal(err)
 	}
 
@@ -375,13 +369,26 @@ func TestTheListIsSyncedBeforeItIsRenamed(t *testing.T) {
 		})
 	defer maildir.SetTestWriteSeams(nil, nil)
 
-	if _, _, _, err := box.Save("INBOX", strings.NewReader("From: a@b\r\n\r\nx\r\n"), 7, 0, nil, [16]byte{}); err != nil {
-		t.Fatal(err)
-	}
+	saveAndAssign(t, box, "INBOX", "From: a@b\r\n\r\nx\r\n", 7)
 	if len(order) < 2 || order[len(order)-2] != "sync" || order[len(order)-1] != "rename" {
 		t.Fatalf("the write went %v, want the sync before the rename", order)
 	}
 	if !strings.Contains(atRename, "\n7 :") || !strings.HasPrefix(atRename, "3 V") {
 		t.Errorf("the file renamed into place is not the whole list: %q", atRename)
 	}
+}
+
+// saveAndAssign saves a body and records it against uid, the two steps every
+// caller takes.
+func saveAndAssign(t *testing.T, box mailbox.UserMailbox, folder, body string, uid uint32) string {
+	t.Helper()
+	name, _, _, err := box.Save(folder, strings.NewReader(body), 0, int64(len(body)), nil, [16]byte{})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	named, err := box.(mailbox.UIDNamer).AssignUID(folder, name, uid)
+	if err != nil {
+		t.Fatalf("assign uid %d: %v", uid, err)
+	}
+	return named
 }

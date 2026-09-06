@@ -246,9 +246,7 @@ func TestTheFolderCacheIsSafeWithoutTheMailboxLock(t *testing.T) {
 func TestTheCachedUIDMapIsNotWrittenIntoAfterItEscapes(t *testing.T) {
 	box, _ := batchBox(t)
 	body := "From: a@b\r\n\r\nx\r\n"
-	if _, _, _, err := box.Save("INBOX", strings.NewReader(body), 1, int64(len(body)), nil, [16]byte{}); err != nil {
-		t.Fatal(err)
-	}
+	saveAndRecord(t, box, "INBOX", body, 1, nil)
 	m, err := box.readUIDList("INBOX")
 	if err != nil {
 		t.Fatal(err)
