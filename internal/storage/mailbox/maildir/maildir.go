@@ -188,6 +188,14 @@ func (c *folderCache) storeDirEntries(entries []os.DirEntry, mtime time.Time) {
 	c.entries, c.dirMtime = entries, mtime
 }
 
+// invalidateUIDs drops the cached list after a rewrite, so the next read takes
+// the file rather than the map it replaced.
+func (c *folderCache) invalidateUIDs() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.uidMap, c.guidMap = nil, nil
+}
+
 func (c *folderCache) invalidateDir() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -365,7 +373,9 @@ func (u *userMailbox) Create(folder string) error {
 				return fmt.Errorf("maildir/create: %w", err)
 			}
 		}
-		return nil
+		// The folder's UIDVALIDITY is the list's, and the index adopts it while
+		// the folder is still empty -- afterwards it cannot (#1701).
+		return u.ensureUIDListLocked(folder)
 	})
 }
 
@@ -586,38 +596,55 @@ func (u *userMailbox) Move(srcFolder, dstFolder, filename string, guid [16]byte)
 	return newName, outGUID, nil
 }
 
-// appendUIDListLocked appends one entry to the yarilo-uidlist v3 sidecar and
-// updates the in-memory cache. Caller MUST hold the mailbox X lock.
+// appendUIDListLocked records one uid against one name and rewrites the list.
+// Caller MUST hold the mailbox X lock.
 func (u *userMailbox) appendUIDListLocked(folder string, uid uint32, filename string, guidOverride bool, guid [16]byte) error {
-	if err := u.migrateLegacyUIDList(folder); err != nil {
+	if err := u.ensureUIDListLocked(folder); err != nil {
 		return err
 	}
 	path := u.uidListPath(folder)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	l, err := readUIDListFile(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("maildir/uidlist: read: %w", err)
 	}
-	defer f.Close()
-	info, _ := f.Stat()
-	if info != nil && info.Size() == 0 {
-		fmt.Fprintf(f, "3 V%d N%d G%s\n", uint32(time.Now().Unix()), uid+1, randomGUID())
+	if l.torn {
+		u.reportTornUIDList(folder, path, l)
 	}
-	// v3 record: "<uid> [G<guid>] :<base filename>", cut at the info separator --
-	// keyed by the whole name a record stops matching the moment a flag moves.
-	if guidOverride {
-		_, err = fmt.Fprintf(f, "%d G%s :%s\n", uid, hex.EncodeToString(guid[:]), maildirBase(filename))
-	} else {
-		_, err = fmt.Fprintf(f, "%d :%s\n", uid, maildirBase(filename))
+	base := maildirBase(filename)
+	rec := uidRecord{uid: uid, base: base, guid: guid, hasGUID: guidOverride}
+	if !nameCarriesSizes(base) {
+		// Measured from the file, never copied from another record: a number
+		// carried over could be the zero that was never measured (#1701).
+		psize, vsize, merr := measureSizes(filepath.Join(u.folderPath(folder), "cur", filename))
+		if merr == nil {
+			rec.psize, rec.vsize, rec.hasSizes = psize, vsize, true
+		}
 	}
-	if err != nil {
+	replaced := false
+	for i := range l.records {
+		if l.records[i].base == base {
+			l.records[i], replaced = rec, true
+			break
+		}
+	}
+	if !replaced {
+		l.records = append(l.records, rec)
+	}
+	if err := u.writeUIDList(folder, l); err != nil {
 		return err
 	}
 
-	// Update the cache inline so the next readUIDList skips the file.
-	if fi, statErr := f.Stat(); statErr == nil {
-		u.folderCacheFor(folder).addUID(maildirBase(filename), uid, guid, guidOverride, fi.ModTime(), fi.Size())
+	if fi, statErr := os.Stat(path); statErr == nil {
+		u.folderCacheFor(folder).addUID(base, uid, guid, guidOverride, fi.ModTime(), fi.Size())
 	}
 	return nil
+}
+
+// reportTornUIDList says what a torn list costs: the records past the bad line
+// are gone, and the next reconcile gives those files fresh uids from the header.
+func (u *userMailbox) reportTornUIDList(folder, path string, l *uidList) {
+	slog.Error("maildir: the uidlist ends in a line no rule explains; what follows it is lost",
+		"user", u.username, "folder", folder, "file", path, "records_kept", len(l.records))
 }
 
 // sizeCounter records bytes written and the count of lone LFs (not preceded by
@@ -963,6 +990,7 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 				sectionProbe(int(u.sectionDir.Load()), int(u.sectionFS.Load()))
 			}
 		}()
+		var recorded []listEntry
 		onDisk := make(map[string]*mailbox.ScanRecord, len(scanned))
 		for i := range scanned {
 			if scanned[i].Filename != "" {
@@ -1071,10 +1099,20 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 					return fmt.Errorf("maildir/sync: append %s at its recorded uid %d: %w",
 						rec.Filename, uid, err)
 				}
-			} else if err := idx.AllocateAndAppend(folder.ID, m); err != nil {
-				return fmt.Errorf("maildir/sync: append %s: %w", rec.Filename, err)
+			} else {
+				if err := idx.AllocateAndAppend(folder.ID, m); err != nil {
+					return fmt.Errorf("maildir/sync: append %s: %w", rec.Filename, err)
+				}
+				// The list is the mapping: without the record the name resolves
+				// only from the index's own sidecar (#1701).
+				recorded = append(recorded, listEntry{uid: m.UID, filename: rec.Filename})
 			}
 			st.Imported++
+		}
+		if len(recorded) > 0 {
+			if err := u.recordUIDsLocked(folder.Name, recorded); err != nil {
+				return err
+			}
 		}
 		if len(restamp) > 0 {
 			if err := idx.SetGUIDs(folder.ID, restamp); err != nil {
