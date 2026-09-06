@@ -1103,9 +1103,8 @@ func (u *userMailbox) ReconcileIndex(idx mailbox.UserIndex, folder *mailbox.Fold
 				if err := idx.AllocateAndAppend(folder.ID, m); err != nil {
 					return fmt.Errorf("maildir/sync: append %s: %w", rec.Filename, err)
 				}
-				// The list is the mapping, so a uid this pass invents belongs in
-				// it: without the record the name is resolvable only from the
-				// index's own sidecar (#1701).
+				// The list is the mapping: without the record the name resolves
+				// only from the index's own sidecar (#1701).
 				recorded = append(recorded, listEntry{uid: m.UID, filename: rec.Filename})
 			}
 			st.Imported++

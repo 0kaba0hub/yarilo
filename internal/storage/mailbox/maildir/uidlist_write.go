@@ -172,9 +172,8 @@ func measureSizes(path string) (psize, vsize uint32, err error) {
 	return c.phys, c.phys + c.lfNoCR, nil
 }
 
-// writeUIDList rewrites the whole file: a temp beside it, then rename, holding
-// the dotlock a foreign process looks for. The header's next uid is recomputed
-// from the records, so no reader is handed a number already in use.
+// writeUIDList rewrites the whole file: a temp, synced, then renamed under the
+// dotlock. The header's next uid is recomputed, so none is handed out twice.
 func (u *userMailbox) writeUIDList(folder string, l *uidList) error {
 	path := u.uidListPath(folder)
 	unlock, err := u.dotlock(path)
@@ -214,6 +213,13 @@ func (u *userMailbox) writeUIDList(folder string, l *uidList) error {
 		f.Close()      //nolint:errcheck
 		os.Remove(tmp) //nolint:errcheck
 		return fmt.Errorf("maildir/uidlist: write: %w", err)
+	}
+	// Synced before the rename: a crash in between otherwise leaves a list of
+	// zero length, and every file behind it takes a fresh uid.
+	if err := f.Sync(); err != nil {
+		f.Close()      //nolint:errcheck
+		os.Remove(tmp) //nolint:errcheck
+		return fmt.Errorf("maildir/uidlist: sync: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp) //nolint:errcheck
@@ -309,9 +315,8 @@ func (u *userMailbox) recordUIDsLocked(folder string, entries []listEntry) error
 	return nil
 }
 
-// ensureUIDListLocked creates a header-only list for a folder that has none, so
-// the folder's UIDVALIDITY exists before its first message and the index adopts
-// it while the folder is still empty (#1701).
+// ensureUIDListLocked gives a folder with none a header-only list: the index
+// can adopt its UIDVALIDITY only while the folder is still empty (#1701).
 func (u *userMailbox) ensureUIDListLocked(folder string) error {
 	if err := u.migrateLegacyUIDList(folder); err != nil {
 		return err
