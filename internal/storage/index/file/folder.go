@@ -109,23 +109,28 @@ func (u *userIndex) openFolder(folder string, uidValidity uint32, traceID string
 		return nil, namesErr
 	}
 	fs := &folderState{
-		user:          u.username,
-		folder:        folder,
-		derivedName:   derivesName(u.driver),
-		driverIsSdbox: u.driver == "sdbox" || u.driver == "dbox",
-		indexDir:      indexDir,
-		indexPath:     indexPath,
-		volatileDir:   u.folderVolatileDir(folder),
-		filenames:     names,
-		sizes:         sizes,
-		traceID:       traceID,
-		intent:        intent,
+		user:        u.username,
+		folder:      folder,
+		indexDir:    indexDir,
+		indexPath:   indexPath,
+		volatileDir: u.folderVolatileDir(folder),
+		filenames:   names,
+		sizes:       sizes,
+		traceID:     traceID,
+		intent:      intent,
 	}
 	if err := u.loadOrInit(fs, uidValidity); err != nil {
 		return nil, err
 	}
 	if err := u.stampLineage(fs); err != nil {
 		return nil, err
+	}
+	// One stat, and the lock only when there is a file to remove: this runs on
+	// every open of every folder.
+	if uidNamedLocked(fs) && sidecarExists(fs.indexDir) {
+		if err := u.withFolderLock(fs, fs.dropSidecarLocked); err != nil {
+			return nil, err
+		}
 	}
 
 	u.mu.Lock()
@@ -667,7 +672,7 @@ func (fs *folderState) flush(wholeNames bool) error {
 		return fmt.Errorf("fileindex/flush: recreate: %w", err)
 	}
 	fs.lineage = next
-	if wholeNames && !fs.derivedName {
+	if wholeNames {
 		if fs.namesFD != nil {
 			_ = fs.namesFD.Close()
 			fs.namesFD = nil
@@ -1160,7 +1165,11 @@ func (fs *folderState) appendLocked(m *mailbox.MessageMeta) error {
 	if rec.Flags&mailindex.FlagDeleted != 0 {
 		fs.file.Header.DeletedMessagesCount++
 	}
-	requireName("append", fs.folder, m.UID, m.Filename)
+	// A record that names its own storage needs no filename; one that names
+	// neither is the defect the guard exists for (#1693, #1700).
+	if m.MapUID == 0 && !namesItsOwnStorage(m) {
+		requireName("append", fs.folder, m.UID, m.Filename)
+	}
 	if m.Filename != "" {
 		fs.filenames[m.UID] = m.Filename
 	}
@@ -1588,11 +1597,15 @@ func (u *userIndex) getMessages(folderID uint64, uids mailbox.SeqSet, unlocked b
 			if !seqSetContains(uids, rec.UID) {
 				continue
 			}
+			mapUID, saveDate := decodeMdboxRec(rec.Ext[extNameMdbox])
 			meta := &mailbox.MessageMeta{
 				UID:      rec.UID,
-				Filename: fs.nameOf(rec),
+				MapUID:   mapUID,
+				SaveDate: saveDate,
+				Filename: fs.filenames[rec.UID],
 				Flags:    indexFlagsToIMAP(uint8(rec.Flags)),
-				Size:     fs.sizes[rec.UID],
+				Size:     recordSize(rec, fs.sizes),
+				VSize:    decodeVsizeRec(rec.Ext[extNameVsize]),
 				AltTier:  rec.Flags&mailindex.FlagBackend != 0,
 			}
 			if data, ok := rec.Ext[extNameModSeq]; ok {
@@ -1822,7 +1835,7 @@ func (u *userIndex) SetAltTier(folderID uint64, filenames []string, altTier bool
 	return u.withFolder(folderID, func(fs *folderState) error {
 		changed := false
 		for _, rec := range fs.file.Records {
-			fn := fs.nameOf(rec)
+			fn := fs.filenames[rec.UID]
 			if _, ok := set[fn]; !ok {
 				continue
 			}

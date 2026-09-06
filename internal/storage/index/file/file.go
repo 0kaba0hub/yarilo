@@ -314,11 +314,11 @@ func (h *userHandle) AllocateAndAppend(folderID uint64, m *mailbox.MessageMeta) 
 func (h *userHandle) AllocateAndAppendNamed(folderID uint64, m *mailbox.MessageMeta, name func(uint32) (string, error)) error {
 	return h.stamped(folderID).AllocateAndAppendNamed(folderID, m, name)
 }
-func (h *userHandle) StorageKey(folderID uint64, uid uint32) (uint32, uint32, bool) {
-	return h.stamped(folderID).StorageKey(folderID, uid)
+func (h *userHandle) AdoptStoredNames(folderID uint64, keyOf func(string) (uint32, bool)) error {
+	return h.stamped(folderID).AdoptStoredNames(folderID, keyOf)
 }
-func (h *userHandle) StorageKeys(folderID uint64, uids []uint32) (map[uint32]uint32, error) {
-	return h.stamped(folderID).StorageKeys(folderID, uids)
+func (h *userHandle) MarkUIDNamedPass(folderID uint64, pass uint32) error {
+	return h.stamped(folderID).MarkUIDNamedPass(folderID, pass)
 }
 func (h *userHandle) UIDNamed(folderID uint64) (bool, error) {
 	return h.stamped(folderID).UIDNamed(folderID)
@@ -485,15 +485,11 @@ type userIndex struct {
 type folderState struct {
 	mu sync.RWMutex
 
-	user string // whose mailbox this folder is; named in every report
-	// derivedName is true where the driver finds a message from its uid, so
-	// the sidecar has nothing to say and is neither read nor written (#1700).
-	derivedName   bool
-	driverIsSdbox bool
-	folder        string // mailbox folder name (e.g. "INBOX", "Sent")
-	indexDir      string // <home>/<folder-relative>/
-	indexPath     string // <indexDir>/yarilo.index
-	volatileDir   string // local dir for tmp files (empty = same as indexDir)
+	user        string // whose mailbox this folder is; named in every report
+	folder      string // mailbox folder name (e.g. "INBOX", "Sent")
+	indexDir    string // <home>/<folder-relative>/
+	indexPath   string // <indexDir>/yarilo.index
+	volatileDir string // local dir for tmp files (empty = same as indexDir)
 
 	// intent is why this folder is being opened. A missing index means
 	// different things to the two answers.
@@ -1225,8 +1221,8 @@ func underTest() bool { return flag.Lookup("test.v") != nil }
 // appendName appends one entry to the .names sidecar through a kept-open fd, so
 // it costs one write(2). loadNames takes the last entry for a uid.
 func (fs *folderState) appendName(uid uint32, filename string, size uint32) error {
-	if fs.derivedName {
-		return nil
+	if filename == "" {
+		return nil // nothing to record: the record names its own storage
 	}
 	if fs.namesFD == nil {
 		dst := namesPath(fs.indexDir)

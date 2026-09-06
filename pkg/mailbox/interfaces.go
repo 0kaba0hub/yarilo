@@ -60,22 +60,14 @@ type UIDSpaceAdopter interface {
 	AdoptUIDSpace(folderID uint64, uidValidity, nextUID uint32) error
 }
 
-// StorageKeyReader answers where a message is kept, from the record that
-// carries the key -- the mdbox map_uid.
-type StorageKeyReader interface {
-	StorageKey(folderID uint64, uid uint32) (mapUID, saveDate uint32, ok bool)
-	// StorageKeys answers for a whole command's worth of messages at once.
-	StorageKeys(folderID uint64, uids []uint32) (map[uint32]uint32, error)
-}
-
-// UIDAddressable is a driver that can find a message from its uid alone: the
-// name is derived from what the folder already records, not kept beside it.
+// UIDAddressable is a driver that finds a message from the record itself: the
+// name is derived from what the folder records, not kept beside it (#1700).
 type UIDAddressable interface {
-	// OpenByUID returns the message body. Caller closes.
-	OpenByUID(folder string, uid uint32, altTier bool) (io.ReadCloser, error)
-	// PathByUID names the message for the operations that take a name --
+	// OpenRecord returns the message body. Caller closes.
+	OpenRecord(folder string, m *MessageMeta) (io.ReadCloser, error)
+	// RecordPath names the message for the operations that take a name --
 	// copy, move, remove -- which stay the driver's own vocabulary.
-	PathByUID(folder string, uid uint32) (string, error)
+	RecordPath(folder string, m *MessageMeta) (string, error)
 }
 
 // StorageKeyer is a driver whose messages have a storage key of their own: the
@@ -99,6 +91,12 @@ type NamingAppender interface {
 	// AllocateAndAppendNamed assigns the uid, calls name with it, records the
 	// answer as the message's filename, and appends -- all under one hold.
 	AllocateAndAppendNamed(folderID uint64, m *MessageMeta, name func(uid uint32) (string, error)) error
+}
+
+// StoredNameAdopter moves what a sidecar holds into the records: the caller
+// reads its own storage key out of each stored name.
+type StoredNameAdopter interface {
+	AdoptStoredNames(folderID uint64, keyOf func(name string) (uint32, bool)) error
 }
 
 // UIDNameMarker answers, and records, whether a folder's message files already
@@ -213,8 +211,11 @@ type MessageMeta struct {
 	Filename string // backend-specific filename returned by UserMailbox.Save
 	// MapUID and SaveDate are the mdbox storage key, carried in the record so
 	// the name is derived rather than stored beside it (#1700).
-	MapUID       uint32
-	SaveDate     uint32
+	MapUID   uint32
+	SaveDate uint32
+	// SelfNamed says the driver finds this message from the record alone, so
+	// the index is given no filename to keep.
+	SelfNamed    bool
 	Flags        []string
 	Keywords     []string
 	ModSeq       uint64

@@ -86,7 +86,7 @@ func TestMigrate_DboxV1_ToSdbox(t *testing.T) {
 	}
 	bodySet := map[string]bool{}
 	for _, m := range msgs {
-		rc, err := verifyBox.Fetch("INBOX", m.Filename, false)
+		rc, err := mailbox.OpenMessage(verifyBox, "INBOX", m)
 		if err != nil {
 			t.Errorf("verify fetch uid=%d: %v", m.UID, err)
 			continue

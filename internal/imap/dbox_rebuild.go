@@ -67,7 +67,7 @@ func (s *session) recordStillThere(idx mailbox.UserIndex, folderID uint64, uid u
 // selected-folder FETCH body reads go through here so the marker is set
 // whichever body specifier triggered the read.
 func (s *session) fetchSelected(m *mailbox.MessageMeta) (rc io.ReadCloser, err error) {
-	rc, err = s.folderBox().Fetch(s.folder.Name, m.Filename, m.AltTier)
+	rc, err = mailbox.OpenMessage(s.folderBox(), s.folder.Name, m)
 	if err != nil {
 		// Only flag corruption a driver can actually heal; a driver without a
 		// reactive rebuilder would otherwise be stuck FSCKD with nothing to
