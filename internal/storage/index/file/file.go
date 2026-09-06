@@ -479,6 +479,7 @@ type userIndex struct {
 type folderState struct {
 	mu sync.RWMutex
 
+	user        string // whose mailbox this folder is; named in every report
 	folder      string // mailbox folder name (e.g. "INBOX", "Sent")
 	indexDir    string // <home>/<folder-relative>/
 	indexPath   string // <indexDir>/yarilo.index
@@ -1232,11 +1233,24 @@ func (fs *folderState) appendName(uid uint32, filename string, size uint32) erro
 
 // saveNames rewrites the sidecar from the records the index holds, name from
 // memory else from disk: a record returns through the log, a name has none.
+// ghostsSaid holds the records already reported, so one nameless record costs
+// one line rather than one per flush (#1693).
+var ghostsSaid sync.Map
+
+func reportGhost(user, folder, indexDir string, uid uint32) {
+	key := user + "\x00" + indexDir + "\x00" + strconv.FormatUint(uint64(uid), 10)
+	if _, said := ghostsSaid.LoadOrStore(key, struct{}{}); said {
+		return
+	}
+	slog.Error("fileindex: a record the index holds is named nowhere",
+		"user", user, "folder", folder, "uid", uid, "index_dir", indexDir)
+}
+
 // beforeNameMerge runs before the merge reads the sidecar. Test seam: the merge
 // holds the folder lock, and that is measured rather than read off a comment.
 var beforeNameMerge func()
 
-func saveNames(indexDir, volatileDir, folder string, names map[uint32]string, sizes map[uint32]uint32, live map[uint32]struct{}, nextUID uint32) error {
+func saveNames(indexDir, volatileDir, user, folder string, names map[uint32]string, sizes map[uint32]uint32, live map[uint32]struct{}, nextUID uint32) error {
 	if err := os.MkdirAll(indexDir, 0o700); err != nil {
 		return fmt.Errorf("fileindex/names: mkdir: %w", err)
 	}
@@ -1279,10 +1293,9 @@ func saveNames(indexDir, volatileDir, folder string, names map[uint32]string, si
 			}
 		}
 		// Logged, not refused: a migrated index arrives before anything has
-		// named its records.
+		// named its records. Once per record: a folder open all day said it all day.
 		if name == "" {
-			slog.Error("fileindex: a record the index holds is named nowhere",
-				"folder", folder, "uid", uid, "index_dir", indexDir)
+			reportGhost(user, folder, indexDir, uid)
 		}
 		fmt.Fprintf(bw, "%d\t%s\t%d\n", uid, name, size) //nolint:errcheck
 	}

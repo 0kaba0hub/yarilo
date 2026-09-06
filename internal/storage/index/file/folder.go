@@ -109,6 +109,7 @@ func (u *userIndex) openFolder(folder string, uidValidity uint32, traceID string
 		return nil, namesErr
 	}
 	fs := &folderState{
+		user:        u.username,
 		folder:      folder,
 		indexDir:    indexDir,
 		indexPath:   indexPath,
@@ -673,7 +674,7 @@ func (fs *folderState) flush(wholeNames bool) error {
 		for _, rec := range fs.file.Records {
 			live[rec.UID] = struct{}{}
 		}
-		if err := saveNames(fs.indexDir, fs.volatileDir, fs.folder, fs.filenames, fs.sizes, live, fs.file.Header.NextUID); err != nil {
+		if err := saveNames(fs.indexDir, fs.volatileDir, fs.user, fs.folder, fs.filenames, fs.sizes, live, fs.file.Header.NextUID); err != nil {
 			return err
 		}
 	}
