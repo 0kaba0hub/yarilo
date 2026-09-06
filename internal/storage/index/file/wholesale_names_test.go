@@ -2,12 +2,16 @@ package file
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/yarilomail/yarilo/pkg/locks"
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
@@ -37,9 +41,8 @@ func (u *userIndex) folderStateFor(t *testing.T, folder string) *folderState {
 	return nil
 }
 
-// A record is recoverable from the log, a name is not: the sidecar is rewritten
-// wholesale from one state's map, so a name another state has just appended is
-// gone with no writer at fault (#1693).
+// A record returns from the log, a name does not: a wholesale rewrite from one
+// state's map dropped a name another state had just appended (#1693).
 func TestAWholesaleRewriteKeepsANameAnotherStateJustWrote(t *testing.T) {
 	home := t.TempDir()
 	a := openUserAt(t, home, "a")
@@ -122,10 +125,8 @@ func TestAWholesaleRewriteDropsTheNameOfAnExpungedRecord(t *testing.T) {
 	}
 }
 
-// After the merge this is the only way left to hold a record no reader can
-// resolve, so it is the one that must speak. It is not a caller's defect -- a
-// migrated index arrives before anything has named its records -- so it is said
-// in a line, not a panic.
+// The only way left to hold a record no reader can resolve. Not a caller's
+// defect -- a migrated index is named later -- so a line, not a panic.
 func TestALiveRecordWithNoNameAnywhereIsReported(t *testing.T) {
 	home := t.TempDir()
 	a := openUserAt(t, home, "a")
@@ -156,5 +157,95 @@ func TestALiveRecordWithNoNameAnywhereIsReported(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "named nowhere") {
 		t.Fatalf("a live record with no name anywhere was written out in silence: %q", buf.String())
+	}
+}
+
+// lockRecorder records what the index takes and gives back, so a sidecar read
+// can be placed inside a hold or outside it.
+type lockRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (l *lockRecorder) note(ev string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, ev)
+}
+
+func (l *lockRecorder) Lock(_ context.Context, resource, _ string, _ time.Duration) (locks.Lock, error) {
+	l.note("lock " + resource)
+	return locks.Lock{ID: resource, Resource: resource}, nil
+}
+
+func (l *lockRecorder) LockShared(ctx context.Context, r, o string, ttl time.Duration) (locks.Lock, error) {
+	return l.Lock(ctx, r, o, ttl)
+}
+func (l *lockRecorder) Unlock(_ context.Context, id string) error {
+	l.note("unlock " + id)
+	return nil
+}
+func (l *lockRecorder) Renew(context.Context, string, time.Duration) error { return nil }
+func (l *lockRecorder) HoldsResource(string) bool                          { return false }
+func (l *lockRecorder) Close() error                                       { return nil }
+func (l *lockRecorder) Subscribe(context.Context, string) (<-chan locks.Event, error) {
+	return nil, nil
+}
+func (l *lockRecorder) Emit(context.Context, string, locks.EventType, string) error { return nil }
+func (l *lockRecorder) IncrementCounter(context.Context, string, int64) (int64, error) {
+	return 0, nil
+}
+
+func (l *lockRecorder) taken() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, len(l.events))
+	copy(out, l.events)
+	return out
+}
+
+// The merge reads the sidecar and rewrites it: outside the folder's exclusive
+// lock that is a new window, so every read sits inside a hold (#1693).
+func TestTheSidecarIsOnlyReadUnderTheFolderLock(t *testing.T) {
+	rec := &lockRecorder{}
+	ui := New(WithLocker(rec)).OpenUser(&mailbox.UserInfo{
+		Username: testUser, Home: testHome(t.TempDir(), testUser), SessionID: "s",
+	}).(*userHandle).ui
+	defer ui.Close() //nolint:errcheck
+
+	beforeNameMerge = func() { rec.note("read names") }
+	defer func() { beforeNameMerge = nil }()
+
+	f, err := ui.OpenFolder("INBOX", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "m.1", Size: 10}); err != nil {
+		t.Fatal(err)
+	}
+	fs := ui.folderStateFor(t, "INBOX")
+	// Through the lock, the way stampLineage and createFresh reach a wholesale
+	// flush.
+	if err := ui.withFolderLock(fs, func() error { return fs.flush(true) }); err != nil {
+		t.Fatal(err)
+	}
+
+	held := 0
+	reads := 0
+	for _, ev := range rec.taken() {
+		switch {
+		case strings.HasPrefix(ev, "lock "):
+			held++
+		case strings.HasPrefix(ev, "unlock "):
+			held--
+		case ev == "read names":
+			reads++
+			if held == 0 {
+				t.Errorf("the sidecar was read with no lock held: %v", rec.taken())
+			}
+		}
+	}
+	if reads == 0 {
+		t.Fatal("nothing read the sidecar: the row proves nothing")
 	}
 }

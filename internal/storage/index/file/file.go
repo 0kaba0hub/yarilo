@@ -1221,11 +1221,12 @@ func (fs *folderState) appendName(uid uint32, filename string, size uint32) erro
 	return nil
 }
 
-// saveNames rewrites the .names sidecar from the records the index holds, name
-// from memory else from disk: a record returns through the log, a name has none
-// (#1693). A uid on disk the records lack is kept at or above nextUID (an
-// append not replayed here), dropped below it as expunged. Under the folder's
-// exclusive lock, the one appendName writes under.
+// saveNames rewrites the sidecar from the records the index holds, name from
+// memory else from disk: a record returns through the log, a name has none.
+// beforeNameMerge runs before the merge reads the sidecar. Test seam: the merge
+// holds the folder lock, and that is measured rather than read off a comment.
+var beforeNameMerge func()
+
 func saveNames(indexDir, volatileDir, folder string, names map[uint32]string, sizes map[uint32]uint32, live map[uint32]struct{}, nextUID uint32) error {
 	if err := os.MkdirAll(indexDir, 0o700); err != nil {
 		return fmt.Errorf("fileindex/names: mkdir: %w", err)
@@ -1235,6 +1236,9 @@ func saveNames(indexDir, volatileDir, folder string, names map[uint32]string, si
 			return fmt.Errorf("fileindex/names: mkdir volatile: %w", err)
 		}
 	}
+	if beforeNameMerge != nil {
+		beforeNameMerge()
+	}
 	onDisk, diskSizes, err := loadNames(indexDir)
 	if err != nil {
 		return err
@@ -1243,6 +1247,8 @@ func saveNames(indexDir, volatileDir, folder string, names map[uint32]string, si
 	for uid := range live {
 		write[uid] = struct{}{}
 	}
+	// At or above nextUID it is an append not replayed here, below it a record
+	// the index dropped: expunged.
 	for uid := range onDisk {
 		if _, held := live[uid]; !held && uid >= nextUID {
 			write[uid] = struct{}{}
