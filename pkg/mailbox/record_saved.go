@@ -1,8 +1,7 @@
 package mailbox
 
-// RecordSaved allocates the uid and records the message, letting a driver named
-// by uid settle the name in that cycle. m.Filename: in what Save returned, out
-// the name kept (#1704).
+// RecordSaved allocates the uid and records the message; a driver named by uid
+// settles the name in that cycle. m.Filename: in what Save gave, out what it keeps.
 func RecordSaved(idx UserIndex, box UserMailbox, folderID uint64, folder string, m *MessageMeta) error {
 	namer, isNamer := Driver(box).(UIDNamer)
 	appender, isAppender := idx.(NamingAppender)
