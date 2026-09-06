@@ -65,3 +65,82 @@ func TestAWholeSidecarLoads(t *testing.T) {
 		t.Errorf("loaded %d names, sizes[2]=%d", len(names), sizes[2])
 	}
 }
+
+// An update with no name keeps the one the record has, and the refusal survives
+// a reopen: the sidecar's last line wins on reload (#1693).
+func TestAnUpdateWithNoNameKeepsTheName(t *testing.T) {
+	dir := t.TempDir()
+	info := &mailbox.UserInfo{Username: "u@example.com", Home: dir, SessionID: "s"}
+	ui := New().OpenUser(info)
+	f, err := ui.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{UID: 1, Filename: "m.1", Size: 10}); err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("an update with no name was accepted")
+			}
+		}()
+		_ = ui.UpdateFilename(f.ID, 1, "")
+	}()
+	ui.Close() //nolint:errcheck
+
+	// Reopened from disk: the sidecar must still name the message.
+	again := New().OpenUser(info)
+	defer again.Close() //nolint:errcheck
+	g, err := again.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := again.GetMessages(g.ID, mailbox.SeqSet{{From: 1, To: 1}})
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("read back %d records: %v", len(msgs), err)
+	}
+	if msgs[0].Filename != "m.1" {
+		t.Errorf("after a refused update the record names %q, want \"m.1\": the update "+
+			"erased what it could not replace", msgs[0].Filename)
+	}
+}
+
+// And the batch path refuses the same way, per uid: the rest of the batch lands.
+func TestABatchUpdateSkipsTheNamelessOne(t *testing.T) {
+	dir := t.TempDir()
+	ui := New().OpenUser(&mailbox.UserInfo{Username: "u@example.com", Home: dir, SessionID: "s"})
+	defer ui.Close() //nolint:errcheck
+	f, err := ui.OpenFolder("INBOX", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []uint32{1, 2} {
+		if err := ui.AppendMessage(f.ID, &mailbox.MessageMeta{
+			UID: uid, Filename: "m." + string(rune('0'+uid)), Size: 10,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batch, ok := ui.(mailbox.FilenameWriterMulti)
+	if !ok {
+		t.Fatal("the index does not take a batch of filenames")
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("a batch with an empty name was accepted")
+			}
+		}()
+		_ = batch.UpdateFilenames(f.ID, map[uint32]string{1: "", 2: "m.2b"})
+	}()
+	msgs, err := ui.GetMessages(f.ID, mailbox.SeqSet{{From: 1, To: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range msgs {
+		if m.UID == 1 && m.Filename != "m.1" {
+			t.Errorf("uid 1 names %q, want the name it had", m.Filename)
+		}
+	}
+}
