@@ -11,9 +11,8 @@ import (
 	"github.com/yarilomail/yarilo/pkg/mailbox"
 )
 
-// A ghost record is reported once per process, and the line names whose mailbox
-// it is: 5366 lines for 125 records drowned the slot they were found in, and
-// the user had to be recovered from the index path (#1693).
+// A ghost is reported once per process and the line names whose mailbox it is:
+// one report per flush drowned the slot it was found in (#1693).
 func TestAGhostIsReportedOnceAndNamesItsUser(t *testing.T) {
 	home := t.TempDir()
 	a := openIdx(home, testUser)
